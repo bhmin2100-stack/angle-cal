@@ -14,4 +14,4 @@ python -m pip install -e .
 python -m PyInstaller --noconfirm --clean AngleCal.spec
 
 echo.
-echo Build complete: dist\AngleCal\AngleCal.exe
+echo Build complete: dist\AngleCal.exe

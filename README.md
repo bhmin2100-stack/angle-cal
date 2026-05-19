@@ -15,7 +15,24 @@ Vertical SEM 이미지에서 선분 기반 각도를 측정하는 Windows용 데
 
 ## Windows에서 실행
 
-Python 3.10 이상이 설치되어 있다면:
+최종 사용자는 `AngleCal.exe` 하나만 더블클릭하면 됩니다.
+
+GitHub에서 자동 빌드된 파일을 받는 방법:
+
+1. GitHub repo의 **Actions** 탭을 엽니다.
+2. **Build Windows** 워크플로의 최신 성공 실행을 엽니다.
+3. **Artifacts**에서 `AngleCal-Windows-OneFile`을 다운로드합니다.
+4. ZIP을 풀고 `AngleCal.exe`를 더블클릭합니다.
+
+직접 exe를 만들려면 Python 3.10 이상이 설치된 Windows에서:
+
+```bat
+build_windows.bat
+```
+
+빌드가 끝나면 `dist\AngleCal.exe` 하나가 생성됩니다. 이 파일만 다른 폴더나 PC로 옮겨 실행하면 됩니다.
+
+개발 모드로 바로 실행하려면:
 
 ```bat
 py -3 -m venv .venv
@@ -25,22 +42,12 @@ python -m pip install -r requirements.txt
 python -m angle_cal
 ```
 
-또는 소스 폴더에서 바로 실행하려면:
+또는:
 
 ```bat
 py -3 -m pip install -e .
 python run_angle_cal.py
 ```
-
-실행 파일을 만들려면:
-
-```bat
-build_windows.bat
-```
-
-빌드가 끝나면 `dist\AngleCal\AngleCal.exe`가 생성됩니다.
-
-GitHub Actions의 **Build Windows** 워크플로를 수동 실행해도 Windows 실행 파일 아티팩트를 받을 수 있습니다.
 
 ## 기본 사용 흐름
 
