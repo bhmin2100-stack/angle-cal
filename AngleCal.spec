@@ -6,8 +6,8 @@ from PyInstaller.utils.hooks import collect_submodules
 hiddenimports = collect_submodules("cv2")
 
 a = Analysis(
-    ["src/angle_cal/__main__.py"],
-    pathex=["."],
+    ["run_angle_cal.py"],
+    pathex=[".", "src"],
     binaries=[],
     datas=[],
     hiddenimports=hiddenimports,

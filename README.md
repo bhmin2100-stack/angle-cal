@@ -25,6 +25,13 @@ python -m pip install -r requirements.txt
 python -m angle_cal
 ```
 
+또는 소스 폴더에서 바로 실행하려면:
+
+```bat
+py -3 -m pip install -e .
+python run_angle_cal.py
+```
+
 실행 파일을 만들려면:
 
 ```bat
