@@ -43,9 +43,11 @@ from .image_ops import (
     Point,
     acute_angle_difference,
     angle_to_axis,
+    bgr_to_rgb8_for_display,
     intersection,
     line_angle_degrees,
     line_length,
+    read_image,
     rotate_image_and_points,
     snap_line_to_gradient,
     to_gray,
@@ -445,14 +447,10 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        image = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        image = read_image(path)
         if image is None:
             QMessageBox.warning(self, "열기 실패", "이미지를 읽을 수 없습니다.")
             return
-        if image.ndim == 2:
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        elif image.shape[2] == 4:
-            image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
         self.image_bgr = image
         self.image_path = path
         self.project_path = None
@@ -473,14 +471,10 @@ class MainWindow(QMainWindow):
         if not image_path or not Path(image_path).exists():
             QMessageBox.warning(self, "프로젝트 열기", "프로젝트에 기록된 이미지 경로를 찾을 수 없습니다.")
             return
-        image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+        image = read_image(image_path)
         if image is None:
             QMessageBox.warning(self, "프로젝트 열기", "이미지를 읽을 수 없습니다.")
             return
-        if image.ndim == 2:
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        elif image.shape[2] == 4:
-            image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
         self.image_bgr = image
         self.image_path = image_path
         self.project_path = path
@@ -815,7 +809,7 @@ class MainWindow(QMainWindow):
             return
         transform = self.canvas.transform() if keep_view else None
         h, w = self.image_bgr.shape[:2]
-        rgb = cv2.cvtColor(self.image_bgr, cv2.COLOR_BGR2RGB)
+        rgb = bgr_to_rgb8_for_display(self.image_bgr)
         qimage = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
         self.canvas.set_image(QPixmap.fromImage(qimage))
         if keep_view and transform is not None:

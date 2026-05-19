@@ -1,12 +1,15 @@
 import math
 
 import numpy as np
+import cv2
 
 from angle_cal.image_ops import (
     acute_angle_difference,
     angle_to_axis,
+    bgr_to_rgb8_for_display,
     intersection,
     line_angle_degrees,
+    read_image,
     rotate_image_and_points,
     snap_line_to_gradient,
 )
@@ -45,3 +48,23 @@ def test_rotate_points_can_align_downward_line_to_horizontal():
     _, points = rotate_image_and_points(image, [start, end], angle)
     rotated_angle = line_angle_degrees(points[0], points[1])
     assert rotated_angle < 0.5 or rotated_angle > 179.5
+
+
+def test_read_image_supports_unicode_png_path(tmp_path):
+    path = tmp_path / "한글 SEM 이미지.png"
+    image = np.zeros((12, 16), dtype=np.uint16)
+    image[:, 8:] = 4095
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    encoded.tofile(path)
+
+    loaded = read_image(path)
+    assert loaded is not None
+    assert loaded.shape == (12, 16, 3)
+    assert loaded.dtype == np.uint16
+
+    display = bgr_to_rgb8_for_display(loaded)
+    assert display.shape == (12, 16, 3)
+    assert display.dtype == np.uint8
+    assert display[:, :4].max() == 0
+    assert display[:, 8:].max() == 255

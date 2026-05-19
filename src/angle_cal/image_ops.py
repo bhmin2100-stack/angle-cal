@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from pathlib import Path
 from typing import Iterable, Optional, Sequence, Tuple
 
 import cv2
@@ -60,6 +61,45 @@ def to_gray(image: np.ndarray) -> np.ndarray:
     if image.shape[2] == 4:
         image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+
+def ensure_bgr(image: np.ndarray) -> np.ndarray:
+    if image.ndim == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.ndim == 3 and image.shape[2] == 4:
+        return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    if image.ndim == 3 and image.shape[2] == 3:
+        return image
+    raise ValueError(f"Unsupported image shape: {image.shape}")
+
+
+def read_image(path: str | Path) -> Optional[np.ndarray]:
+    """Read images through imdecode so Windows Unicode paths work."""
+    try:
+        data = np.fromfile(str(path), dtype=np.uint8)
+    except OSError:
+        return None
+    if data.size == 0:
+        return None
+    image = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    if image is None:
+        return None
+    return ensure_bgr(image)
+
+
+def bgr_to_rgb8_for_display(image: np.ndarray) -> np.ndarray:
+    bgr = ensure_bgr(image)
+    if bgr.dtype == np.uint8:
+        display = bgr
+    else:
+        values = bgr.astype(np.float32)
+        min_value = float(np.nanmin(values))
+        max_value = float(np.nanmax(values))
+        if max_value <= min_value:
+            display = np.zeros(bgr.shape, dtype=np.uint8)
+        else:
+            display = np.clip((values - min_value) * (255.0 / (max_value - min_value)), 0, 255).astype(np.uint8)
+    return cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
 
 
 def _bilinear_sample(gray: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
