@@ -22,12 +22,21 @@ jobs:
           python -m pip install -r requirements-dev.txt
       - name: Build executable
         run: python -m PyInstaller --noconfirm --clean AngleCal.spec
+      - name: Package batch runner
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force runner | Out-Null
+          Copy-Item AngleCal.bat,run_angle_cal.py,requirements.txt,pyproject.toml,README.md -Destination runner
+          Copy-Item src -Destination runner -Recurse
+          Compress-Archive -Path runner\* -DestinationPath dist\AngleCal-bat.zip -Force
       - name: Publish executable release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: windows-latest
           name: AngleCal Windows Latest
-          body: Download `AngleCal.exe` and double-click it on Windows.
-          files: dist/AngleCal.exe
+          body: Download `AngleCal.exe` for one-file use, or `AngleCal-bat.zip` if you prefer the batch launcher. The batch launcher requires Python 3.9 or newer on Windows.
+          files: |
+            dist/AngleCal.exe
+            dist/AngleCal-bat.zip
           overwrite_files: true
           make_latest: true
