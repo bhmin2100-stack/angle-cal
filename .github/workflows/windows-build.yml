@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -19,8 +22,12 @@ jobs:
           python -m pip install -r requirements-dev.txt
       - name: Build executable
         run: python -m PyInstaller --noconfirm --clean AngleCal.spec
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Publish executable release
+        uses: softprops/action-gh-release@v2
         with:
-          name: AngleCal-Windows-OneFile
-          path: dist/AngleCal.exe
+          tag_name: windows-latest
+          name: AngleCal Windows Latest
+          body: Download `AngleCal.exe` and double-click it on Windows.
+          files: dist/AngleCal.exe
+          overwrite_files: true
+          make_latest: true

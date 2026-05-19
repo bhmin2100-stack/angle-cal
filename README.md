@@ -19,10 +19,9 @@ Vertical SEM 이미지에서 선분 기반 각도를 측정하는 Windows용 데
 
 GitHub에서 자동 빌드된 파일을 받는 방법:
 
-1. GitHub repo의 **Actions** 탭을 엽니다.
-2. **Build Windows** 워크플로의 최신 성공 실행을 엽니다.
-3. **Artifacts**에서 `AngleCal-Windows-OneFile`을 다운로드합니다.
-4. ZIP을 풀고 `AngleCal.exe`를 더블클릭합니다.
+1. GitHub repo의 **Releases**를 엽니다.
+2. **AngleCal Windows Latest** 릴리즈를 엽니다.
+3. `AngleCal.exe`를 다운로드해서 더블클릭합니다.
 
 직접 exe를 만들려면 Python 3.10 이상이 설치된 Windows에서:
 
