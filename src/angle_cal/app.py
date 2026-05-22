@@ -11,16 +11,21 @@ from typing import Optional
 import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QAction, QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDockWidget,
+    QFormLayout,
     QGraphicsItem,
     QFileDialog,
     QGraphicsLineItem,
     QGraphicsPathItem,
     QGraphicsPixmapItem,
+    QGraphicsPolygonItem,
     QGraphicsScene,
     QGraphicsTextItem,
     QGraphicsView,
@@ -47,6 +52,7 @@ from .image_ops import (
     intersection,
     line_angle_degrees,
     line_length,
+    normal_for_line,
     read_image,
     rotate_image_and_points,
     snap_line_to_gradient,
@@ -94,6 +100,9 @@ class AngleCanvas(QGraphicsView):
         self.pixmap_item: Optional[QGraphicsPixmapItem] = None
         self.line_items: dict[str, AnnotationLineItem] = {}
         self.angle_items: list[QGraphicsPathItem | QGraphicsTextItem] = []
+        self.search_range_items: list[QGraphicsPolygonItem] = []
+        self.search_range_radius_px = 35
+        self.show_search_range = True
         self.current_tool = "select"
         self._drawing_start: Optional[QPointF] = None
         self._temp_line: Optional[QGraphicsLineItem] = None
@@ -113,6 +122,7 @@ class AngleCanvas(QGraphicsView):
         self.scene.clear()
         self.line_items.clear()
         self.angle_items.clear()
+        self.search_range_items.clear()
         self.pixmap_item = self.scene.addPixmap(pixmap)
         self.pixmap_item.setZValue(0)
         self.scene.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
@@ -127,6 +137,34 @@ class AngleCanvas(QGraphicsView):
             item = AnnotationLineItem(record, self._pen_for_record(record))
             self.scene.addItem(item)
             self.line_items[record.id] = item
+
+    def set_search_range(self, radius_px: int, visible: bool, records: list[LineRecord]) -> None:
+        self.search_range_radius_px = radius_px
+        self.show_search_range = visible
+        self.update_search_range_overlay(records)
+
+    def update_search_range_overlay(self, records: list[LineRecord]) -> None:
+        for item in self.search_range_items:
+            self.scene.removeItem(item)
+        self.search_range_items.clear()
+        if not self.show_search_range or self.pixmap_item is None:
+            return
+        radius = float(self.search_range_radius_px)
+        if radius <= 0:
+            return
+        for record in records:
+            if record.kind != "edge":
+                continue
+            polygon = self._search_range_polygon(record, radius)
+            if polygon is None:
+                continue
+            item = QGraphicsPolygonItem(polygon)
+            item.setPen(QPen(QColor(255, 209, 102, 210), 1.2, Qt.PenStyle.DashLine))
+            item.setBrush(QBrush(QColor(255, 209, 102, 42)))
+            item.setZValue(3)
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            self.scene.addItem(item)
+            self.search_range_items.append(item)
 
     def clear_angle_items(self) -> None:
         for item in self.angle_items:
@@ -302,6 +340,48 @@ class AngleCanvas(QGraphicsView):
             pen.setStyle(Qt.PenStyle.DotLine)
         return pen
 
+    @staticmethod
+    def _search_range_polygon(record: LineRecord, radius: float) -> Optional[QPolygonF]:
+        nx, ny = normal_for_line(record.start, record.end)
+        if nx == 0 and ny == 0:
+            return None
+        sx, sy = record.start
+        ex, ey = record.end
+        return QPolygonF(
+            [
+                QPointF(sx + nx * radius, sy + ny * radius),
+                QPointF(ex + nx * radius, ey + ny * radius),
+                QPointF(ex - nx * radius, ey - ny * radius),
+                QPointF(sx - nx * radius, sy - ny * radius),
+            ]
+        )
+
+
+class EdgeDetectionSettingsDialog(QDialog):
+    def __init__(self, radius_px: int, show_overlay: bool, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("인식 설정")
+        self.setModal(True)
+
+        self.radius_spin = QSpinBox()
+        self.radius_spin.setRange(2, 300)
+        self.radius_spin.setValue(radius_px)
+        self.radius_spin.setSuffix(" px")
+
+        self.overlay_checkbox = QCheckBox("이미지 위에 탐색 범위 표시")
+        self.overlay_checkbox.setChecked(show_overlay)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.addRow("명도 탐색 반경", self.radius_spin)
+        layout.addLayout(form)
+        layout.addWidget(self.overlay_checkbox)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -319,7 +399,7 @@ class MainWindow(QMainWindow):
         self.canvas = AngleCanvas()
         self.setCentralWidget(self.canvas)
         self.canvas.line_created.connect(self._handle_line_created)
-        self.canvas.scene_changed.connect(self._refresh_table)
+        self.canvas.scene_changed.connect(self._handle_scene_changed)
 
         self._build_actions()
         self._build_toolbar()
@@ -377,8 +457,18 @@ class MainWindow(QMainWindow):
         self.search_radius_spin.setRange(2, 300)
         self.search_radius_spin.setValue(35)
         self.search_radius_spin.setSuffix(" px")
+        self.search_radius_spin.valueChanged.connect(self._edge_detection_settings_changed)
         toolbar.addWidget(QLabel(" 탐색 "))
         toolbar.addWidget(self.search_radius_spin)
+
+        self.show_search_range_checkbox = QCheckBox("범위 표시")
+        self.show_search_range_checkbox.setChecked(True)
+        self.show_search_range_checkbox.toggled.connect(self._edge_detection_settings_changed)
+        toolbar.addWidget(self.show_search_range_checkbox)
+
+        settings_button = QPushButton("인식 설정")
+        settings_button.clicked.connect(self.open_edge_detection_settings)
+        toolbar.addWidget(settings_button)
 
         recognize_button = QPushButton("인식")
         recognize_button.clicked.connect(self.recognize_edges)
@@ -459,6 +549,7 @@ class MainWindow(QMainWindow):
         self._counter = 1
         self._show_image()
         self._refresh_table()
+        self._update_search_range_overlay()
         self._set_status(f"이미지 로드: {Path(path).name} ({image.shape[1]} x {image.shape[0]} px)")
 
     def open_project(self) -> None:
@@ -479,6 +570,9 @@ class MainWindow(QMainWindow):
         self.image_path = image_path
         self.project_path = path
         self.nm_per_px = payload.get("nm_per_px")
+        edge_detection = payload.get("edge_detection", {})
+        self.search_radius_spin.setValue(int(edge_detection.get("search_radius_px", self.search_radius_spin.value())))
+        self.show_search_range_checkbox.setChecked(bool(edge_detection.get("show_search_range", True)))
         self.records = {
             item["id"]: LineRecord(
                 id=item["id"],
@@ -495,6 +589,7 @@ class MainWindow(QMainWindow):
         self._show_image()
         self.canvas.redraw_lines(list(self.records.values()))
         self._refresh_table()
+        self._update_search_range_overlay()
         self._set_status(f"프로젝트 로드: {Path(path).name}")
 
     def save_project(self) -> None:
@@ -511,6 +606,10 @@ class MainWindow(QMainWindow):
         payload = {
             "image_path": self.image_path,
             "nm_per_px": self.nm_per_px,
+            "edge_detection": {
+                "search_radius_px": self.search_radius_spin.value(),
+                "show_search_range": self.show_search_range_checkbox.isChecked(),
+            },
             "counter": self._counter,
             "records": [asdict(record) for record in self.records.values()],
         }
@@ -569,6 +668,7 @@ class MainWindow(QMainWindow):
             self._create_edge_line(start, end)
         self.canvas.redraw_lines(list(self.records.values()))
         self._refresh_table()
+        self._update_search_range_overlay()
 
     def _create_scale_line(self, start: Point, end: Point) -> None:
         length_px = line_length(start, end)
@@ -647,6 +747,7 @@ class MainWindow(QMainWindow):
         self._show_image(keep_view=False)
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles()
+        self._update_search_range_overlay()
         self._set_status(f"이미지를 {rotate_by:.3f}도 회전해 기준을 맞췄습니다.")
 
     def recognize_edges(self) -> None:
@@ -671,6 +772,7 @@ class MainWindow(QMainWindow):
                 moved += 1
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles()
+        self._update_search_range_overlay()
         self._set_status(f"{moved}/{len(edge_records)}개 경계선을 명도 변화 최대 위치로 이동했습니다.")
 
     def add_guides(self) -> None:
@@ -715,6 +817,7 @@ class MainWindow(QMainWindow):
             self.records[record.id] = record
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles()
+        self._update_search_range_overlay()
         self._set_status(f"{orientation} 가이드 {count}개를 만들었습니다.")
 
     def clear_guides(self, redraw: bool = True) -> None:
@@ -724,6 +827,7 @@ class MainWindow(QMainWindow):
         if redraw:
             self.canvas.redraw_lines(list(self.records.values()))
             self._refresh_table()
+            self._update_search_range_overlay()
             self._set_status("가이드를 지웠습니다.")
 
     def calculate_angles(self) -> None:
@@ -803,6 +907,7 @@ class MainWindow(QMainWindow):
             self.records.pop(record_id, None)
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles()
+        self._update_search_range_overlay()
 
     def _show_image(self, keep_view: bool = False) -> None:
         if self.image_bgr is None:
@@ -817,6 +922,38 @@ class MainWindow(QMainWindow):
 
     def _tool_changed(self) -> None:
         self.canvas.set_tool(self.tool_combo.currentData())
+
+    def open_edge_detection_settings(self) -> None:
+        dialog = EdgeDetectionSettingsDialog(
+            self.search_radius_spin.value(),
+            self.show_search_range_checkbox.isChecked(),
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.search_radius_spin.setValue(dialog.radius_spin.value())
+        self.show_search_range_checkbox.setChecked(dialog.overlay_checkbox.isChecked())
+        self._edge_detection_settings_changed()
+
+    def _edge_detection_settings_changed(self) -> None:
+        self._update_search_range_overlay()
+        radius = self.search_radius_spin.value()
+        if self.show_search_range_checkbox.isChecked():
+            self._set_status(f"명도 인식 탐색 범위: 경계선 양쪽 {radius}px")
+        else:
+            self._set_status(f"명도 인식 탐색 범위: 경계선 양쪽 {radius}px, 표시 꺼짐")
+
+    def _update_search_range_overlay(self) -> None:
+        self._sync_records_from_canvas()
+        self.canvas.set_search_range(
+            self.search_radius_spin.value(),
+            self.show_search_range_checkbox.isChecked(),
+            list(self.records.values()),
+        )
+
+    def _handle_scene_changed(self) -> None:
+        self._refresh_table()
+        self._update_search_range_overlay()
 
     def _sync_records_from_canvas(self) -> None:
         for record_id, item in self.canvas.line_items.items():
