@@ -8,7 +8,6 @@ from pathlib import Path
 import sys
 from typing import Optional
 
-import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
@@ -47,7 +46,6 @@ from PySide6.QtWidgets import (
 from .image_ops import (
     Point,
     acute_angle_difference,
-    angle_to_axis,
     bgr_to_rgb8_for_display,
     intersection,
     line_angle_degrees,
@@ -55,7 +53,7 @@ from .image_ops import (
     normal_for_line,
     read_image,
     rotate_image_and_points,
-    snap_line_to_gradient,
+    snap_line_to_gradient_curve,
     to_gray,
 )
 
@@ -69,6 +67,7 @@ class LineRecord:
     label: str = ""
     axis: str = "horizontal"
     value_nm: Optional[float] = None
+    points: Optional[list[Point]] = None
 
 
 class AnnotationLineItem(QGraphicsLineItem):
@@ -81,6 +80,37 @@ class AnnotationLineItem(QGraphicsLineItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         if record.kind != "guide":
             self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+
+
+class AnnotationCurveItem(QGraphicsPathItem):
+    def __init__(self, record: LineRecord, pen: QPen):
+        super().__init__(path_from_points(record.points or [record.start, record.end]))
+        self.record_id = record.id
+        self.kind = record.kind
+        self.setPen(pen)
+        self.setZValue(10)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+
+
+def path_from_points(points: list[Point]) -> QPainterPath:
+    path = QPainterPath()
+    if not points:
+        return path
+    path.moveTo(points[0][0], points[0][1])
+    for point in points[1:]:
+        path.lineTo(point[0], point[1])
+    return path
+
+
+def points_from_path_item(item: QGraphicsPathItem) -> list[Point]:
+    path = item.path()
+    points: list[Point] = []
+    for idx in range(path.elementCount()):
+        element = path.elementAt(idx)
+        scene_point = item.mapToScene(QPointF(element.x, element.y))
+        points.append((float(scene_point.x()), float(scene_point.y())))
+    return points
 
 
 class AngleCanvas(QGraphicsView):
@@ -98,9 +128,9 @@ class AngleCanvas(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
 
         self.pixmap_item: Optional[QGraphicsPixmapItem] = None
-        self.line_items: dict[str, AnnotationLineItem] = {}
+        self.line_items: dict[str, AnnotationLineItem | AnnotationCurveItem] = {}
         self.angle_items: list[QGraphicsPathItem | QGraphicsTextItem] = []
-        self.search_range_items: list[QGraphicsPolygonItem] = []
+        self.search_range_items: list[QGraphicsItem] = []
         self.search_range_radius_px = 35
         self.show_search_range = True
         self.current_tool = "select"
@@ -134,16 +164,25 @@ class AngleCanvas(QGraphicsView):
             self.scene.removeItem(item)
         self.line_items.clear()
         for record in records:
-            item = AnnotationLineItem(record, self._pen_for_record(record))
+            if record.kind == "edge" and record.points and len(record.points) >= 2:
+                item = AnnotationCurveItem(record, self._pen_for_record(record))
+            else:
+                item = AnnotationLineItem(record, self._pen_for_record(record))
             self.scene.addItem(item)
             self.line_items[record.id] = item
 
-    def set_search_range(self, radius_px: int, visible: bool, records: list[LineRecord]) -> None:
+    def set_search_range(
+        self,
+        radius_px: int,
+        visible: bool,
+        records: list[LineRecord],
+        range_label: str,
+    ) -> None:
         self.search_range_radius_px = radius_px
         self.show_search_range = visible
-        self.update_search_range_overlay(records)
+        self.update_search_range_overlay(records, range_label)
 
-    def update_search_range_overlay(self, records: list[LineRecord]) -> None:
+    def update_search_range_overlay(self, records: list[LineRecord], range_label: str) -> None:
         for item in self.search_range_items:
             self.scene.removeItem(item)
         self.search_range_items.clear()
@@ -155,16 +194,29 @@ class AngleCanvas(QGraphicsView):
         for record in records:
             if record.kind != "edge":
                 continue
-            polygon = self._search_range_polygon(record, radius)
-            if polygon is None:
-                continue
-            item = QGraphicsPolygonItem(polygon)
-            item.setPen(QPen(QColor(255, 209, 102, 210), 1.2, Qt.PenStyle.DashLine))
-            item.setBrush(QBrush(QColor(255, 209, 102, 42)))
-            item.setZValue(3)
-            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
-            self.scene.addItem(item)
-            self.search_range_items.append(item)
+            polygons = self._search_range_polygons(record, radius)
+            for polygon in polygons:
+                item = QGraphicsPolygonItem(polygon)
+                item.setPen(QPen(QColor(0, 220, 110, 220), 1.2, Qt.PenStyle.DashLine))
+                item.setBrush(QBrush(QColor(0, 220, 110, 46)))
+                item.setZValue(3)
+                item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+                self.scene.addItem(item)
+                self.search_range_items.append(item)
+            if polygons:
+                label = QGraphicsTextItem(range_label)
+                label.setDefaultTextColor(QColor("#b8ffd0"))
+                label.setHtml(
+                    "<div style='background-color:rgba(0,60,28,150);"
+                    "color:#b8ffd0;padding:2px 5px;border-radius:3px;'>"
+                    f"{range_label}</div>"
+                )
+                label_pos = record_points(record)[len(record_points(record)) // 2]
+                label.setPos(label_pos[0] + 6, label_pos[1] + 6)
+                label.setZValue(6)
+                label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+                self.scene.addItem(label)
+                self.search_range_items.append(label)
 
     def clear_angle_items(self) -> None:
         for item in self.angle_items:
@@ -198,7 +250,7 @@ class AngleCanvas(QGraphicsView):
     def selected_line_ids(self) -> list[str]:
         ids: list[str] = []
         for item in self.scene.selectedItems():
-            if isinstance(item, AnnotationLineItem):
+            if isinstance(item, (AnnotationLineItem, AnnotationCurveItem)):
                 ids.append(item.record_id)
         return ids
 
@@ -341,24 +393,62 @@ class AngleCanvas(QGraphicsView):
         return pen
 
     @staticmethod
-    def _search_range_polygon(record: LineRecord, radius: float) -> Optional[QPolygonF]:
-        nx, ny = normal_for_line(record.start, record.end)
-        if nx == 0 and ny == 0:
-            return None
-        sx, sy = record.start
-        ex, ey = record.end
-        return QPolygonF(
-            [
-                QPointF(sx + nx * radius, sy + ny * radius),
-                QPointF(ex + nx * radius, ey + ny * radius),
-                QPointF(ex - nx * radius, ey - ny * radius),
-                QPointF(sx - nx * radius, sy - ny * radius),
-            ]
-        )
+    def _search_range_polygons(record: LineRecord, radius: float) -> list[QPolygonF]:
+        points = record_points(record)
+        polygons: list[QPolygonF] = []
+        for start, end in zip(points, points[1:]):
+            nx, ny = normal_for_line(start, end)
+            if nx == 0 and ny == 0:
+                continue
+            sx, sy = start
+            ex, ey = end
+            polygons.append(
+                QPolygonF(
+                    [
+                        QPointF(sx + nx * radius, sy + ny * radius),
+                        QPointF(ex + nx * radius, ey + ny * radius),
+                        QPointF(ex - nx * radius, ey - ny * radius),
+                        QPointF(sx - nx * radius, sy - ny * radius),
+                    ]
+                )
+            )
+        return polygons
+
+
+def record_points(record: LineRecord) -> list[Point]:
+    if record.points and len(record.points) >= 2:
+        return record.points
+    return [record.start, record.end]
+
+
+def record_length(record: LineRecord) -> float:
+    points = record_points(record)
+    return sum(line_length(start, end) for start, end in zip(points, points[1:]))
+
+
+def record_angle(record: LineRecord) -> float:
+    points = record_points(record)
+    return line_angle_degrees(points[0], points[-1])
+
+
+def polyline_intersections(edge: LineRecord, guide_line: tuple[Point, Point]) -> list[tuple[Point, float]]:
+    crosses: list[tuple[Point, float]] = []
+    points = record_points(edge)
+    for start, end in zip(points, points[1:]):
+        cross = intersection((start, end), guide_line)
+        if cross is not None:
+            crosses.append((cross, line_angle_degrees(start, end)))
+    return crosses
 
 
 class EdgeDetectionSettingsDialog(QDialog):
-    def __init__(self, radius_px: int, show_overlay: bool, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        radius_px: int,
+        sensitivity: int,
+        show_overlay: bool,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("인식 설정")
         self.setModal(True)
@@ -368,12 +458,17 @@ class EdgeDetectionSettingsDialog(QDialog):
         self.radius_spin.setValue(radius_px)
         self.radius_spin.setSuffix(" px")
 
+        self.sensitivity_spin = QSpinBox()
+        self.sensitivity_spin.setRange(1, 100)
+        self.sensitivity_spin.setValue(sensitivity)
+
         self.overlay_checkbox = QCheckBox("이미지 위에 탐색 범위 표시")
         self.overlay_checkbox.setChecked(show_overlay)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
         form.addRow("명도 탐색 반경", self.radius_spin)
+        form.addRow("곡선 민감도", self.sensitivity_spin)
         layout.addLayout(form)
         layout.addWidget(self.overlay_checkbox)
 
@@ -460,6 +555,13 @@ class MainWindow(QMainWindow):
         self.search_radius_spin.valueChanged.connect(self._edge_detection_settings_changed)
         toolbar.addWidget(QLabel(" 탐색 "))
         toolbar.addWidget(self.search_radius_spin)
+
+        self.curve_sensitivity_spin = QSpinBox()
+        self.curve_sensitivity_spin.setRange(1, 100)
+        self.curve_sensitivity_spin.setValue(65)
+        self.curve_sensitivity_spin.valueChanged.connect(self._edge_detection_settings_changed)
+        toolbar.addWidget(QLabel(" 곡선 "))
+        toolbar.addWidget(self.curve_sensitivity_spin)
 
         self.show_search_range_checkbox = QCheckBox("범위 표시")
         self.show_search_range_checkbox.setChecked(True)
@@ -572,9 +674,14 @@ class MainWindow(QMainWindow):
         self.nm_per_px = payload.get("nm_per_px")
         edge_detection = payload.get("edge_detection", {})
         self.search_radius_spin.setValue(int(edge_detection.get("search_radius_px", self.search_radius_spin.value())))
+        self.curve_sensitivity_spin.setValue(
+            int(edge_detection.get("curve_sensitivity", self.curve_sensitivity_spin.value()))
+        )
         self.show_search_range_checkbox.setChecked(bool(edge_detection.get("show_search_range", True)))
-        self.records = {
-            item["id"]: LineRecord(
+        self.records = {}
+        for item in payload.get("records", []):
+            raw_points = item.get("points") or []
+            self.records[item["id"]] = LineRecord(
                 id=item["id"],
                 kind=item["kind"],
                 start=tuple(item["start"]),
@@ -582,9 +689,8 @@ class MainWindow(QMainWindow):
                 label=item.get("label", ""),
                 axis=item.get("axis", "horizontal"),
                 value_nm=item.get("value_nm"),
+                points=[tuple(point) for point in raw_points] or None,
             )
-            for item in payload.get("records", [])
-        }
         self._counter = payload.get("counter", len(self.records) + 1)
         self._show_image()
         self.canvas.redraw_lines(list(self.records.values()))
@@ -608,6 +714,7 @@ class MainWindow(QMainWindow):
             "nm_per_px": self.nm_per_px,
             "edge_detection": {
                 "search_radius_px": self.search_radius_spin.value(),
+                "curve_sensitivity": self.curve_sensitivity_spin.value(),
                 "show_search_range": self.show_search_range_checkbox.isChecked(),
             },
             "counter": self._counter,
@@ -720,6 +827,7 @@ class MainWindow(QMainWindow):
             end=end,
             label="edge",
             axis=self.axis_combo.currentData(),
+            points=None,
         )
         self.records[record.id] = record
         self._set_status("경계선을 추가했습니다.")
@@ -736,13 +844,22 @@ class MainWindow(QMainWindow):
         target = 0.0 if reference.axis == "horizontal" else 90.0
         rotate_by = angle - target
         lines = list(self.records.values())
-        points = []
+        points: list[Point] = []
+        point_counts: list[int] = []
         for record in lines:
-            points.extend([record.start, record.end])
+            current_points = record_points(record)
+            points.extend(current_points)
+            point_counts.append(len(current_points))
         rotated, transformed = rotate_image_and_points(self.image_bgr, points, rotate_by)
-        for idx, record in enumerate(lines):
-            record.start = transformed[idx * 2]
-            record.end = transformed[idx * 2 + 1]
+        cursor = 0
+        for record, count in zip(lines, point_counts):
+            next_cursor = cursor + count
+            record_transformed = transformed[cursor:next_cursor]
+            record.start = record_transformed[0]
+            record.end = record_transformed[-1]
+            if record.points:
+                record.points = record_transformed
+            cursor = next_cursor
         self.image_bgr = rotated
         self._show_image(keep_view=False)
         self.canvas.redraw_lines(list(self.records.values()))
@@ -763,17 +880,19 @@ class MainWindow(QMainWindow):
             return
         gray = to_gray(self.image_bgr)
         radius = self.search_radius_spin.value()
+        sensitivity = self.curve_sensitivity_spin.value()
         moved = 0
         for record in edge_records:
-            result = snap_line_to_gradient(gray, record.start, record.end, radius)
+            result = snap_line_to_gradient_curve(gray, record.start, record.end, radius, sensitivity)
             if result is not None:
                 record.start = result.start
                 record.end = result.end
+                record.points = result.points
                 moved += 1
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles()
         self._update_search_range_overlay()
-        self._set_status(f"{moved}/{len(edge_records)}개 경계선을 명도 변화 최대 위치로 이동했습니다.")
+        self._set_status(f"{moved}/{len(edge_records)}개 경계선을 명도 변화 최대 위치를 따라 곡선으로 변환했습니다.")
 
     def add_guides(self) -> None:
         if self.image_bgr is None:
@@ -849,12 +968,12 @@ class MainWindow(QMainWindow):
         edges = [record for record in self.records.values() if record.kind == "edge"]
         guides = [record for record in self.records.values() if record.kind == "guide"]
         for edge in edges:
-            edge_angle = line_angle_degrees(edge.start, edge.end)
+            edge_angle = record_angle(edge)
             angle = acute_angle_difference(edge_angle, reference_angle)
             midpoint = ((edge.start[0] + edge.end[0]) / 2.0, (edge.start[1] + edge.end[1]) / 2.0)
             label_pos = self._label_position(midpoint, edge_angle, reference_angle, 34.0)
             self.canvas.add_angle_label(f"{angle:.2f}°", label_pos)
-            length_px = line_length(edge.start, edge.end)
+            length_px = record_length(edge)
             self.last_measurements.append(
                 {
                     "measurement": f"{edge.id}_to_{reference_name}",
@@ -871,31 +990,31 @@ class MainWindow(QMainWindow):
             )
 
         for edge in edges:
-            edge_angle = line_angle_degrees(edge.start, edge.end)
             for guide in guides:
-                cross = intersection((edge.start, edge.end), (guide.start, guide.end))
-                if cross is None:
-                    continue
+                guide_line = (guide.start, guide.end)
                 guide_angle = line_angle_degrees(guide.start, guide.end)
-                angle = acute_angle_difference(edge_angle, guide_angle)
-                self.canvas.add_angle_arc(cross, edge_angle, guide_angle)
-                label_pos = self._label_position(cross, edge_angle, guide_angle, 42.0)
-                self.canvas.add_angle_label(f"{angle:.2f}°", label_pos)
-                length_px = line_length(edge.start, edge.end)
-                self.last_measurements.append(
-                    {
-                        "measurement": f"{edge.id}_x_{guide.id}",
-                        "edge_id": edge.id,
-                        "guide_id": guide.id,
-                        "kind": "edge_guide_intersection",
-                        "x_px": cross[0],
-                        "y_px": cross[1],
-                        "angle_deg": angle,
-                        "edge_length_px": length_px,
-                        "edge_length_nm": length_px * self.nm_per_px if self.nm_per_px else "",
-                        "nm_per_px": self.nm_per_px if self.nm_per_px else "",
-                    }
-                )
+                crosses = polyline_intersections(edge, guide_line)
+                for cross_idx, (cross, edge_angle) in enumerate(crosses, start=1):
+                    angle = acute_angle_difference(edge_angle, guide_angle)
+                    self.canvas.add_angle_arc(cross, edge_angle, guide_angle)
+                    label_pos = self._label_position(cross, edge_angle, guide_angle, 42.0)
+                    self.canvas.add_angle_label(f"{angle:.2f}°", label_pos)
+                    length_px = record_length(edge)
+                    suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
+                    self.last_measurements.append(
+                        {
+                            "measurement": f"{edge.id}_x_{guide.id}{suffix}",
+                            "edge_id": edge.id,
+                            "guide_id": guide.id,
+                            "kind": "edge_guide_intersection",
+                            "x_px": cross[0],
+                            "y_px": cross[1],
+                            "angle_deg": angle,
+                            "edge_length_px": length_px,
+                            "edge_length_nm": length_px * self.nm_per_px if self.nm_per_px else "",
+                            "nm_per_px": self.nm_per_px if self.nm_per_px else "",
+                        }
+                    )
         self._refresh_table()
         self._set_status(f"각도 {len(self.last_measurements)}개를 계산했습니다. 숫자 라벨은 선택해서 옮길 수 있습니다.")
 
@@ -926,22 +1045,25 @@ class MainWindow(QMainWindow):
     def open_edge_detection_settings(self) -> None:
         dialog = EdgeDetectionSettingsDialog(
             self.search_radius_spin.value(),
+            self.curve_sensitivity_spin.value(),
             self.show_search_range_checkbox.isChecked(),
             self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self.search_radius_spin.setValue(dialog.radius_spin.value())
+        self.curve_sensitivity_spin.setValue(dialog.sensitivity_spin.value())
         self.show_search_range_checkbox.setChecked(dialog.overlay_checkbox.isChecked())
         self._edge_detection_settings_changed()
 
     def _edge_detection_settings_changed(self) -> None:
         self._update_search_range_overlay()
         radius = self.search_radius_spin.value()
+        sensitivity = self.curve_sensitivity_spin.value()
         if self.show_search_range_checkbox.isChecked():
-            self._set_status(f"명도 인식 탐색 범위: 경계선 양쪽 {radius}px")
+            self._set_status(f"명도 인식 탐색 범위: 경계선 양쪽 {radius}px, 곡선 민감도 {sensitivity}")
         else:
-            self._set_status(f"명도 인식 탐색 범위: 경계선 양쪽 {radius}px, 표시 꺼짐")
+            self._set_status(f"명도 인식 탐색 범위: 경계선 양쪽 {radius}px, 곡선 민감도 {sensitivity}, 표시 꺼짐")
 
     def _update_search_range_overlay(self) -> None:
         self._sync_records_from_canvas()
@@ -949,7 +1071,15 @@ class MainWindow(QMainWindow):
             self.search_radius_spin.value(),
             self.show_search_range_checkbox.isChecked(),
             list(self.records.values()),
+            self._search_range_label(),
         )
+
+    def _search_range_label(self) -> str:
+        radius = self.search_radius_spin.value()
+        width = radius * 2
+        if self.nm_per_px:
+            return f"±{radius}px / {width}px ({width * self.nm_per_px:.3g} nm)"
+        return f"±{radius}px / {width}px"
 
     def _handle_scene_changed(self) -> None:
         self._refresh_table()
@@ -959,11 +1089,21 @@ class MainWindow(QMainWindow):
         for record_id, item in self.canvas.line_items.items():
             if record_id not in self.records:
                 continue
-            line = item.line()
-            p1 = item.mapToScene(line.p1())
-            p2 = item.mapToScene(line.p2())
-            self.records[record_id].start = (float(p1.x()), float(p1.y()))
-            self.records[record_id].end = (float(p2.x()), float(p2.y()))
+            record = self.records[record_id]
+            if isinstance(item, AnnotationLineItem):
+                line = item.line()
+                p1 = item.mapToScene(line.p1())
+                p2 = item.mapToScene(line.p2())
+                record.start = (float(p1.x()), float(p1.y()))
+                record.end = (float(p2.x()), float(p2.y()))
+                if record.kind != "edge":
+                    record.points = None
+            elif isinstance(item, AnnotationCurveItem):
+                points = points_from_path_item(item)
+                if len(points) >= 2:
+                    record.points = points
+                    record.start = points[0]
+                    record.end = points[-1]
 
     def _reference_record(self) -> Optional[LineRecord]:
         for record in self.records.values():
@@ -976,17 +1116,20 @@ class MainWindow(QMainWindow):
         rows = [record for record in self.records.values() if record.kind != "guide"]
         self.measurement_table.setRowCount(len(rows))
         for row_idx, record in enumerate(rows):
-            length_px = line_length(record.start, record.end)
+            length_px = record_length(record)
             length_nm = length_px * self.nm_per_px if self.nm_per_px else None
             if record.kind == "edge":
                 reference = self._reference_record()
                 if reference is not None:
                     angle = acute_angle_difference(
-                        line_angle_degrees(record.start, record.end),
+                        record_angle(record),
                         line_angle_degrees(reference.start, reference.end),
                     )
                 else:
-                    angle = angle_to_axis(record.start, record.end, self.axis_combo.currentData())
+                    angle = acute_angle_difference(
+                        record_angle(record),
+                        0.0 if self.axis_combo.currentData() == "horizontal" else 90.0,
+                    )
                 angle_text = f"{angle:.2f}°"
             elif record.kind == "reference":
                 angle_text = f"{line_angle_degrees(record.start, record.end):.2f}°"

@@ -23,6 +23,21 @@ class SnapResult:
     gradient_profile: np.ndarray
 
 
+@dataclass(frozen=True)
+class SnapCurveResult:
+    points: list[Point]
+    offsets: np.ndarray
+    gradient_strength: np.ndarray
+
+    @property
+    def start(self) -> Point:
+        return self.points[0]
+
+    @property
+    def end(self) -> Point:
+        return self.points[-1]
+
+
 def line_length(start: Point, end: Point) -> float:
     return float(math.hypot(end[0] - start[0], end[1] - start[1]))
 
@@ -199,6 +214,94 @@ def snap_line_to_gradient(
         intensity_profile=filled,
         gradient_profile=gradient,
     )
+
+
+def snap_line_to_gradient_curve(
+    gray: np.ndarray,
+    start: Point,
+    end: Point,
+    search_radius_px: int = 30,
+    sensitivity: int = 65,
+) -> Optional[SnapCurveResult]:
+    """Trace a local curved boundary near a user-drawn line.
+
+    Sensitivity controls both point density and smoothing. Higher values follow
+    local brightness changes more closely; lower values smooth the resulting
+    boundary.
+    """
+    if search_radius_px <= 0:
+        return None
+    length = line_length(start, end)
+    if length < 2:
+        return None
+
+    sensitivity = int(np.clip(sensitivity, 1, 100))
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    tx = dx / length
+    ty = dy / length
+    nx, ny = normal_for_line(start, end)
+    if nx == 0 and ny == 0:
+        return None
+
+    step_px = 18.0 - sensitivity * 0.14
+    step_px = float(np.clip(step_px, 3.0, 18.0))
+    point_count = int(np.clip(math.ceil(length / step_px) + 1, 6, 240))
+    t_values = np.linspace(0.0, 1.0, point_count, dtype=np.float32)
+    offsets = np.arange(-search_radius_px, search_radius_px + 1, dtype=np.float32)
+    local_half_width = float(np.clip(step_px * 0.55, 1.5, 8.0))
+    local_tangent_offsets = np.linspace(-local_half_width, local_half_width, 5, dtype=np.float32)
+
+    best_offsets = np.full(point_count, np.nan, dtype=np.float32)
+    strengths = np.full(point_count, np.nan, dtype=np.float32)
+    for idx, t in enumerate(t_values):
+        bx = start[0] + dx * float(t)
+        by = start[1] + dy * float(t)
+        profile = np.empty(offsets.shape, dtype=np.float32)
+        for offset_idx, offset in enumerate(offsets):
+            xs = bx + tx * local_tangent_offsets + nx * offset
+            ys = by + ty * local_tangent_offsets + ny * offset
+            samples = _bilinear_sample(gray, xs, ys)
+            valid_count = np.count_nonzero(~np.isnan(samples))
+            profile[offset_idx] = float(np.nanmean(samples)) if valid_count >= 2 else np.nan
+
+        finite = np.isfinite(profile)
+        if np.count_nonzero(finite) < 5:
+            continue
+        filled = profile.copy()
+        if not np.all(finite):
+            filled = np.interp(offsets, offsets[finite], profile[finite]).astype(np.float32)
+        if filled.size >= 5:
+            kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+            kernel /= kernel.sum()
+            filled = np.convolve(np.pad(filled, (2, 2), mode="edge"), kernel, mode="valid").astype(np.float32)
+        gradient = np.gradient(filled)
+        best_idx = int(np.nanargmax(np.abs(gradient)))
+        best_offsets[idx] = offsets[best_idx]
+        strengths[idx] = abs(float(gradient[best_idx]))
+
+    finite_offsets = np.isfinite(best_offsets)
+    if np.count_nonzero(finite_offsets) < 3:
+        return None
+    if not np.all(finite_offsets):
+        valid_x = np.flatnonzero(finite_offsets)
+        best_offsets = np.interp(np.arange(point_count), valid_x, best_offsets[finite_offsets]).astype(np.float32)
+        strengths = np.interp(np.arange(point_count), valid_x, strengths[finite_offsets]).astype(np.float32)
+
+    smoothing_window = int(round((101 - sensitivity) / 14.0)) * 2 + 1
+    smoothing_window = int(np.clip(smoothing_window, 1, 15))
+    if smoothing_window > 1:
+        kernel = np.ones(smoothing_window, dtype=np.float32) / smoothing_window
+        pad = smoothing_window // 2
+        best_offsets = np.convolve(np.pad(best_offsets, (pad, pad), mode="edge"), kernel, mode="valid").astype(np.float32)
+
+    points = []
+    for t, offset in zip(t_values, best_offsets):
+        bx = start[0] + dx * float(t)
+        by = start[1] + dy * float(t)
+        points.append((float(bx + nx * offset), float(by + ny * offset)))
+
+    return SnapCurveResult(points=points, offsets=best_offsets, gradient_strength=strengths)
 
 
 def rotate_image_and_points(

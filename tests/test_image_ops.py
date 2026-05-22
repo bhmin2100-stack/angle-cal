@@ -11,6 +11,7 @@ from angle_cal.image_ops import (
     line_angle_degrees,
     read_image,
     rotate_image_and_points,
+    snap_line_to_gradient_curve,
     snap_line_to_gradient,
 )
 
@@ -38,6 +39,21 @@ def test_snap_line_to_synthetic_vertical_edge():
     assert result is not None
     snapped_x = (result.start[0] + result.end[0]) / 2
     assert 80 <= snapped_x <= 83
+
+
+def test_snap_line_to_gradient_curve_follows_curved_edge():
+    image = np.zeros((140, 180), dtype=np.float32)
+    for y in range(image.shape[0]):
+        boundary_x = int(round(82 + 10 * math.sin((y - 20) / 18)))
+        image[y, boundary_x:] = 255
+
+    result = snap_line_to_gradient_curve(image, (70, 15), (70, 125), search_radius_px=30, sensitivity=90)
+
+    assert result is not None
+    xs = np.array([point[0] for point in result.points])
+    assert len(result.points) > 10
+    assert xs.std() > 3
+    assert 72 <= xs.mean() <= 90
 
 
 def test_rotate_points_can_align_downward_line_to_horizontal():
