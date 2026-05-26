@@ -9,8 +9,8 @@ import sys
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QAction, QBrush, QColor, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QAction, QBrush, QColor, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QFormLayout,
     QGraphicsItem,
+    QGridLayout,
     QFileDialog,
     QGraphicsLineItem,
     QGraphicsPathItem,
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStatusBar,
     QTableWidget,
@@ -71,6 +73,7 @@ class LineRecord:
 
 
 ANGLE_GROUP_KEY = 1
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 
 class AnnotationLineItem(QGraphicsLineItem):
@@ -626,6 +629,10 @@ class MainWindow(QMainWindow):
         self.records: dict[str, LineRecord] = {}
         self._counter = 1
         self.last_measurements: list[dict[str, str | float]] = []
+        self.browser_root: Optional[Path] = None
+        self.browser_image_paths: list[str] = []
+        self.current_browser_index = -1
+        self.thumbnail_buttons: dict[str, QPushButton] = {}
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -644,12 +651,15 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_toolbar()
         self._build_measurements_dock()
+        self._build_thumbnail_dock()
         self.setStatusBar(QStatusBar())
         self._set_status("이미지를 불러오면 시작할 수 있습니다.")
 
     def _build_actions(self) -> None:
         self.open_action = QAction("이미지 열기", self)
         self.open_action.triggered.connect(self.open_image)
+        self.open_folder_action = QAction("폴더 열기", self)
+        self.open_folder_action.triggered.connect(self.open_folder)
         self.save_project_action = QAction("프로젝트 저장", self)
         self.save_project_action.triggered.connect(self.save_project)
         self.open_project_action = QAction("프로젝트 열기", self)
@@ -666,11 +676,22 @@ class MainWindow(QMainWindow):
         self.delete_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
         self.delete_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.delete_action.triggered.connect(self.delete_selected)
+        self.previous_image_action = QAction("이전 이미지", self)
+        self.previous_image_action.setShortcut(QKeySequence(Qt.Key.Key_PageUp))
+        self.previous_image_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.previous_image_action.triggered.connect(lambda: self.load_relative_browser_image(-1))
+        self.next_image_action = QAction("다음 이미지", self)
+        self.next_image_action.setShortcut(QKeySequence(Qt.Key.Key_PageDown))
+        self.next_image_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.next_image_action.triggered.connect(lambda: self.load_relative_browser_image(1))
         self.addAction(self.select_tool_action)
         self.addAction(self.delete_action)
+        self.addAction(self.previous_image_action)
+        self.addAction(self.next_image_action)
 
         file_menu = self.menuBar().addMenu("파일")
         file_menu.addAction(self.open_action)
+        file_menu.addAction(self.open_folder_action)
         file_menu.addAction(self.open_project_action)
         file_menu.addAction(self.save_project_action)
         file_menu.addSeparator()
@@ -682,6 +703,7 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
         toolbar.addAction(self.open_action)
+        toolbar.addAction(self.open_folder_action)
 
         self.tool_combo = QComboBox()
         self.tool_combo.addItem("선택", "select")
@@ -803,6 +825,22 @@ class MainWindow(QMainWindow):
         dock.setWidget(container)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
+    def _build_thumbnail_dock(self) -> None:
+        dock = QDockWidget("썸네일", self)
+        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.thumbnail_container = QWidget()
+        self.thumbnail_layout = QGridLayout(self.thumbnail_container)
+        self.thumbnail_layout.setContentsMargins(8, 8, 8, 8)
+        self.thumbnail_layout.setHorizontalSpacing(8)
+        self.thumbnail_layout.setVerticalSpacing(8)
+        self.thumbnail_empty_label = QLabel("폴더를 열면 이미지가 표시됩니다.")
+        self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, 2)
+        scroll.setWidget(self.thumbnail_container)
+        dock.setWidget(scroll)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+
     def open_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -812,6 +850,29 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        self.browser_root = None
+        self.browser_image_paths = [path]
+        self.current_browser_index = 0
+        self._populate_thumbnails()
+        self._load_image_path(path)
+
+    def open_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "폴더 열기", "")
+        if not folder:
+            return
+        root = Path(folder)
+        image_paths = self._scan_folder_images(root)
+        if not image_paths:
+            QMessageBox.information(self, "폴더 열기", "폴더 안에서 지원되는 이미지 파일을 찾지 못했습니다.")
+            return
+        self.browser_root = root
+        self.browser_image_paths = [str(path) for path in image_paths]
+        self.current_browser_index = 0
+        self._populate_thumbnails()
+        self._load_image_path(self.browser_image_paths[0])
+        self._set_status(f"폴더 로드: {root.name}, 이미지 {len(self.browser_image_paths)}개")
+
+    def _load_image_path(self, path: str) -> None:
         image = read_image(path)
         if image is None:
             QMessageBox.warning(self, "열기 실패", "이미지를 읽을 수 없습니다.")
@@ -826,7 +887,124 @@ class MainWindow(QMainWindow):
         self._refresh_table()
         self._update_search_range_overlay()
         self._apply_visibility()
+        self._select_thumbnail(path)
         self._set_status(f"이미지 로드: {Path(path).name} ({image.shape[1]} x {image.shape[0]} px)")
+
+    def load_browser_image(self, path: str) -> None:
+        if path not in self.browser_image_paths:
+            return
+        self.current_browser_index = self.browser_image_paths.index(path)
+        self._load_image_path(path)
+
+    def load_relative_browser_image(self, delta: int) -> None:
+        if not self.browser_image_paths:
+            return
+        if self.current_browser_index < 0:
+            self.current_browser_index = 0
+        index = max(0, min(len(self.browser_image_paths) - 1, self.current_browser_index + delta))
+        if index == self.current_browser_index and self.image_path:
+            return
+        self.current_browser_index = index
+        self._load_image_path(self.browser_image_paths[index])
+
+    def _scan_folder_images(self, root: Path) -> list[Path]:
+        paths = [
+            path
+            for path in root.rglob("*")
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        ]
+        return sorted(paths, key=lambda path: (str(path.parent.relative_to(root)).lower(), path.name.lower()))
+
+    def _populate_thumbnails(self) -> None:
+        self._clear_thumbnail_layout()
+        self.thumbnail_buttons.clear()
+        if not self.browser_image_paths:
+            self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, 2)
+            self.thumbnail_empty_label.show()
+            return
+
+        self.thumbnail_empty_label.hide()
+        row = 0
+        current_folder: Optional[Path] = None
+        col = 0
+        for image_path in self.browser_image_paths:
+            path = Path(image_path)
+            folder = path.parent
+            if folder != current_folder:
+                if col != 0:
+                    row += 1
+                    col = 0
+                header_text = self._thumbnail_folder_label(folder)
+                header = QLabel(header_text)
+                header.setStyleSheet(
+                    "font-weight:600; padding:6px 4px; "
+                    "border-top:1px solid #555; color:#e8e8e8;"
+                )
+                self.thumbnail_layout.addWidget(header, row, 0, 1, 2)
+                row += 1
+                current_folder = folder
+                col = 0
+
+            button = QPushButton(path.name)
+            button.setCheckable(True)
+            button.setIcon(self._thumbnail_icon(path))
+            button.setIconSize(QSize(132, 96))
+            button.setFixedSize(160, 138)
+            button.setToolTip(str(path))
+            button.clicked.connect(lambda checked=False, selected_path=str(path): self.load_browser_image(selected_path))
+            self.thumbnail_layout.addWidget(button, row, col)
+            self.thumbnail_buttons[str(path)] = button
+            col += 1
+            if col >= 2:
+                row += 1
+                col = 0
+        self.thumbnail_layout.setRowStretch(row + 1, 1)
+        self._select_thumbnail(self.image_path)
+
+    def _clear_thumbnail_layout(self) -> None:
+        while self.thumbnail_layout.count():
+            item = self.thumbnail_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+
+    def _thumbnail_folder_label(self, folder: Path) -> str:
+        if self.browser_root is None:
+            return folder.name or str(folder)
+        try:
+            relative = folder.relative_to(self.browser_root)
+        except ValueError:
+            return str(folder)
+        if str(relative) == ".":
+            return self.browser_root.name
+        return f"{self.browser_root.name} / {relative}"
+
+    def _thumbnail_icon(self, path: Path) -> QIcon:
+        image = read_image(path)
+        if image is None:
+            pixmap = QPixmap(132, 96)
+            pixmap.fill(QColor("#333333"))
+            return QIcon(pixmap)
+        rgb = bgr_to_rgb8_for_display(image)
+        h, w = rgb.shape[:2]
+        qimage = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
+        pixmap = QPixmap.fromImage(qimage).scaled(
+            132,
+            96,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        return QIcon(pixmap)
+
+    def _select_thumbnail(self, path: Optional[str]) -> None:
+        for button_path, button in self.thumbnail_buttons.items():
+            checked = path is not None and button_path == path
+            button.setChecked(checked)
+            button.setStyleSheet(
+                "border:2px solid #4cc9f0; background:#263642;"
+                if checked
+                else ""
+            )
 
     def open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", "", "Angle Cal Project (*.anglecal.json)")
