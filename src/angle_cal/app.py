@@ -10,7 +10,7 @@ from typing import Optional
 
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QAction, QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QAction, QBrush, QColor, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -78,8 +78,7 @@ class AnnotationLineItem(QGraphicsLineItem):
         self.setPen(pen)
         self.setZValue(10 if record.kind != "guide" else 4)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-        if record.kind != "guide":
-            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
 
 
 class AnnotationCurveItem(QGraphicsPathItem):
@@ -147,6 +146,17 @@ class AngleCanvas(QGraphicsView):
         else:
             self.unsetCursor()
             self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+
+    def cancel_interaction(self) -> None:
+        if self._temp_line is not None:
+            self.scene.removeItem(self._temp_line)
+            self._temp_line = None
+        self._drawing_start = None
+        self._panning = False
+        if self.current_tool == "pan":
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            self.unsetCursor()
 
     def set_image(self, pixmap: QPixmap) -> None:
         self.scene.clear()
@@ -253,6 +263,19 @@ class AngleCanvas(QGraphicsView):
             if isinstance(item, (AnnotationLineItem, AnnotationCurveItem)):
                 ids.append(item.record_id)
         return ids
+
+    def selected_angle_items(self) -> list[QGraphicsPathItem | QGraphicsTextItem]:
+        selected = []
+        for item in self.scene.selectedItems():
+            if item in self.angle_items:
+                selected.append(item)
+        return selected
+
+    def remove_angle_items(self, items: list[QGraphicsPathItem | QGraphicsTextItem]) -> None:
+        for item in items:
+            if item in self.angle_items:
+                self.angle_items.remove(item)
+            self.scene.removeItem(item)
 
     def export_scene_png(self, path: str) -> None:
         rect = self.scene.sceneRect()
@@ -513,6 +536,16 @@ class MainWindow(QMainWindow):
         self.export_png_action.triggered.connect(self.export_annotated_png)
         self.export_csv_action = QAction("CSV 내보내기", self)
         self.export_csv_action.triggered.connect(self.export_csv)
+        self.select_tool_action = QAction("선택 도구", self)
+        self.select_tool_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        self.select_tool_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.select_tool_action.triggered.connect(self.activate_select_tool)
+        self.delete_action = QAction("선택 삭제", self)
+        self.delete_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
+        self.delete_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.delete_action.triggered.connect(self.delete_selected)
+        self.addAction(self.select_tool_action)
+        self.addAction(self.delete_action)
 
         file_menu = self.menuBar().addMenu("파일")
         file_menu.addAction(self.open_action)
@@ -1020,13 +1053,20 @@ class MainWindow(QMainWindow):
 
     def delete_selected(self) -> None:
         selected = set(self.canvas.selected_line_ids())
-        if not selected:
+        selected_angle_items = self.canvas.selected_angle_items()
+        if not selected and not selected_angle_items:
             return
         for record_id in selected:
             self.records.pop(record_id, None)
-        self.canvas.redraw_lines(list(self.records.values()))
-        self.calculate_angles()
-        self._update_search_range_overlay()
+        if selected:
+            self.canvas.redraw_lines(list(self.records.values()))
+            self.calculate_angles()
+            self._update_search_range_overlay()
+        elif selected_angle_items:
+            self.canvas.remove_angle_items(selected_angle_items)
+            self._refresh_table()
+        deleted_count = len(selected) + len(selected_angle_items)
+        self._set_status(f"{deleted_count}개 개체를 삭제했습니다.")
 
     def _show_image(self, keep_view: bool = False) -> None:
         if self.image_bgr is None:
@@ -1041,6 +1081,15 @@ class MainWindow(QMainWindow):
 
     def _tool_changed(self) -> None:
         self.canvas.set_tool(self.tool_combo.currentData())
+
+    def activate_select_tool(self) -> None:
+        self.canvas.cancel_interaction()
+        index = self.tool_combo.findData("select")
+        if index >= 0:
+            self.tool_combo.setCurrentIndex(index)
+        else:
+            self.canvas.set_tool("select")
+        self._set_status("선택 도구: 드래그 박스로 개체를 선택하고, Delete로 삭제할 수 있습니다.")
 
     def open_edge_detection_settings(self) -> None:
         dialog = EdgeDetectionSettingsDialog(
