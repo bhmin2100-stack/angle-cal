@@ -70,6 +70,9 @@ class LineRecord:
     points: Optional[list[Point]] = None
 
 
+ANGLE_GROUP_KEY = 1
+
+
 class AnnotationLineItem(QGraphicsLineItem):
     def __init__(self, record: LineRecord, pen: QPen):
         super().__init__(record.start[0], record.start[1], record.end[0], record.end[1])
@@ -115,6 +118,7 @@ def points_from_path_item(item: QGraphicsPathItem) -> list[Point]:
 class AngleCanvas(QGraphicsView):
     line_created = Signal(str, tuple, tuple)
     scene_changed = Signal()
+    scale_requested = Signal(float)
 
     def __init__(self):
         super().__init__()
@@ -130,6 +134,8 @@ class AngleCanvas(QGraphicsView):
         self.line_items: dict[str, AnnotationLineItem | AnnotationCurveItem] = {}
         self.angle_items: list[QGraphicsPathItem | QGraphicsTextItem] = []
         self.search_range_items: list[QGraphicsItem] = []
+        self.angle_groups: dict[str, list[QGraphicsItem]] = {}
+        self._angle_counter = 1
         self.search_range_radius_px = 35
         self.show_search_range = True
         self.current_tool = "select"
@@ -137,11 +143,18 @@ class AngleCanvas(QGraphicsView):
         self._temp_line: Optional[QGraphicsLineItem] = None
         self._panning = False
         self._pan_last = QPoint()
+        self._resizing = False
+        self._resize_last = QPoint()
+        self._expanding_angle_selection = False
+        self.scene.selectionChanged.connect(self._expand_angle_group_selection)
 
     def set_tool(self, tool: str) -> None:
         self.current_tool = tool
         if tool == "pan":
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        elif tool == "resize":
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
         else:
             self.unsetCursor()
@@ -153,8 +166,11 @@ class AngleCanvas(QGraphicsView):
             self._temp_line = None
         self._drawing_start = None
         self._panning = False
+        self._resizing = False
         if self.current_tool == "pan":
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self.current_tool == "resize":
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
         else:
             self.unsetCursor()
 
@@ -163,6 +179,7 @@ class AngleCanvas(QGraphicsView):
         self.line_items.clear()
         self.angle_items.clear()
         self.search_range_items.clear()
+        self.angle_groups.clear()
         self.pixmap_item = self.scene.addPixmap(pixmap)
         self.pixmap_item.setZValue(0)
         self.scene.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
@@ -232,16 +249,46 @@ class AngleCanvas(QGraphicsView):
         for item in self.angle_items:
             self.scene.removeItem(item)
         self.angle_items.clear()
+        self.angle_groups.clear()
 
-    def add_angle_arc(self, center: Point, angle_a: float, angle_b: float, radius: float = 28.0) -> None:
+    def add_angle_annotation(
+        self,
+        text: str,
+        label_pos: Point,
+        center: Optional[Point] = None,
+        angle_a: Optional[float] = None,
+        angle_b: Optional[float] = None,
+        radius: float = 28.0,
+    ) -> list[QGraphicsItem]:
+        group_id = f"A{self._angle_counter}"
+        self._angle_counter += 1
+        items: list[QGraphicsItem] = []
+        if center is not None and angle_a is not None and angle_b is not None:
+            items.append(self._create_angle_arc(center, angle_a, angle_b, radius, group_id))
+        items.append(self._create_angle_label(text, label_pos, group_id))
+        self.angle_groups[group_id] = items
+        return items
+
+    def _create_angle_arc(
+        self,
+        center: Point,
+        angle_a: float,
+        angle_b: float,
+        radius: float,
+        group_id: str,
+    ) -> QGraphicsPathItem:
         path = self._arc_path(center, angle_a, angle_b, radius)
         item = QGraphicsPathItem(path)
         item.setPen(QPen(QColor("#ffd166"), 2.0))
         item.setZValue(20)
+        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        item.setData(ANGLE_GROUP_KEY, group_id)
         self.scene.addItem(item)
         self.angle_items.append(item)
+        return item
 
-    def add_angle_label(self, text: str, pos: Point) -> QGraphicsTextItem:
+    def _create_angle_label(self, text: str, pos: Point, group_id: str) -> QGraphicsTextItem:
         item = QGraphicsTextItem()
         item.setHtml(
             "<div style='background-color:rgba(24,24,24,185);"
@@ -253,6 +300,7 @@ class AngleCanvas(QGraphicsView):
         item.setZValue(30)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        item.setData(ANGLE_GROUP_KEY, group_id)
         self.scene.addItem(item)
         self.angle_items.append(item)
         return item
@@ -265,9 +313,14 @@ class AngleCanvas(QGraphicsView):
         return ids
 
     def selected_angle_items(self) -> list[QGraphicsPathItem | QGraphicsTextItem]:
-        selected = []
+        selected: list[QGraphicsPathItem | QGraphicsTextItem] = []
+        group_ids = {item.data(ANGLE_GROUP_KEY) for item in self.scene.selectedItems() if item.data(ANGLE_GROUP_KEY)}
+        for group_id in group_ids:
+            for item in self.angle_groups.get(str(group_id), []):
+                if item in self.angle_items:
+                    selected.append(item)
         for item in self.scene.selectedItems():
-            if item in self.angle_items:
+            if item in self.angle_items and item not in selected:
                 selected.append(item)
         return selected
 
@@ -276,6 +329,38 @@ class AngleCanvas(QGraphicsView):
             if item in self.angle_items:
                 self.angle_items.remove(item)
             self.scene.removeItem(item)
+        self.angle_groups = {
+            group_id: [item for item in group_items if item in self.angle_items]
+            for group_id, group_items in self.angle_groups.items()
+        }
+        self.angle_groups = {group_id: items for group_id, items in self.angle_groups.items() if items}
+
+    def _expand_angle_group_selection(self) -> None:
+        if self._expanding_angle_selection:
+            return
+        selected_group_ids = {
+            item.data(ANGLE_GROUP_KEY)
+            for item in self.scene.selectedItems()
+            if item.data(ANGLE_GROUP_KEY)
+        }
+        if not selected_group_ids:
+            return
+        self._expanding_angle_selection = True
+        try:
+            for group_id in selected_group_ids:
+                for item in self.angle_groups.get(str(group_id), []):
+                    item.setSelected(True)
+        finally:
+            self._expanding_angle_selection = False
+
+    def selected_persistent_bounds(self) -> Optional[QRectF]:
+        items = [item for item in self.scene.selectedItems() if isinstance(item, (AnnotationLineItem, AnnotationCurveItem))]
+        if not items:
+            return None
+        rect = items[0].sceneBoundingRect()
+        for item in items[1:]:
+            rect = rect.united(item.sceneBoundingRect())
+        return rect
 
     def export_scene_png(self, path: str) -> None:
         rect = self.scene.sceneRect()
@@ -302,6 +387,12 @@ class AngleCanvas(QGraphicsView):
 
         if event.button() == Qt.MouseButton.LeftButton and self.current_tool == "pan":
             self._start_pan(event.pos())
+            event.accept()
+            return
+
+        if event.button() == Qt.MouseButton.LeftButton and self.current_tool == "resize":
+            self._resizing = True
+            self._resize_last = event.pos()
             event.accept()
             return
 
@@ -343,6 +434,15 @@ class AngleCanvas(QGraphicsView):
             )
             event.accept()
             return
+
+        if self._resizing:
+            delta = event.pos() - self._resize_last
+            self._resize_last = event.pos()
+            factor = 1.0 + (delta.x() + delta.y()) / 240.0
+            factor = max(0.2, min(5.0, factor))
+            self.scale_requested.emit(float(factor))
+            event.accept()
+            return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
@@ -355,6 +455,12 @@ class AngleCanvas(QGraphicsView):
             if self.current_tool == "pan":
                 self.setCursor(Qt.CursorShape.OpenHandCursor)
             event.accept()
+            return
+
+        if self._resizing and event.button() == Qt.MouseButton.LeftButton:
+            self._resizing = False
+            event.accept()
+            self.scene_changed.emit()
             return
 
         if self._temp_line is not None and self._drawing_start is not None:
@@ -454,6 +560,13 @@ def record_angle(record: LineRecord) -> float:
     return line_angle_degrees(points[0], points[-1])
 
 
+def scale_point(point: Point, center: Point, factor: float) -> Point:
+    return (
+        center[0] + (point[0] - center[0]) * factor,
+        center[1] + (point[1] - center[1]) * factor,
+    )
+
+
 def polyline_intersections(edge: LineRecord, guide_line: tuple[Point, Point]) -> list[tuple[Point, float]]:
     crosses: list[tuple[Point, float]] = []
     points = record_points(edge)
@@ -513,11 +626,20 @@ class MainWindow(QMainWindow):
         self.records: dict[str, LineRecord] = {}
         self._counter = 1
         self.last_measurements: list[dict[str, str | float]] = []
+        self.visibility: dict[str, bool] = {
+            "scale": True,
+            "reference": True,
+            "edge": True,
+            "guide": True,
+            "angle": True,
+            "range": True,
+        }
 
         self.canvas = AngleCanvas()
         self.setCentralWidget(self.canvas)
         self.canvas.line_created.connect(self._handle_line_created)
         self.canvas.scene_changed.connect(self._handle_scene_changed)
+        self.canvas.scale_requested.connect(self.scale_selected_objects)
 
         self._build_actions()
         self._build_toolbar()
@@ -564,6 +686,7 @@ class MainWindow(QMainWindow):
         self.tool_combo = QComboBox()
         self.tool_combo.addItem("선택", "select")
         self.tool_combo.addItem("이동", "pan")
+        self.tool_combo.addItem("크기 조절", "resize")
         self.tool_combo.addItem("스케일바", "scale")
         self.tool_combo.addItem("기준선", "reference")
         self.tool_combo.addItem("경계선", "edge")
@@ -660,6 +783,23 @@ class MainWindow(QMainWindow):
         controls.addWidget(delete_button)
         controls.addWidget(reset_button)
         layout.addLayout(controls)
+        layout.addStretch(1)
+        legend_label = QLabel("표시")
+        layout.addWidget(legend_label)
+        self.visibility_checkboxes: dict[str, QCheckBox] = {}
+        for key, label in [
+            ("scale", "스케일바"),
+            ("reference", "기준선"),
+            ("edge", "경계/곡선"),
+            ("guide", "가이드"),
+            ("angle", "각도 숫자/호"),
+            ("range", "인식 범위"),
+        ]:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(self.visibility[key])
+            checkbox.toggled.connect(lambda checked, item_key=key: self.set_visibility(item_key, checked))
+            self.visibility_checkboxes[key] = checkbox
+            layout.addWidget(checkbox)
         dock.setWidget(container)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
@@ -685,6 +825,7 @@ class MainWindow(QMainWindow):
         self._show_image()
         self._refresh_table()
         self._update_search_range_overlay()
+        self._apply_visibility()
         self._set_status(f"이미지 로드: {Path(path).name} ({image.shape[1]} x {image.shape[0]} px)")
 
     def open_project(self) -> None:
@@ -711,6 +852,12 @@ class MainWindow(QMainWindow):
             int(edge_detection.get("curve_sensitivity", self.curve_sensitivity_spin.value()))
         )
         self.show_search_range_checkbox.setChecked(bool(edge_detection.get("show_search_range", True)))
+        visibility = payload.get("visibility", {})
+        for key, visible in visibility.items():
+            if key in self.visibility:
+                self.visibility[key] = bool(visible)
+                if hasattr(self, "visibility_checkboxes") and key in self.visibility_checkboxes:
+                    self.visibility_checkboxes[key].setChecked(bool(visible))
         self.records = {}
         for item in payload.get("records", []):
             raw_points = item.get("points") or []
@@ -729,6 +876,7 @@ class MainWindow(QMainWindow):
         self.canvas.redraw_lines(list(self.records.values()))
         self._refresh_table()
         self._update_search_range_overlay()
+        self._apply_visibility()
         self._set_status(f"프로젝트 로드: {Path(path).name}")
 
     def save_project(self) -> None:
@@ -750,6 +898,7 @@ class MainWindow(QMainWindow):
                 "curve_sensitivity": self.curve_sensitivity_spin.value(),
                 "show_search_range": self.show_search_range_checkbox.isChecked(),
             },
+            "visibility": self.visibility,
             "counter": self._counter,
             "records": [asdict(record) for record in self.records.values()],
         }
@@ -809,6 +958,7 @@ class MainWindow(QMainWindow):
         self.canvas.redraw_lines(list(self.records.values()))
         self._refresh_table()
         self._update_search_range_overlay()
+        self._apply_visibility()
 
     def _create_scale_line(self, start: Point, end: Point) -> None:
         length_px = line_length(start, end)
@@ -898,6 +1048,7 @@ class MainWindow(QMainWindow):
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles()
         self._update_search_range_overlay()
+        self._apply_visibility()
         self._set_status(f"이미지를 {rotate_by:.3f}도 회전해 기준을 맞췄습니다.")
 
     def recognize_edges(self) -> None:
@@ -925,6 +1076,7 @@ class MainWindow(QMainWindow):
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles()
         self._update_search_range_overlay()
+        self._apply_visibility()
         self._set_status(f"{moved}/{len(edge_records)}개 경계선을 명도 변화 최대 위치를 따라 곡선으로 변환했습니다.")
 
     def add_guides(self) -> None:
@@ -970,6 +1122,7 @@ class MainWindow(QMainWindow):
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles()
         self._update_search_range_overlay()
+        self._apply_visibility()
         self._set_status(f"{orientation} 가이드 {count}개를 만들었습니다.")
 
     def clear_guides(self, redraw: bool = True) -> None:
@@ -980,6 +1133,7 @@ class MainWindow(QMainWindow):
             self.canvas.redraw_lines(list(self.records.values()))
             self._refresh_table()
             self._update_search_range_overlay()
+            self._apply_visibility()
             self._set_status("가이드를 지웠습니다.")
 
     def calculate_angles(self) -> None:
@@ -1005,7 +1159,7 @@ class MainWindow(QMainWindow):
             angle = acute_angle_difference(edge_angle, reference_angle)
             midpoint = ((edge.start[0] + edge.end[0]) / 2.0, (edge.start[1] + edge.end[1]) / 2.0)
             label_pos = self._label_position(midpoint, edge_angle, reference_angle, 34.0)
-            self.canvas.add_angle_label(f"{angle:.2f}°", label_pos)
+            self.canvas.add_angle_annotation(f"{angle:.2f}°", label_pos)
             length_px = record_length(edge)
             self.last_measurements.append(
                 {
@@ -1029,9 +1183,14 @@ class MainWindow(QMainWindow):
                 crosses = polyline_intersections(edge, guide_line)
                 for cross_idx, (cross, edge_angle) in enumerate(crosses, start=1):
                     angle = acute_angle_difference(edge_angle, guide_angle)
-                    self.canvas.add_angle_arc(cross, edge_angle, guide_angle)
                     label_pos = self._label_position(cross, edge_angle, guide_angle, 42.0)
-                    self.canvas.add_angle_label(f"{angle:.2f}°", label_pos)
+                    self.canvas.add_angle_annotation(
+                        f"{angle:.2f}°",
+                        label_pos,
+                        center=cross,
+                        angle_a=edge_angle,
+                        angle_b=guide_angle,
+                    )
                     length_px = record_length(edge)
                     suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
                     self.last_measurements.append(
@@ -1049,6 +1208,7 @@ class MainWindow(QMainWindow):
                         }
                     )
         self._refresh_table()
+        self._apply_visibility()
         self._set_status(f"각도 {len(self.last_measurements)}개를 계산했습니다. 숫자 라벨은 선택해서 옮길 수 있습니다.")
 
     def delete_selected(self) -> None:
@@ -1062,6 +1222,7 @@ class MainWindow(QMainWindow):
             self.canvas.redraw_lines(list(self.records.values()))
             self.calculate_angles()
             self._update_search_range_overlay()
+            self._apply_visibility()
         elif selected_angle_items:
             self.canvas.remove_angle_items(selected_angle_items)
             self._refresh_table()
@@ -1091,6 +1252,48 @@ class MainWindow(QMainWindow):
             self.canvas.set_tool("select")
         self._set_status("선택 도구: 드래그 박스로 개체를 선택하고, Delete로 삭제할 수 있습니다.")
 
+    def scale_selected_objects(self, factor: float) -> None:
+        self._sync_records_from_canvas()
+        selected_ids = set(self.canvas.selected_line_ids())
+        selected_angle_items = self.canvas.selected_angle_items()
+        if not selected_ids and not selected_angle_items:
+            return
+
+        bounds = self.canvas.selected_persistent_bounds()
+        if bounds is None and selected_angle_items:
+            bounds = selected_angle_items[0].sceneBoundingRect()
+            for item in selected_angle_items[1:]:
+                bounds = bounds.united(item.sceneBoundingRect())
+        if bounds is None or bounds.width() <= 0 and bounds.height() <= 0:
+            return
+
+        center = (bounds.center().x(), bounds.center().y())
+        if selected_ids:
+            for record_id in selected_ids:
+                record = self.records.get(record_id)
+                if record is None:
+                    continue
+                points = [scale_point(point, center, factor) for point in record_points(record)]
+                record.start = points[0]
+                record.end = points[-1]
+                if record.points:
+                    record.points = points
+            self.canvas.redraw_lines(list(self.records.values()))
+            for record_id in selected_ids:
+                item = self.canvas.line_items.get(record_id)
+                if item is not None:
+                    item.setSelected(True)
+
+        for item in selected_angle_items:
+            origin = item.mapFromScene(QPointF(center[0], center[1]))
+            item.setTransformOriginPoint(origin)
+            item.setScale(max(0.05, item.scale() * factor))
+            item.setSelected(True)
+
+        self._refresh_table()
+        self._update_search_range_overlay()
+        self._apply_visibility()
+
     def open_edge_detection_settings(self) -> None:
         dialog = EdgeDetectionSettingsDialog(
             self.search_radius_spin.value(),
@@ -1118,10 +1321,28 @@ class MainWindow(QMainWindow):
         self._sync_records_from_canvas()
         self.canvas.set_search_range(
             self.search_radius_spin.value(),
-            self.show_search_range_checkbox.isChecked(),
+            self.show_search_range_checkbox.isChecked() and self.visibility.get("range", True),
             list(self.records.values()),
             self._search_range_label(),
         )
+        self._apply_visibility()
+
+    def set_visibility(self, key: str, visible: bool) -> None:
+        self.visibility[key] = visible
+        if key == "range":
+            self._update_search_range_overlay()
+        else:
+            self._apply_visibility()
+
+    def _apply_visibility(self) -> None:
+        for record_id, item in self.canvas.line_items.items():
+            record = self.records.get(record_id)
+            if record is not None:
+                item.setVisible(self.visibility.get(record.kind, True))
+        for item in self.canvas.angle_items:
+            item.setVisible(self.visibility.get("angle", True))
+        for item in self.canvas.search_range_items:
+            item.setVisible(self.visibility.get("range", True))
 
     def _search_range_label(self) -> str:
         radius = self.search_radius_spin.value()
