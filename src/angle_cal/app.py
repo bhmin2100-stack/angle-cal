@@ -83,8 +83,9 @@ class AnnotationLineItem(QGraphicsLineItem):
         self.kind = record.kind
         self.setPen(pen)
         self.setZValue(10 if record.kind != "guide" else 4)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        if record.kind in {"edge", "scale"}:
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
 
 
 class AnnotationCurveItem(QGraphicsPathItem):
@@ -138,6 +139,7 @@ class AngleCanvas(QGraphicsView):
         self.angle_items: list[QGraphicsPathItem | QGraphicsTextItem] = []
         self.search_range_items: list[QGraphicsItem] = []
         self.angle_groups: dict[str, list[QGraphicsItem]] = {}
+        self.angle_group_parents: dict[str, str] = {}
         self._angle_counter = 1
         self.search_range_radius_px = 35
         self.show_search_range = True
@@ -183,6 +185,7 @@ class AngleCanvas(QGraphicsView):
         self.angle_items.clear()
         self.search_range_items.clear()
         self.angle_groups.clear()
+        self.angle_group_parents.clear()
         self.pixmap_item = self.scene.addPixmap(pixmap)
         self.pixmap_item.setZValue(0)
         self.scene.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
@@ -253,6 +256,7 @@ class AngleCanvas(QGraphicsView):
             self.scene.removeItem(item)
         self.angle_items.clear()
         self.angle_groups.clear()
+        self.angle_group_parents.clear()
 
     def add_angle_annotation(
         self,
@@ -262,6 +266,7 @@ class AngleCanvas(QGraphicsView):
         angle_a: Optional[float] = None,
         angle_b: Optional[float] = None,
         radius: float = 28.0,
+        parent_record_id: Optional[str] = None,
     ) -> list[QGraphicsItem]:
         group_id = f"A{self._angle_counter}"
         self._angle_counter += 1
@@ -270,6 +275,8 @@ class AngleCanvas(QGraphicsView):
             items.append(self._create_angle_arc(center, angle_a, angle_b, radius, group_id))
         items.append(self._create_angle_label(text, label_pos, group_id))
         self.angle_groups[group_id] = items
+        if parent_record_id is not None:
+            self.angle_group_parents[group_id] = parent_record_id
         return items
 
     def _create_angle_arc(
@@ -337,6 +344,11 @@ class AngleCanvas(QGraphicsView):
             for group_id, group_items in self.angle_groups.items()
         }
         self.angle_groups = {group_id: items for group_id, items in self.angle_groups.items() if items}
+        self.angle_group_parents = {
+            group_id: parent_id
+            for group_id, parent_id in self.angle_group_parents.items()
+            if group_id in self.angle_groups
+        }
 
     def _expand_angle_group_selection(self) -> None:
         if self._expanding_angle_selection:
@@ -854,7 +866,7 @@ class MainWindow(QMainWindow):
         self.browser_image_paths = [path]
         self.current_browser_index = 0
         self._populate_thumbnails()
-        self._load_image_path(path)
+        self._load_image_path(path, preserve_calibration=False)
 
     def open_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "폴더 열기", "")
@@ -869,18 +881,19 @@ class MainWindow(QMainWindow):
         self.browser_image_paths = [str(path) for path in image_paths]
         self.current_browser_index = 0
         self._populate_thumbnails()
-        self._load_image_path(self.browser_image_paths[0])
+        self._load_image_path(self.browser_image_paths[0], preserve_calibration=True)
         self._set_status(f"폴더 로드: {root.name}, 이미지 {len(self.browser_image_paths)}개")
 
-    def _load_image_path(self, path: str) -> None:
+    def _load_image_path(self, path: str, preserve_calibration: bool = False) -> None:
         image = read_image(path)
         if image is None:
             QMessageBox.warning(self, "열기 실패", "이미지를 읽을 수 없습니다.")
             return
+        previous_nm_per_px = self.nm_per_px
         self.image_bgr = image
         self.image_path = path
         self.project_path = None
-        self.nm_per_px = None
+        self.nm_per_px = previous_nm_per_px if preserve_calibration else None
         self.records.clear()
         self._counter = 1
         self._show_image()
@@ -888,13 +901,14 @@ class MainWindow(QMainWindow):
         self._update_search_range_overlay()
         self._apply_visibility()
         self._select_thumbnail(path)
-        self._set_status(f"이미지 로드: {Path(path).name} ({image.shape[1]} x {image.shape[0]} px)")
+        calibration_text = f", calibration 유지: {self.nm_per_px:.6g} nm/px" if self.nm_per_px else ""
+        self._set_status(f"이미지 로드: {Path(path).name} ({image.shape[1]} x {image.shape[0]} px){calibration_text}")
 
     def load_browser_image(self, path: str) -> None:
         if path not in self.browser_image_paths:
             return
         self.current_browser_index = self.browser_image_paths.index(path)
-        self._load_image_path(path)
+        self._load_image_path(path, preserve_calibration=True)
 
     def load_relative_browser_image(self, delta: int) -> None:
         if not self.browser_image_paths:
@@ -905,7 +919,7 @@ class MainWindow(QMainWindow):
         if index == self.current_browser_index and self.image_path:
             return
         self.current_browser_index = index
-        self._load_image_path(self.browser_image_paths[index])
+        self._load_image_path(self.browser_image_paths[index], preserve_calibration=True)
 
     def _scan_folder_images(self, root: Path) -> list[Path]:
         paths = [
@@ -1337,7 +1351,7 @@ class MainWindow(QMainWindow):
             angle = acute_angle_difference(edge_angle, reference_angle)
             midpoint = ((edge.start[0] + edge.end[0]) / 2.0, (edge.start[1] + edge.end[1]) / 2.0)
             label_pos = self._label_position(midpoint, edge_angle, reference_angle, 34.0)
-            self.canvas.add_angle_annotation(f"{angle:.2f}°", label_pos)
+            self.canvas.add_angle_annotation(f"{angle:.2f}°", label_pos, parent_record_id=edge.id)
             length_px = record_length(edge)
             self.last_measurements.append(
                 {
@@ -1368,6 +1382,7 @@ class MainWindow(QMainWindow):
                         center=cross,
                         angle_a=edge_angle,
                         angle_b=guide_angle,
+                        parent_record_id=edge.id,
                     )
                     length_px = record_length(edge)
                     suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
