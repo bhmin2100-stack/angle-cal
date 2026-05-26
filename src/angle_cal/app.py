@@ -731,6 +731,7 @@ class MainWindow(QMainWindow):
         self.axis_combo = QComboBox()
         self.axis_combo.addItem("수평 기준", "horizontal")
         self.axis_combo.addItem("수직 기준", "vertical")
+        self.axis_combo.currentIndexChanged.connect(self._axis_changed)
         toolbar.addWidget(QLabel(" 기준 "))
         toolbar.addWidget(self.axis_combo)
 
@@ -1192,7 +1193,7 @@ class MainWindow(QMainWindow):
             label="horizontal" if axis == "horizontal" else "vertical",
         )
         self.records[record.id] = record
-        self._set_status("기준선을 만들었습니다. 필요하면 '이미지 맞춤'을 누르세요.")
+        self._set_status("기준선을 만들었습니다. 기준 토글을 바꾼 뒤 '이미지 맞춤'으로 수평/수직 전환할 수 있습니다.")
 
     def _create_edge_line(self, start: Point, end: Point) -> None:
         record = LineRecord(
@@ -1215,6 +1216,8 @@ class MainWindow(QMainWindow):
         if reference is None:
             QMessageBox.information(self, "이미지 맞춤", "먼저 기준선을 그려주세요.")
             return
+        reference.axis = self.axis_combo.currentData()
+        reference.label = "horizontal" if reference.axis == "horizontal" else "vertical"
         angle = line_angle_degrees(reference.start, reference.end)
         target = 0.0 if reference.axis == "horizontal" else 90.0
         rotate_by = angle - target
@@ -1435,6 +1438,17 @@ class MainWindow(QMainWindow):
 
     def _tool_changed(self) -> None:
         self.canvas.set_tool(self.tool_combo.currentData())
+
+    def _axis_changed(self) -> None:
+        if not hasattr(self, "tool_combo") or self.tool_combo.currentData() != "reference":
+            return
+        reference = self._reference_record()
+        if reference is None:
+            return
+        reference.axis = self.axis_combo.currentData()
+        reference.label = "horizontal" if reference.axis == "horizontal" else "vertical"
+        self._refresh_table()
+        self._set_status("기준선 축을 바꿨습니다. '이미지 맞춤'을 누르면 새 축 기준으로 정렬됩니다.")
 
     def activate_select_tool(self) -> None:
         self.canvas.cancel_interaction()
