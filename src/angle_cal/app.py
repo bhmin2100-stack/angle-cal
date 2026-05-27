@@ -145,6 +145,7 @@ class AngleCanvas(QGraphicsView):
         self.line_items: dict[str, AnnotationLineItem | AnnotationCurveItem] = {}
         self.angle_items: list[QGraphicsPathItem | QGraphicsTextItem] = []
         self.search_range_items: list[QGraphicsItem] = []
+        self.detection_preview_items: list[QGraphicsItem] = []
         self.angle_groups: dict[str, list[QGraphicsItem]] = {}
         self.angle_group_parents: dict[str, str] = {}
         self._angle_counter = 1
@@ -191,6 +192,7 @@ class AngleCanvas(QGraphicsView):
         self.line_items.clear()
         self.angle_items.clear()
         self.search_range_items.clear()
+        self.detection_preview_items.clear()
         self.angle_groups.clear()
         self.angle_group_parents.clear()
         self.pixmap_item = self.scene.addPixmap(pixmap)
@@ -221,6 +223,78 @@ class AngleCanvas(QGraphicsView):
         self.search_range_radius_px = radius_px
         self.show_search_range = visible
         self.update_search_range_overlay(records, range_label)
+
+    def show_detection_preview(self, radius_px: int, segment_value: int, range_label: str) -> None:
+        self.clear_detection_preview()
+        if self.pixmap_item is None:
+            return
+        rect = self.scene.sceneRect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+        width = min(190.0, max(120.0, rect.width() * 0.22))
+        height = 72.0
+        left = rect.right() - width - 14.0
+        top = rect.top() + 14.0
+        panel = QGraphicsPolygonItem(
+            QPolygonF(
+                [
+                    QPointF(left, top),
+                    QPointF(left + width, top),
+                    QPointF(left + width, top + height),
+                    QPointF(left, top + height),
+                ]
+            )
+        )
+        panel.setBrush(QBrush(QColor(18, 24, 28, 185)))
+        panel.setPen(QPen(QColor(76, 201, 240, 190), 1.0))
+        panel.setZValue(60)
+        self.scene.addItem(panel)
+        self.detection_preview_items.append(panel)
+
+        center_y = top + height * 0.56
+        line_start = (left + 22.0, center_y)
+        line_end = (left + width - 22.0, center_y)
+        radius = min(float(radius_px), height * 0.32)
+        band = QGraphicsPolygonItem(
+            QPolygonF(
+                [
+                    QPointF(line_start[0], center_y - radius),
+                    QPointF(line_end[0], center_y - radius),
+                    QPointF(line_end[0], center_y + radius),
+                    QPointF(line_start[0], center_y + radius),
+                ]
+            )
+        )
+        band.setBrush(QBrush(QColor(0, 220, 110, 54)))
+        band.setPen(QPen(QColor(0, 220, 110, 210), 1.0, Qt.PenStyle.DashLine))
+        band.setZValue(61)
+        self.scene.addItem(band)
+        self.detection_preview_items.append(band)
+
+        segment_count = max(3, min(14, int(round(segment_value / 8))))
+        segment_width = (line_end[0] - line_start[0]) / segment_count
+        for idx in range(segment_count + 1):
+            x = line_start[0] + idx * segment_width
+            tick = QGraphicsLineItem(x, center_y - radius - 4.0, x, center_y + radius + 4.0)
+            tick.setPen(QPen(QColor("#ffd166"), 1.0))
+            tick.setZValue(62)
+            self.scene.addItem(tick)
+            self.detection_preview_items.append(tick)
+
+        label = QGraphicsTextItem()
+        label.setHtml(
+            "<div style='color:white; font-size:10pt;'>"
+            f"경계인식 범위 {range_label}<br>세그먼트 크기 {segment_value}</div>"
+        )
+        label.setPos(left + 8.0, top + 5.0)
+        label.setZValue(63)
+        self.scene.addItem(label)
+        self.detection_preview_items.append(label)
+
+    def clear_detection_preview(self) -> None:
+        for item in self.detection_preview_items:
+            self.scene.removeItem(item)
+        self.detection_preview_items.clear()
 
     def update_search_range_overlay(self, records: list[LineRecord], range_label: str) -> None:
         for item in self.search_range_items:
@@ -623,13 +697,13 @@ class EdgeDetectionSettingsDialog(QDialog):
         self.sensitivity_spin.setRange(1, 100)
         self.sensitivity_spin.setValue(sensitivity)
 
-        self.overlay_checkbox = QCheckBox("이미지 위에 탐색 범위 표시")
+        self.overlay_checkbox = QCheckBox("이미지 위에 경계인식 범위 표시")
         self.overlay_checkbox.setChecked(show_overlay)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
-        form.addRow("명도 탐색 반경", self.radius_spin)
-        form.addRow("곡선 민감도", self.sensitivity_spin)
+        form.addRow("경계인식 범위", self.radius_spin)
+        form.addRow("세그먼트 크기", self.sensitivity_spin)
         layout.addLayout(form)
         layout.addWidget(self.overlay_checkbox)
 
@@ -782,14 +856,14 @@ class MainWindow(QMainWindow):
         self.search_radius_spin.setValue(35)
         self.search_radius_spin.setSuffix(" px")
         self.search_radius_spin.valueChanged.connect(self._edge_detection_settings_changed)
-        detect_toolbar.addWidget(QLabel("탐색"))
+        detect_toolbar.addWidget(QLabel("경계인식 범위"))
         detect_toolbar.addWidget(self.search_radius_spin)
 
         self.curve_sensitivity_spin = QSpinBox()
         self.curve_sensitivity_spin.setRange(1, 100)
         self.curve_sensitivity_spin.setValue(65)
         self.curve_sensitivity_spin.valueChanged.connect(self._edge_detection_settings_changed)
-        detect_toolbar.addWidget(QLabel("곡선"))
+        detect_toolbar.addWidget(QLabel("세그먼트 크기"))
         detect_toolbar.addWidget(self.curve_sensitivity_spin)
 
         self.show_search_range_checkbox = QCheckBox("범위 표시")
@@ -1722,12 +1796,13 @@ class MainWindow(QMainWindow):
 
     def _edge_detection_settings_changed(self) -> None:
         self._update_search_range_overlay()
+        self._show_detection_preview()
         radius = self.search_radius_spin.value()
         sensitivity = self.curve_sensitivity_spin.value()
         if self.show_search_range_checkbox.isChecked():
-            self._set_status(f"명도 인식 탐색 범위: 경계선 양쪽 {radius}px, 곡선 민감도 {sensitivity}")
+            self._set_status(f"경계인식 범위: 경계선 양쪽 {radius}px, 세그먼트 크기 {sensitivity}")
         else:
-            self._set_status(f"명도 인식 탐색 범위: 경계선 양쪽 {radius}px, 곡선 민감도 {sensitivity}, 표시 꺼짐")
+            self._set_status(f"경계인식 범위: 경계선 양쪽 {radius}px, 세그먼트 크기 {sensitivity}, 표시 꺼짐")
 
     def _update_search_range_overlay(self) -> None:
         self._sync_records_from_canvas()
@@ -1762,6 +1837,13 @@ class MainWindow(QMainWindow):
         if self.nm_per_px:
             return f"±{radius}px / {width}px ({width * self.nm_per_px:.3g} nm)"
         return f"±{radius}px / {width}px"
+
+    def _show_detection_preview(self) -> None:
+        self.canvas.show_detection_preview(
+            self.search_radius_spin.value(),
+            self.curve_sensitivity_spin.value(),
+            self._search_range_label(),
+        )
 
     def _handle_scene_changed(self) -> None:
         self._refresh_table()
