@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGridLayout,
     QFileDialog,
+    QFrame,
     QGraphicsEllipseItem,
     QGraphicsLineItem,
     QGraphicsPathItem,
@@ -80,6 +81,7 @@ class LineRecord:
     angle_label_side: str = "outside"
     angle_label_gap: float = 14.0
     edge_segmented: bool = False
+    show_line: bool = True
     show_angle: bool = True
     show_range: bool = True
     show_range_label: bool = True
@@ -1266,6 +1268,7 @@ def clone_record(record: LineRecord) -> LineRecord:
         angle_label_side=record.angle_label_side,
         angle_label_gap=record.angle_label_gap,
         edge_segmented=record.edge_segmented,
+        show_line=record.show_line,
         show_angle=record.show_angle,
         show_range=record.show_range,
         show_range_label=record.show_range_label,
@@ -1297,6 +1300,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         angle_label_side=item.get("angle_label_side", "outside"),
         angle_label_gap=float(item.get("angle_label_gap", 14.0)),
         edge_segmented=bool(item.get("edge_segmented", bool(raw_points and len(raw_points) > 6))),
+        show_line=bool(item.get("show_line", True)),
         show_angle=bool(item.get("show_angle", True)),
         show_range=bool(item.get("show_range", True)),
         show_range_label=bool(item.get("show_range_label", True)),
@@ -1878,9 +1882,15 @@ class MainWindow(QMainWindow):
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
         container = QWidget()
         layout = QVBoxLayout(container)
-        visibility_layout = QHBoxLayout()
+        visibility_layout = QGridLayout()
+        visibility_layout.setContentsMargins(0, 0, 0, 0)
+        visibility_layout.setHorizontalSpacing(10)
         global_visibility_layout = QVBoxLayout()
         object_visibility_layout = QVBoxLayout()
+        global_visibility_layout.setContentsMargins(0, 0, 0, 0)
+        object_visibility_layout.setContentsMargins(0, 0, 0, 0)
+        global_visibility_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        object_visibility_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         global_title = QLabel("전체 표시")
         object_title = QLabel("선택 개체 표시")
         global_title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -1908,6 +1918,7 @@ class MainWindow(QMainWindow):
 
         self.object_visibility_checkboxes: dict[str, QCheckBox] = {}
         for key, label in [
+            ("show_line", "경계선"),
             ("show_angle", "각도 숫자/호"),
             ("show_edge_length", "경계 길이"),
             ("show_range", "인식 범위 영역"),
@@ -1918,8 +1929,15 @@ class MainWindow(QMainWindow):
             checkbox.stateChanged.connect(lambda state, item_key=key: self.set_selected_object_visibility(item_key, state))
             self.object_visibility_checkboxes[key] = checkbox
             object_visibility_layout.addWidget(checkbox)
-        visibility_layout.addLayout(global_visibility_layout)
-        visibility_layout.addLayout(object_visibility_layout)
+
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        visibility_layout.addLayout(global_visibility_layout, 0, 0, Qt.AlignmentFlag.AlignTop)
+        visibility_layout.addWidget(separator, 0, 1)
+        visibility_layout.addLayout(object_visibility_layout, 0, 2, Qt.AlignmentFlag.AlignTop)
+        visibility_layout.setColumnStretch(0, 1)
+        visibility_layout.setColumnStretch(2, 1)
         layout.addLayout(visibility_layout)
         layout.addStretch(1)
         self._update_object_visibility_controls()
@@ -3447,6 +3465,8 @@ class MainWindow(QMainWindow):
         elif key in {"show_range", "show_range_label"}:
             self._update_search_range_overlay()
             self._apply_visibility()
+        elif key == "show_line":
+            self._apply_visibility()
         self._update_object_visibility_controls()
         self._set_status(f"선택 경계선 {len(selected_edges)}개의 표시 기준을 바꿨습니다.")
 
@@ -3454,7 +3474,7 @@ class MainWindow(QMainWindow):
         for record_id, item in self.canvas.line_items.items():
             record = self.records.get(record_id)
             if record is not None:
-                visible = self.visibility.get(record.kind, True)
+                visible = self.visibility.get(record.kind, True) and getattr(record, "show_line", True)
                 if record.kind == "edge" and self.force_edge_visible:
                     visible = True
                 item.setVisible(visible)

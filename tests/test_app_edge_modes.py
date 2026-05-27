@@ -524,6 +524,24 @@ def test_selected_object_visibility_can_be_mixed_and_applied():
         window.close()
 
 
+def test_selected_object_visibility_can_hide_selected_edge_line():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((40.0, 20.0), (40.0, 100.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        item = window.canvas.line_items[edge.id]
+        item.setSelected(True)
+
+        checkbox = window.object_visibility_checkboxes["show_line"]
+        checkbox.setCheckState(Qt.CheckState.Unchecked)
+
+        assert edge.show_line is False
+        assert item.isVisible() is False
+    finally:
+        window.close()
+
+
 def test_ctrl_pan_restore_returns_to_edge_cursor():
     window = _window_with_edge_image()
     try:
