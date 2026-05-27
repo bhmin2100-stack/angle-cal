@@ -355,6 +355,20 @@ def test_edge_length_overlay_uses_calibration_and_visibility():
         window.close()
 
 
+def test_edge_length_overlay_skips_polyline_edges():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
+        window._create_edge_line((40.0, 20.0), (70.0, 60.0), [(40.0, 20.0), (55.0, 40.0), (70.0, 60.0)])
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window._update_edge_length_overlay()
+
+        assert len(window.canvas.edge_length_items) == 0
+    finally:
+        window.close()
+
+
 def test_selected_object_visibility_can_be_mixed_and_applied():
     window = _window_with_edge_image()
     try:

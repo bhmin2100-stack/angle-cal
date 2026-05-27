@@ -48,7 +48,7 @@ def test_snap_line_to_gradient_curve_follows_curved_edge():
         boundary_x = int(round(82 + 10 * math.sin((y - 20) / 18)))
         image[y, boundary_x:] = 255
 
-    result = snap_line_to_gradient_curve(image, (70, 15), (70, 125), search_radius_px=30, sensitivity=90)
+    result = snap_line_to_gradient_curve(image, (70, 15), (70, 125), search_radius_px=30, segment_size_px=5)
 
     assert result is not None
     xs = np.array([point[0] for point in result.points])
@@ -67,7 +67,7 @@ def test_snap_polyline_to_gradient_uses_drawn_connected_segments():
         image,
         [(50, 15), (70, 70), (95, 125)],
         search_radius_px=25,
-        sensitivity=80,
+        segment_size_px=7,
     )
 
     assert result is not None

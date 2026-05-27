@@ -454,7 +454,7 @@ class AngleCanvas(QGraphicsView):
         self.scene.addItem(band)
         self.detection_preview_items.append(band)
 
-        segment_count = max(3, min(14, int(round(segment_value / 8))))
+        segment_count = max(3, min(24, int(round((line_end[0] - line_start[0]) / max(2, segment_value)))))
         segment_width = (line_end[0] - line_start[0]) / segment_count
         for idx in range(segment_count + 1):
             x = line_start[0] + idx * segment_width
@@ -467,7 +467,7 @@ class AngleCanvas(QGraphicsView):
         label = QGraphicsTextItem()
         label.setHtml(
             "<div style='color:white; font-size:10pt;'>"
-            f"경계인식 범위 {range_label}<br>세그먼트 크기 {segment_value}</div>"
+            f"경계인식 범위 {range_label}<br>세그먼트 크기 {segment_value}px</div>"
         )
         label.setPos(left + 8.0, top + 5.0)
         label.setZValue(63)
@@ -546,6 +546,8 @@ class AngleCanvas(QGraphicsView):
             return
         for record in records:
             if record.kind != "edge":
+                continue
+            if record.edge_mode == "polyline" or (record.points and len(record.points) > 2):
                 continue
             if not record.show_edge_length:
                 continue
@@ -1147,6 +1149,10 @@ def points_close(a: Point, b: Point, tolerance: float = 6.0) -> bool:
     return line_length(a, b) <= tolerance
 
 
+def legacy_sensitivity_to_segment_size_px(value: int | float) -> int:
+    return int(round(max(2.0, min(80.0, 18.0 - float(value) * 0.14))))
+
+
 def offset_point(point: Point, dx: float, dy: float) -> Point:
     return (point[0] + dx, point[1] + dy)
 
@@ -1295,7 +1301,7 @@ class EdgeDetectionSettingsDialog(QDialog):
     def __init__(
         self,
         radius_px: int,
-        sensitivity: int,
+        segment_size_px: int,
         show_overlay: bool,
         parent: Optional[QWidget] = None,
     ):
@@ -1309,8 +1315,9 @@ class EdgeDetectionSettingsDialog(QDialog):
         self.radius_spin.setSuffix(" px")
 
         self.sensitivity_spin = QSpinBox()
-        self.sensitivity_spin.setRange(1, 100)
-        self.sensitivity_spin.setValue(sensitivity)
+        self.sensitivity_spin.setRange(2, 80)
+        self.sensitivity_spin.setValue(segment_size_px)
+        self.sensitivity_spin.setSuffix(" px")
 
         self.overlay_checkbox = QCheckBox("이미지 위에 경계인식 범위 표시")
         self.overlay_checkbox.setChecked(show_overlay)
@@ -1558,8 +1565,9 @@ class MainWindow(QMainWindow):
         detect_toolbar.addWidget(self.search_radius_spin)
 
         self.curve_sensitivity_spin = QSpinBox()
-        self.curve_sensitivity_spin.setRange(1, 100)
-        self.curve_sensitivity_spin.setValue(65)
+        self.curve_sensitivity_spin.setRange(2, 80)
+        self.curve_sensitivity_spin.setValue(9)
+        self.curve_sensitivity_spin.setSuffix(" px")
         self.curve_sensitivity_spin.valueChanged.connect(self._edge_detection_settings_changed)
         detect_toolbar.addWidget(QLabel("세그먼트 크기"))
         detect_toolbar.addWidget(self.curve_sensitivity_spin)
@@ -1986,9 +1994,10 @@ class MainWindow(QMainWindow):
         if mode_index >= 0:
             self.edge_mode_combo.setCurrentIndex(mode_index)
         self.search_radius_spin.setValue(int(edge_detection.get("search_radius_px", self.search_radius_spin.value())))
-        self.curve_sensitivity_spin.setValue(
-            int(edge_detection.get("curve_sensitivity", self.curve_sensitivity_spin.value()))
-        )
+        segment_size_px = edge_detection.get("segment_size_px")
+        if segment_size_px is None and "curve_sensitivity" in edge_detection:
+            segment_size_px = legacy_sensitivity_to_segment_size_px(edge_detection["curve_sensitivity"])
+        self.curve_sensitivity_spin.setValue(int(segment_size_px or self.curve_sensitivity_spin.value()))
         self.show_search_range_checkbox.setChecked(bool(edge_detection.get("show_search_range", True)))
         cd_mode = payload.get("cd_segment_mode")
         cd_index = self.cd_segment_combo.findData(cd_mode)
@@ -2041,7 +2050,7 @@ class MainWindow(QMainWindow):
             "edge_detection": {
                 "edge_mode": self.edge_mode_combo.currentData(),
                 "search_radius_px": self.search_radius_spin.value(),
-                "curve_sensitivity": self.curve_sensitivity_spin.value(),
+                "segment_size_px": self.curve_sensitivity_spin.value(),
                 "show_search_range": self.show_search_range_checkbox.isChecked(),
             },
             "visibility": self.visibility,
@@ -2329,7 +2338,7 @@ class MainWindow(QMainWindow):
             return
         gray = to_gray(self.image_bgr)
         radius = self.search_radius_spin.value()
-        sensitivity = self.curve_sensitivity_spin.value()
+        segment_size_px = self.curve_sensitivity_spin.value()
         moved = 0
         for chain in self._connected_edge_chains(edge_records):
             if len(chain) == 1 and chain[0][0].edge_mode == "line":
@@ -2346,7 +2355,7 @@ class MainWindow(QMainWindow):
                 continue
 
             source_points = self._chain_points(chain)
-            result = snap_polyline_to_gradient(gray, source_points, radius, sensitivity)
+            result = snap_polyline_to_gradient(gray, source_points, radius, segment_size_px)
             if result is None:
                 continue
             self._apply_snapped_chain(chain, source_points, result.points)
@@ -3067,11 +3076,11 @@ class MainWindow(QMainWindow):
         if self.sender() in {self.curve_sensitivity_spin, None}:
             self._show_detection_preview()
         radius = self.search_radius_spin.value()
-        sensitivity = self.curve_sensitivity_spin.value()
+        segment_size_px = self.curve_sensitivity_spin.value()
         if self.show_search_range_checkbox.isChecked():
-            self._set_status(f"경계인식 범위: 경계선 양쪽 {radius}px, 세그먼트 크기 {sensitivity}")
+            self._set_status(f"경계인식 범위: 경계선 양쪽 {radius}px, 세그먼트 크기 {segment_size_px}px")
         else:
-            self._set_status(f"경계인식 범위: 경계선 양쪽 {radius}px, 세그먼트 크기 {sensitivity}, 표시 꺼짐")
+            self._set_status(f"경계인식 범위: 경계선 양쪽 {radius}px, 세그먼트 크기 {segment_size_px}px, 표시 꺼짐")
 
     def _update_search_range_overlay(self) -> None:
         self._sync_records_from_canvas()

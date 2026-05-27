@@ -221,9 +221,9 @@ def snap_line_to_gradient_curve(
     start: Point,
     end: Point,
     search_radius_px: int = 30,
-    sensitivity: int = 65,
+    segment_size_px: float = 9.0,
 ) -> Optional[SnapCurveResult]:
-    return snap_polyline_to_gradient(gray, [start, end], search_radius_px, sensitivity)
+    return snap_polyline_to_gradient(gray, [start, end], search_radius_px, segment_size_px)
 
 
 def _resample_polyline(points: Sequence[Point], step_px: float) -> list[Point]:
@@ -260,23 +260,19 @@ def snap_polyline_to_gradient(
     gray: np.ndarray,
     points: Sequence[Point],
     search_radius_px: int = 30,
-    sensitivity: int = 65,
+    segment_size_px: float = 9.0,
 ) -> Optional[SnapCurveResult]:
     """Trace a connected polyline boundary near user-drawn connected segments.
 
-    Sensitivity controls both point density and smoothing. Higher values follow
-    local brightness changes more closely; lower values smooth the resulting
-    boundary.
+    Segment size is the target distance in pixels between recognition points.
+    Smaller values create denser segments and follow local changes more closely.
     """
     if search_radius_px <= 0:
         return None
     if len(points) < 2:
         return None
 
-    sensitivity = int(np.clip(sensitivity, 1, 100))
-
-    step_px = 18.0 - sensitivity * 0.14
-    step_px = float(np.clip(step_px, 3.0, 18.0))
+    step_px = float(np.clip(segment_size_px, 2.0, 80.0))
     sampled_points = _resample_polyline(points, step_px)
     if len(sampled_points) < 2:
         return None
@@ -342,7 +338,7 @@ def snap_polyline_to_gradient(
         best_offsets = np.interp(np.arange(point_count), valid_x, best_offsets[finite_offsets]).astype(np.float32)
         strengths = np.interp(np.arange(point_count), valid_x, strengths[finite_offsets]).astype(np.float32)
 
-    smoothing_window = int(round((101 - sensitivity) / 14.0)) * 2 + 1
+    smoothing_window = int(round(step_px / 4.0)) * 2 + 1
     smoothing_window = int(np.clip(smoothing_window, 1, 15))
     if smoothing_window > 1:
         kernel = np.ones(smoothing_window, dtype=np.float32) / smoothing_window
