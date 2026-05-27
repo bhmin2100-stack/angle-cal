@@ -1769,7 +1769,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(self.thumbnail_container)
         container_layout.addWidget(scroll)
         dock.setWidget(container)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
     def open_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
