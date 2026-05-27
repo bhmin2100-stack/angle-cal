@@ -3067,42 +3067,6 @@ class MainWindow(QMainWindow):
         guides = [record for record in self.records.values() if record.kind == "guide"]
         for edge in edges:
             if has_segmented_edge_angle(edge):
-                length_px = record_length(edge)
-                for segment_idx, (segment_start, segment_end) in enumerate(
-                    zip(record_points(edge), record_points(edge)[1:]),
-                    start=1,
-                ):
-                    if line_length(segment_start, segment_end) < 1:
-                        continue
-                    segment_angle = line_angle_degrees(segment_start, segment_end)
-                    angle = acute_angle_difference(segment_angle, reference_angle)
-                    midpoint = (
-                        (segment_start[0] + segment_end[0]) / 2.0,
-                        (segment_start[1] + segment_end[1]) / 2.0,
-                    )
-                    label_pos = self._label_position(midpoint, segment_angle, reference_angle, 22.0)
-                    measurement_id = f"{edge.id}_seg{segment_idx}_to_{reference_name}"
-                    if edge.show_angle and measurement_id not in self.hidden_angle_measurements:
-                        self.canvas.add_angle_annotation(
-                            f"{angle:.2f}°",
-                            label_pos,
-                            parent_record_id=edge.id,
-                            measurement_id=measurement_id,
-                        )
-                    self.last_measurements.append(
-                        {
-                            "measurement": measurement_id,
-                            "edge_id": edge.id,
-                            "guide_id": "",
-                            "kind": "edge_segment_to_reference",
-                            "x_px": midpoint[0],
-                            "y_px": midpoint[1],
-                            "angle_deg": angle,
-                            "edge_length_px": length_px,
-                            "edge_length_nm": length_px * self.nm_per_px if self.nm_per_px else "",
-                            "nm_per_px": self.nm_per_px if self.nm_per_px else "",
-                        }
-                    )
                 continue
             edge_angle = record_angle(edge)
             angle = acute_angle_difference(edge_angle, reference_angle)

@@ -101,7 +101,7 @@ def test_recognize_converts_polyline_mode_to_connected_segments():
         window.close()
 
 
-def test_segmented_edge_shows_segment_reference_angles_after_recognition():
+def test_segmented_edge_does_not_show_reference_angles_after_recognition():
     window = _window_with_edge_image()
     try:
         window._create_reference_line((10.0, 10.0), (100.0, 10.0))
@@ -111,10 +111,36 @@ def test_segmented_edge_shows_segment_reference_angles_after_recognition():
 
         window.calculate_angles()
 
-        edge = next(record for record in window.records.values() if record.kind == "edge")
-        assert len(window.canvas.angle_items) == len(edge.points) - 1
+        assert len(window.canvas.angle_items) == 0
         assert not [row for row in window.last_measurements if row["kind"] == "edge_to_reference"]
-        assert [row for row in window.last_measurements if row["kind"] == "edge_segment_to_reference"]
+        assert not [row for row in window.last_measurements if row["kind"] == "edge_segment_to_reference"]
+        assert not [row for row in window.last_measurements if row["kind"] == "edge_guide_intersection"]
+    finally:
+        window.close()
+
+
+def test_segmented_edge_shows_only_guide_intersection_angles():
+    window = _window_with_edge_image()
+    try:
+        window._create_reference_line((10.0, 10.0), (100.0, 10.0))
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
+        window.records["G99"] = LineRecord(
+            id="G99",
+            kind="guide",
+            start=(10.0, 50.0),
+            end=(140.0, 50.0),
+            label="guide",
+            axis="horizontal",
+        )
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.calculate_angles()
+
+        assert not [row for row in window.last_measurements if row["kind"] == "edge_segment_to_reference"]
+        guide_rows = [row for row in window.last_measurements if row["kind"] == "edge_guide_intersection"]
+        assert len(guide_rows) == 1
+        assert len(window.canvas.angle_items) >= 2
     finally:
         window.close()
 
