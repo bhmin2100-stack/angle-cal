@@ -710,6 +710,32 @@ def test_undo_restores_keyboard_move_and_delete():
         window.close()
 
 
+def test_point_handle_drag_undo_is_coalesced_to_one_step():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.canvas.refresh_point_handles()
+        handle = window.canvas.point_handle_items[0]
+
+        window.canvas.edit_started.emit()
+        handle.setPos(22.0, 61.0)
+        handle.setPos(25.0, 65.0)
+        window._sync_records_from_canvas()
+
+        assert len(window.undo_stack) == 1
+        assert window.records[edge.id].start == (25.0, 65.0)
+
+        window.undo()
+
+        assert window.records[edge.id].start == (20.0, 60.0)
+        assert window.records[edge.id].end == (120.0, 60.0)
+    finally:
+        window.close()
+
+
 def test_undo_restores_angle_label_move():
     window = _window_with_edge_image()
     try:

@@ -369,7 +369,6 @@ class AngleCanvas(QGraphicsView):
             return
         self._updating_from_point_handle = True
         try:
-            self.edit_started.emit()
             scene_pos = handle.scenePos()
             owner = handle.owner
             if isinstance(owner, AnnotationLineItem):
