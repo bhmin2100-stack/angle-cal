@@ -86,6 +86,13 @@ class ScalePreset:
     nm_per_px: float
 
 
+@dataclass
+class StructureTemplate:
+    name: str
+    records: list[LineRecord]
+    cd_segment_mode: str = "all"
+
+
 ANGLE_GROUP_KEY = 1
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
@@ -841,6 +848,49 @@ def clone_record(record: LineRecord) -> LineRecord:
     )
 
 
+def line_record_from_dict(item: dict) -> LineRecord:
+    raw_points = item.get("points") or []
+    record_edge_mode = item.get("edge_mode")
+    if record_edge_mode not in {"line", "curve"}:
+        record_edge_mode = "curve" if raw_points else "line"
+    return LineRecord(
+        id=item["id"],
+        kind=item["kind"],
+        start=tuple(item["start"]),
+        end=tuple(item["end"]),
+        label=item.get("label", ""),
+        axis=item.get("axis", "horizontal"),
+        value_nm=item.get("value_nm"),
+        points=[tuple(point) for point in raw_points] or None,
+        edge_mode=record_edge_mode,
+        angle_sector=int(item.get("angle_sector", 0)),
+        angle_arc_radius=float(item.get("angle_arc_radius", 28.0)),
+        angle_label_side=item.get("angle_label_side", "outside"),
+        angle_label_gap=float(item.get("angle_label_gap", 14.0)),
+    )
+
+
+def structure_template_from_dict(item: dict) -> StructureTemplate:
+    records = [
+        line_record_from_dict(record)
+        for record in item.get("records", [])
+        if record.get("kind") in {"edge", "guide"}
+    ]
+    return StructureTemplate(
+        name=item.get("name", "구조"),
+        records=records,
+        cd_segment_mode=item.get("cd_segment_mode", "all"),
+    )
+
+
+def structure_template_to_dict(template: StructureTemplate) -> dict:
+    return {
+        "name": template.name,
+        "cd_segment_mode": template.cd_segment_mode,
+        "records": [asdict(record) for record in template.records],
+    }
+
+
 def angle_sector_geometry(angle_a: float, angle_b: float, sector_index: int) -> tuple[float, float, float]:
     rays = sorted(
         [
@@ -1015,6 +1065,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_columns = 2
         self.current_tool = "select"
         self.scale_presets: list[ScalePreset] = []
+        self.structure_templates: list[StructureTemplate] = []
         self.record_clipboard: list[LineRecord] = []
         self._paste_offset_steps = 0
         self.visibility: dict[str, bool] = {
@@ -1071,6 +1122,14 @@ class MainWindow(QMainWindow):
         self.paste_action.setShortcut(QKeySequence.StandardKey.Paste)
         self.paste_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.paste_action.triggered.connect(self.paste_parent_objects)
+        self.save_structure_action = QAction("구조 저장", self)
+        self.save_structure_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.save_structure_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.save_structure_action.triggered.connect(self.save_current_structure_template)
+        self.paste_structure_action = QAction("구조 붙여넣기", self)
+        self.paste_structure_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
+        self.paste_structure_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.paste_structure_action.triggered.connect(self.paste_selected_structure_template)
         self.previous_image_action = QAction("이전 이미지", self)
         self.previous_image_action.setShortcut(QKeySequence(Qt.Key.Key_PageUp))
         self.previous_image_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -1083,6 +1142,8 @@ class MainWindow(QMainWindow):
         self.addAction(self.delete_action)
         self.addAction(self.copy_action)
         self.addAction(self.paste_action)
+        self.addAction(self.save_structure_action)
+        self.addAction(self.paste_structure_action)
         self.addAction(self.previous_image_action)
         self.addAction(self.next_image_action)
         self.scale_preset_actions: list[QAction] = []
@@ -1216,6 +1277,23 @@ class MainWindow(QMainWindow):
         guide_toolbar.addWidget(angle_button)
         guide_toolbar.addWidget(angle_settings_button)
         guide_toolbar.addWidget(cd_button)
+
+        structure_toolbar = self._new_toolbar("구조")
+        self.structure_combo = QComboBox()
+        self.structure_combo.addItem("구조 선택", -1)
+        structure_toolbar.addWidget(self.structure_combo)
+        structure_toolbar.addWidget(self._button_for_action(self.save_structure_action))
+        structure_paste_button = self._button_for_action(self.paste_structure_action)
+        structure_toolbar.addWidget(structure_paste_button)
+        structure_export_button = QPushButton("구조 공유")
+        structure_export_button.clicked.connect(self.export_selected_structure_template)
+        structure_import_button = QPushButton("구조 가져오기")
+        structure_import_button.clicked.connect(self.import_structure_template)
+        structure_delete_button = QPushButton("구조 삭제")
+        structure_delete_button.clicked.connect(self.delete_selected_structure_template)
+        structure_toolbar.addWidget(structure_export_button)
+        structure_toolbar.addWidget(structure_import_button)
+        structure_toolbar.addWidget(structure_delete_button)
 
     def _new_toolbar(self, title: str) -> QToolBar:
         toolbar = QToolBar(title)
@@ -1557,27 +1635,15 @@ class MainWindow(QMainWindow):
             if "nm_per_px" in item
         ][:9]
         self._refresh_scale_preset_table()
+        self.structure_templates = [
+            template
+            for template in (structure_template_from_dict(item) for item in payload.get("structure_templates", []))
+            if template.records
+        ]
+        self._refresh_structure_combo()
         self.records = {}
         for item in payload.get("records", []):
-            raw_points = item.get("points") or []
-            record_edge_mode = item.get("edge_mode")
-            if record_edge_mode not in {"line", "curve"}:
-                record_edge_mode = "curve" if raw_points else "line"
-            self.records[item["id"]] = LineRecord(
-                id=item["id"],
-                kind=item["kind"],
-                start=tuple(item["start"]),
-                end=tuple(item["end"]),
-                label=item.get("label", ""),
-                axis=item.get("axis", "horizontal"),
-                value_nm=item.get("value_nm"),
-                points=[tuple(point) for point in raw_points] or None,
-                edge_mode=record_edge_mode,
-                angle_sector=int(item.get("angle_sector", 0)),
-                angle_arc_radius=float(item.get("angle_arc_radius", 28.0)),
-                angle_label_side=item.get("angle_label_side", "outside"),
-                angle_label_gap=float(item.get("angle_label_gap", 14.0)),
-            )
+            self.records[item["id"]] = line_record_from_dict(item)
         self._counter = payload.get("counter", len(self.records) + 1)
         self._show_image()
         self.canvas.redraw_lines(list(self.records.values()))
@@ -1609,6 +1675,7 @@ class MainWindow(QMainWindow):
             "visibility": self.visibility,
             "cd_segment_mode": self.cd_segment_combo.currentData(),
             "scale_presets": [asdict(preset) for preset in self.scale_presets],
+            "structure_templates": [structure_template_to_dict(template) for template in self.structure_templates],
             "counter": self._counter,
             "records": [asdict(record) for record in self.records.values()],
         }
@@ -1791,6 +1858,18 @@ class MainWindow(QMainWindow):
         self.scale_preset_table.resizeColumnsToContents()
         if select_row is not None and 0 <= select_row < len(self.scale_presets):
             self.scale_preset_table.selectRow(select_row)
+
+    def _refresh_structure_combo(self, select_index: Optional[int] = None) -> None:
+        if not hasattr(self, "structure_combo"):
+            return
+        self.structure_combo.blockSignals(True)
+        self.structure_combo.clear()
+        self.structure_combo.addItem("구조 선택", -1)
+        for idx, template in enumerate(self.structure_templates):
+            self.structure_combo.addItem(template.name, idx)
+        if select_index is not None and 0 <= select_index < len(self.structure_templates):
+            self.structure_combo.setCurrentIndex(select_index + 1)
+        self.structure_combo.blockSignals(False)
 
     def _create_reference_line(self, start: Point, end: Point) -> None:
         for record_id in [rid for rid, record in self.records.items() if record.kind == "reference"]:
@@ -2025,6 +2104,136 @@ class MainWindow(QMainWindow):
                 created += 1
         self._apply_visibility()
         self._set_status(f"CD 길이 {created}개를 표시했습니다.")
+
+    def save_current_structure_template(self) -> None:
+        self._sync_records_from_canvas()
+        selected_ids = set(self.canvas.selected_line_ids())
+        selected_edges = [
+            clone_record(record)
+            for record_id, record in self.records.items()
+            if record.kind == "edge" and (not selected_ids or record_id in selected_ids)
+        ]
+        guides = [clone_record(record) for record in self.records.values() if record.kind == "guide"]
+        if not selected_edges:
+            QMessageBox.information(self, "구조 저장", "저장할 경계선이 없습니다. 경계선을 선택하거나 먼저 그려주세요.")
+            return
+        current_index = self.structure_combo.currentData() if hasattr(self, "structure_combo") else -1
+        default_name = ""
+        if isinstance(current_index, int) and 0 <= current_index < len(self.structure_templates):
+            default_name = self.structure_templates[current_index].name
+        if not default_name:
+            default_name = f"구조 {len(self.structure_templates) + 1}"
+        name, ok = QInputDialog.getText(self, "구조 저장", "구조 이름", text=default_name)
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        template = StructureTemplate(
+            name=name,
+            records=selected_edges + guides,
+            cd_segment_mode=str(self.cd_segment_combo.currentData()),
+        )
+        replace_index = next((idx for idx, item in enumerate(self.structure_templates) if item.name == name), None)
+        if replace_index is None:
+            self.structure_templates.append(template)
+            replace_index = len(self.structure_templates) - 1
+        else:
+            self.structure_templates[replace_index] = template
+        self._refresh_structure_combo(replace_index)
+        self._set_status(f"구조 저장: {name} (경계 {len(selected_edges)}개, 가이드 {len(guides)}개)")
+
+    def paste_selected_structure_template(self) -> None:
+        if self.image_bgr is None:
+            return
+        template = self._selected_structure_template()
+        if template is None:
+            QMessageBox.information(self, "구조 붙여넣기", "먼저 구조 드롭다운에서 불러올 구조를 선택하세요.")
+            return
+        self._sync_records_from_canvas()
+        has_guides = any(record.kind == "guide" for record in self.records.values())
+        new_ids: list[str] = []
+        added_edges = 0
+        added_guides = 0
+        for source in template.records:
+            if source.kind == "guide" and has_guides:
+                continue
+            record = clone_record(source)
+            prefix = "G" if record.kind == "guide" else "E"
+            record.id = self._next_id(prefix)
+            self.records[record.id] = record
+            new_ids.append(record.id)
+            if record.kind == "guide":
+                added_guides += 1
+            elif record.kind == "edge":
+                added_edges += 1
+        mode_index = self.cd_segment_combo.findData(template.cd_segment_mode)
+        if mode_index >= 0:
+            self.cd_segment_combo.setCurrentIndex(mode_index)
+        self.canvas.redraw_lines(list(self.records.values()))
+        self.canvas.scene.clearSelection()
+        for record_id in new_ids:
+            item = self.canvas.line_items.get(record_id)
+            if item is not None and self.records.get(record_id, None) and self.records[record_id].kind == "edge":
+                item.setSelected(True)
+        if any(record.kind == "guide" for record in self.records.values()) and len(
+            [record for record in self.records.values() if record.kind == "edge"]
+        ) >= 2:
+            self.calculate_cd_lengths()
+        else:
+            self.calculate_angles()
+        self._update_search_range_overlay()
+        self._apply_visibility()
+        skipped = " 기존 가이드를 유지했습니다." if has_guides else ""
+        self._set_status(f"구조 붙여넣기: {template.name} (경계 {added_edges}개, 가이드 {added_guides}개).{skipped}")
+
+    def export_selected_structure_template(self) -> None:
+        template = self._selected_structure_template()
+        if template is None:
+            QMessageBox.information(self, "구조 공유", "공유할 구조를 먼저 선택하세요.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "구조 공유", f"{template.name}.anglecal.structure.json", "Angle Cal Structure (*.anglecal.structure.json)")
+        if not path:
+            return
+        if not path.endswith(".anglecal.structure.json"):
+            path += ".anglecal.structure.json"
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(structure_template_to_dict(template), handle, ensure_ascii=False, indent=2)
+        self._set_status(f"구조 공유 파일 저장: {Path(path).name}")
+
+    def import_structure_template(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "구조 가져오기", "", "Angle Cal Structure (*.anglecal.structure.json *.json)")
+        if not path:
+            return
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        template = structure_template_from_dict(payload)
+        if not template.records:
+            QMessageBox.warning(self, "구조 가져오기", "구조 파일에 경계선이나 가이드가 없습니다.")
+            return
+        replace_index = next((idx for idx, item in enumerate(self.structure_templates) if item.name == template.name), None)
+        if replace_index is None:
+            self.structure_templates.append(template)
+            replace_index = len(self.structure_templates) - 1
+        else:
+            self.structure_templates[replace_index] = template
+        self._refresh_structure_combo(replace_index)
+        self._set_status(f"구조 가져오기: {template.name}")
+
+    def delete_selected_structure_template(self) -> None:
+        index = self.structure_combo.currentData() if hasattr(self, "structure_combo") else -1
+        if not isinstance(index, int) or not (0 <= index < len(self.structure_templates)):
+            return
+        name = self.structure_templates[index].name
+        del self.structure_templates[index]
+        self._refresh_structure_combo()
+        self._set_status(f"구조 삭제: {name}")
+
+    def _selected_structure_template(self) -> Optional[StructureTemplate]:
+        index = self.structure_combo.currentData() if hasattr(self, "structure_combo") else -1
+        if isinstance(index, int) and 0 <= index < len(self.structure_templates):
+            return self.structure_templates[index]
+        return None
 
     def edit_angle_display_for_selected_edges(self) -> None:
         self._sync_records_from_canvas()

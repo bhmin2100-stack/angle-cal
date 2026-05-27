@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PySide6.QtWidgets import QApplication
 
-from angle_cal.app import LineRecord, MainWindow
+from angle_cal.app import LineRecord, MainWindow, StructureTemplate, structure_template_from_dict, structure_template_to_dict
 
 
 def _app():
@@ -160,3 +160,52 @@ def test_cd_length_modes_measure_adjacent_edge_intersections():
         assert "_2_" in cd_rows[0]["measurement"]
     finally:
         window.close()
+
+
+def test_structure_template_paste_skips_guides_when_current_image_has_guides():
+    window = _window_with_edge_image()
+    try:
+        template = StructureTemplate(
+            name="Line Space",
+            cd_segment_mode="odd",
+            records=[
+                LineRecord("E_old_1", "edge", (40.0, 10.0), (40.0, 110.0)),
+                LineRecord("E_old_2", "edge", (80.0, 10.0), (80.0, 110.0)),
+                LineRecord("G_old", "guide", (0.0, 60.0), (150.0, 60.0), axis="horizontal"),
+            ],
+        )
+        window.structure_templates = [template]
+        window._refresh_structure_combo(0)
+        window.records["G_existing"] = LineRecord(
+            "G_existing",
+            "guide",
+            (0.0, 50.0),
+            (150.0, 50.0),
+            axis="horizontal",
+        )
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.paste_selected_structure_template()
+
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        guides = [record for record in window.records.values() if record.kind == "guide"]
+        assert len(edges) == 2
+        assert len(guides) == 1
+        assert window.cd_segment_combo.currentData() == "odd"
+        assert len([row for row in window.last_measurements if row["kind"] == "cd_length"]) == 1
+    finally:
+        window.close()
+
+
+def test_structure_template_round_trip_dict():
+    template = StructureTemplate(
+        name="CD pair",
+        cd_segment_mode="even",
+        records=[LineRecord("E1", "edge", (1.0, 2.0), (3.0, 4.0), angle_sector=2)],
+    )
+
+    loaded = structure_template_from_dict(structure_template_to_dict(template))
+
+    assert loaded.name == "CD pair"
+    assert loaded.cd_segment_mode == "even"
+    assert loaded.records[0].angle_sector == 2
