@@ -198,6 +198,7 @@ class AngleCanvas(QGraphicsView):
     scene_changed = Signal()
     scale_requested = Signal(float)
     edit_started = Signal()
+    edge_peek_changed = Signal(bool)
 
     def __init__(self):
         super().__init__()
@@ -935,6 +936,10 @@ class AngleCanvas(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802
+        if not event.isAutoRepeat() and event.key() == Qt.Key.Key_Space:
+            self.edge_peek_changed.emit(True)
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
             if self.delete_selected_point_handles():
                 event.accept()
@@ -964,6 +969,10 @@ class AngleCanvas(QGraphicsView):
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):  # noqa: N802
+        if not event.isAutoRepeat() and event.key() == Qt.Key.Key_Space:
+            self.edge_peek_changed.emit(False)
+            event.accept()
+            return
         if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W, Qt.Key.Key_E):
             self._selection_filter = None
             event.accept()
@@ -1434,6 +1443,7 @@ class MainWindow(QMainWindow):
         self.undo_stack: list[dict] = []
         self._restoring_undo = False
         self._updating_object_visibility_controls = False
+        self.force_edge_visible = False
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -1453,6 +1463,7 @@ class MainWindow(QMainWindow):
         self.canvas.scene_changed.connect(self._handle_scene_changed)
         self.canvas.scale_requested.connect(self.scale_selected_objects)
         self.canvas.edit_started.connect(self.save_undo_snapshot)
+        self.canvas.edge_peek_changed.connect(self.set_edge_peek)
         self.detection_preview_timer = QTimer(self)
         self.detection_preview_timer.setSingleShot(True)
         self.detection_preview_timer.timeout.connect(self.canvas.clear_detection_preview)
@@ -3296,6 +3307,10 @@ class MainWindow(QMainWindow):
         else:
             self._apply_visibility()
 
+    def set_edge_peek(self, visible: bool) -> None:
+        self.force_edge_visible = visible
+        self._apply_visibility()
+
     def _selected_edge_records(self) -> list[LineRecord]:
         return [
             self.records[record_id]
@@ -3352,7 +3367,10 @@ class MainWindow(QMainWindow):
         for record_id, item in self.canvas.line_items.items():
             record = self.records.get(record_id)
             if record is not None:
-                item.setVisible(self.visibility.get(record.kind, True))
+                visible = self.visibility.get(record.kind, True)
+                if record.kind == "edge" and self.force_edge_visible:
+                    visible = True
+                item.setVisible(visible)
         for item in self.canvas.angle_items:
             item.setVisible(self.visibility.get("angle", True))
         for item in self.canvas.cd_items:

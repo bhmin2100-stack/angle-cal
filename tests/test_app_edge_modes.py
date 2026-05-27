@@ -161,6 +161,26 @@ def test_search_range_band_and_label_visibility_are_independent():
         window.close()
 
 
+def test_space_temporarily_shows_hidden_edges():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        item = window.canvas.line_items[edge.id]
+
+        window.set_visibility("edge", False)
+        assert not item.isVisible()
+
+        window.set_edge_peek(True)
+        assert item.isVisible()
+
+        window.set_edge_peek(False)
+        assert not item.isVisible()
+    finally:
+        window.close()
+
+
 def test_copy_paste_duplicates_parent_edge_without_angle_children():
     window = _window_with_edge_image()
     try:
