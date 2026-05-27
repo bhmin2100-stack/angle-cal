@@ -899,15 +899,6 @@ class MainWindow(QMainWindow):
             self.scale_preset_actions.append(action)
             self.addAction(action)
 
-        file_menu = self.menuBar().addMenu("파일")
-        file_menu.addAction(self.open_action)
-        file_menu.addAction(self.open_folder_action)
-        file_menu.addAction(self.open_project_action)
-        file_menu.addAction(self.save_project_action)
-        file_menu.addSeparator()
-        file_menu.addAction(self.export_png_action)
-        file_menu.addAction(self.export_csv_action)
-
     def _build_toolbar(self) -> None:
         file_toolbar = self._new_toolbar("파일")
         for action in [self.open_action, self.open_folder_action, self.open_project_action, self.save_project_action]:
