@@ -13,6 +13,7 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -646,6 +647,7 @@ class MainWindow(QMainWindow):
         self.current_browser_index = -1
         self.thumbnail_buttons: dict[str, QPushButton] = {}
         self.thumbnail_columns = 2
+        self.current_tool = "select"
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -715,58 +717,85 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Tools")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
-        toolbar.addAction(self.open_action)
-        toolbar.addAction(self.open_folder_action)
+        toolbar.setFloatable(False)
 
-        self.tool_combo = QComboBox()
-        self.tool_combo.addItem("선택", "select")
-        self.tool_combo.addItem("이동", "pan")
-        self.tool_combo.addItem("크기 조절", "resize")
-        self.tool_combo.addItem("스케일바", "scale")
-        self.tool_combo.addItem("기준선", "reference")
-        self.tool_combo.addItem("경계선", "edge")
-        self.tool_combo.currentIndexChanged.connect(self._tool_changed)
-        toolbar.addWidget(QLabel(" 도구 "))
-        toolbar.addWidget(self.tool_combo)
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(4, 3, 4, 3)
+        panel_layout.setSpacing(4)
+        file_row = QHBoxLayout()
+        file_row.setSpacing(4)
+        tool_row = QHBoxLayout()
+        tool_row.setSpacing(4)
+
+        for action in [
+            self.open_action,
+            self.open_folder_action,
+            self.open_project_action,
+            self.save_project_action,
+            self.export_png_action,
+            self.export_csv_action,
+        ]:
+            file_row.addWidget(self._button_for_action(action))
+        file_row.addStretch(1)
+
+        self.tool_buttons: dict[str, QPushButton] = {}
+        self.tool_button_group = QButtonGroup(self)
+        self.tool_button_group.setExclusive(True)
+        for label, tool in [
+            ("선택", "select"),
+            ("이동", "pan"),
+            ("크기 조절", "resize"),
+            ("스케일바", "scale"),
+            ("기준선", "reference"),
+            ("경계선", "edge"),
+        ]:
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked=False, selected_tool=tool: self.set_current_tool(selected_tool))
+            self.tool_button_group.addButton(button)
+            self.tool_buttons[tool] = button
+            tool_row.addWidget(button)
+        self.tool_buttons["select"].setChecked(True)
 
         self.axis_combo = QComboBox()
         self.axis_combo.addItem("수평 기준", "horizontal")
         self.axis_combo.addItem("수직 기준", "vertical")
         self.axis_combo.currentIndexChanged.connect(self._axis_changed)
-        toolbar.addWidget(QLabel(" 기준 "))
-        toolbar.addWidget(self.axis_combo)
+        tool_row.addWidget(QLabel(" 기준 "))
+        tool_row.addWidget(self.axis_combo)
 
         align_button = QPushButton("이미지 맞춤")
         align_button.clicked.connect(self.align_to_reference)
-        toolbar.addWidget(align_button)
+        tool_row.addWidget(align_button)
 
         self.search_radius_spin = QSpinBox()
         self.search_radius_spin.setRange(2, 300)
         self.search_radius_spin.setValue(35)
         self.search_radius_spin.setSuffix(" px")
         self.search_radius_spin.valueChanged.connect(self._edge_detection_settings_changed)
-        toolbar.addWidget(QLabel(" 탐색 "))
-        toolbar.addWidget(self.search_radius_spin)
+        tool_row.addWidget(QLabel(" 탐색 "))
+        tool_row.addWidget(self.search_radius_spin)
 
         self.curve_sensitivity_spin = QSpinBox()
         self.curve_sensitivity_spin.setRange(1, 100)
         self.curve_sensitivity_spin.setValue(65)
         self.curve_sensitivity_spin.valueChanged.connect(self._edge_detection_settings_changed)
-        toolbar.addWidget(QLabel(" 곡선 "))
-        toolbar.addWidget(self.curve_sensitivity_spin)
+        tool_row.addWidget(QLabel(" 곡선 "))
+        tool_row.addWidget(self.curve_sensitivity_spin)
 
         self.show_search_range_checkbox = QCheckBox("범위 표시")
         self.show_search_range_checkbox.setChecked(True)
         self.show_search_range_checkbox.toggled.connect(self._edge_detection_settings_changed)
-        toolbar.addWidget(self.show_search_range_checkbox)
+        tool_row.addWidget(self.show_search_range_checkbox)
 
         settings_button = QPushButton("인식 설정")
         settings_button.clicked.connect(self.open_edge_detection_settings)
-        toolbar.addWidget(settings_button)
+        tool_row.addWidget(settings_button)
 
         recognize_button = QPushButton("인식")
         recognize_button.clicked.connect(self.recognize_edges)
-        toolbar.addWidget(recognize_button)
+        tool_row.addWidget(recognize_button)
 
         self.guide_orientation_combo = QComboBox()
         self.guide_orientation_combo.addItem("수평선", "horizontal")
@@ -781,13 +810,12 @@ class MainWindow(QMainWindow):
         self.guide_offset_spin.setRange(0, 100000)
         self.guide_offset_spin.setValue(0)
         self.guide_offset_spin.setSuffix(" px")
-        toolbar.addSeparator()
-        toolbar.addWidget(QLabel(" 가이드 "))
-        toolbar.addWidget(self.guide_orientation_combo)
-        toolbar.addWidget(self.guide_spacing_spin)
-        toolbar.addWidget(self.guide_spacing_unit)
-        toolbar.addWidget(QLabel(" 시작 "))
-        toolbar.addWidget(self.guide_offset_spin)
+        tool_row.addWidget(QLabel(" 가이드 "))
+        tool_row.addWidget(self.guide_orientation_combo)
+        tool_row.addWidget(self.guide_spacing_spin)
+        tool_row.addWidget(self.guide_spacing_unit)
+        tool_row.addWidget(QLabel(" 시작 "))
+        tool_row.addWidget(self.guide_offset_spin)
 
         add_guides_button = QPushButton("그리기")
         add_guides_button.clicked.connect(self.add_guides)
@@ -795,9 +823,19 @@ class MainWindow(QMainWindow):
         clear_guides_button.clicked.connect(self.clear_guides)
         angle_button = QPushButton("각도 계산")
         angle_button.clicked.connect(self.calculate_angles)
-        toolbar.addWidget(add_guides_button)
-        toolbar.addWidget(clear_guides_button)
-        toolbar.addWidget(angle_button)
+        tool_row.addWidget(add_guides_button)
+        tool_row.addWidget(clear_guides_button)
+        tool_row.addWidget(angle_button)
+        tool_row.addStretch(1)
+
+        panel_layout.addLayout(file_row)
+        panel_layout.addLayout(tool_row)
+        toolbar.addWidget(panel)
+
+    def _button_for_action(self, action: QAction) -> QPushButton:
+        button = QPushButton(action.text())
+        button.clicked.connect(action.trigger)
+        return button
 
     def _build_measurements_dock(self) -> None:
         dock = QDockWidget("측정값", self)
@@ -1463,11 +1501,14 @@ class MainWindow(QMainWindow):
         if keep_view and transform is not None:
             self.canvas.setTransform(transform)
 
-    def _tool_changed(self) -> None:
-        self.canvas.set_tool(self.tool_combo.currentData())
+    def set_current_tool(self, tool: str) -> None:
+        self.current_tool = tool
+        self.canvas.set_tool(tool)
+        if hasattr(self, "tool_buttons") and tool in self.tool_buttons:
+            self.tool_buttons[tool].setChecked(True)
 
     def _axis_changed(self) -> None:
-        if not hasattr(self, "tool_combo") or self.tool_combo.currentData() != "reference":
+        if self.current_tool != "reference":
             return
         reference = self._reference_record()
         if reference is None:
@@ -1479,11 +1520,7 @@ class MainWindow(QMainWindow):
 
     def activate_select_tool(self) -> None:
         self.canvas.cancel_interaction()
-        index = self.tool_combo.findData("select")
-        if index >= 0:
-            self.tool_combo.setCurrentIndex(index)
-        else:
-            self.canvas.set_tool("select")
+        self.set_current_tool("select")
         self._set_status("선택 도구: 드래그 박스로 개체를 선택하고, Delete로 삭제할 수 있습니다.")
 
     def scale_selected_objects(self, factor: float) -> None:
