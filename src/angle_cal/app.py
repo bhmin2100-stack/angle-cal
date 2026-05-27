@@ -73,6 +73,12 @@ class LineRecord:
     points: Optional[list[Point]] = None
 
 
+@dataclass
+class ScalePreset:
+    name: str
+    nm_per_px: float
+
+
 ANGLE_GROUP_KEY = 1
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
@@ -532,7 +538,10 @@ class AngleCanvas(QGraphicsView):
             "guide": "#f7fff7",
         }
         width = 1.2 if record.kind == "guide" else 2.2
-        pen = QPen(QColor(colors.get(record.kind, "#ffffff")), width)
+        color = QColor(colors.get(record.kind, "#ffffff"))
+        if record.kind == "reference":
+            color.setAlpha(128)
+        pen = QPen(color, width)
         if record.kind == "guide":
             pen.setStyle(Qt.PenStyle.DotLine)
         return pen
@@ -648,6 +657,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_buttons: dict[str, QPushButton] = {}
         self.thumbnail_columns = 2
         self.current_tool = "select"
+        self.scale_presets: list[ScalePreset] = []
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -666,6 +676,7 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_toolbar()
         self._build_measurements_dock()
+        self._build_scale_preset_dock()
         self._build_thumbnail_dock()
         self.setStatusBar(QStatusBar())
         self._set_status("이미지를 불러오면 시작할 수 있습니다.")
@@ -703,6 +714,14 @@ class MainWindow(QMainWindow):
         self.addAction(self.delete_action)
         self.addAction(self.previous_image_action)
         self.addAction(self.next_image_action)
+        self.scale_preset_actions: list[QAction] = []
+        for idx in range(9):
+            action = QAction(f"스케일 프리셋 {idx + 1}", self)
+            action.setShortcut(QKeySequence(str(idx + 1)))
+            action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            action.triggered.connect(lambda checked=False, slot=idx: self.apply_scale_preset(slot))
+            self.scale_preset_actions.append(action)
+            self.addAction(action)
 
         file_menu = self.menuBar().addMenu("파일")
         file_menu.addAction(self.open_action)
@@ -714,30 +733,16 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.export_csv_action)
 
     def _build_toolbar(self) -> None:
-        toolbar = QToolBar("Tools")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-        toolbar.setFloatable(False)
+        file_toolbar = self._new_toolbar("파일")
+        for action in [self.open_action, self.open_folder_action, self.open_project_action, self.save_project_action]:
+            file_toolbar.addWidget(self._button_for_action(action))
 
-        panel = QWidget()
-        panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(4, 3, 4, 3)
-        panel_layout.setSpacing(4)
-        file_row = QHBoxLayout()
-        file_row.setSpacing(4)
-        tool_row = QHBoxLayout()
-        tool_row.setSpacing(4)
+        export_toolbar = self._new_toolbar("내보내기")
+        for action in [self.export_png_action, self.export_csv_action]:
+            export_toolbar.addWidget(self._button_for_action(action))
 
-        for action in [
-            self.open_action,
-            self.open_folder_action,
-            self.open_project_action,
-            self.save_project_action,
-            self.export_png_action,
-            self.export_csv_action,
-        ]:
-            file_row.addWidget(self._button_for_action(action))
-        file_row.addStretch(1)
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
+        tool_toolbar = self._new_toolbar("도구")
 
         self.tool_buttons: dict[str, QPushButton] = {}
         self.tool_button_group = QButtonGroup(self)
@@ -755,47 +760,52 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda checked=False, selected_tool=tool: self.set_current_tool(selected_tool))
             self.tool_button_group.addButton(button)
             self.tool_buttons[tool] = button
-            tool_row.addWidget(button)
+            tool_toolbar.addWidget(button)
         self.tool_buttons["select"].setChecked(True)
 
+        reference_toolbar = self._new_toolbar("기준")
+
         self.axis_combo = QComboBox()
-        self.axis_combo.addItem("수평 기준", "horizontal")
-        self.axis_combo.addItem("수직 기준", "vertical")
+        self.axis_combo.addItem("수평 기준선", "horizontal")
+        self.axis_combo.addItem("평행 기준선", "vertical")
         self.axis_combo.currentIndexChanged.connect(self._axis_changed)
-        tool_row.addWidget(QLabel(" 기준 "))
-        tool_row.addWidget(self.axis_combo)
+        reference_toolbar.addWidget(self.axis_combo)
 
         align_button = QPushButton("이미지 맞춤")
         align_button.clicked.connect(self.align_to_reference)
-        tool_row.addWidget(align_button)
+        reference_toolbar.addWidget(align_button)
+
+        detect_toolbar = self._new_toolbar("인식")
 
         self.search_radius_spin = QSpinBox()
         self.search_radius_spin.setRange(2, 300)
         self.search_radius_spin.setValue(35)
         self.search_radius_spin.setSuffix(" px")
         self.search_radius_spin.valueChanged.connect(self._edge_detection_settings_changed)
-        tool_row.addWidget(QLabel(" 탐색 "))
-        tool_row.addWidget(self.search_radius_spin)
+        detect_toolbar.addWidget(QLabel("탐색"))
+        detect_toolbar.addWidget(self.search_radius_spin)
 
         self.curve_sensitivity_spin = QSpinBox()
         self.curve_sensitivity_spin.setRange(1, 100)
         self.curve_sensitivity_spin.setValue(65)
         self.curve_sensitivity_spin.valueChanged.connect(self._edge_detection_settings_changed)
-        tool_row.addWidget(QLabel(" 곡선 "))
-        tool_row.addWidget(self.curve_sensitivity_spin)
+        detect_toolbar.addWidget(QLabel("곡선"))
+        detect_toolbar.addWidget(self.curve_sensitivity_spin)
 
         self.show_search_range_checkbox = QCheckBox("범위 표시")
         self.show_search_range_checkbox.setChecked(True)
         self.show_search_range_checkbox.toggled.connect(self._edge_detection_settings_changed)
-        tool_row.addWidget(self.show_search_range_checkbox)
+        detect_toolbar.addWidget(self.show_search_range_checkbox)
 
         settings_button = QPushButton("인식 설정")
         settings_button.clicked.connect(self.open_edge_detection_settings)
-        tool_row.addWidget(settings_button)
+        detect_toolbar.addWidget(settings_button)
 
         recognize_button = QPushButton("인식")
         recognize_button.clicked.connect(self.recognize_edges)
-        tool_row.addWidget(recognize_button)
+        detect_toolbar.addWidget(recognize_button)
+
+        guide_toolbar = self._new_toolbar("가이드")
 
         self.guide_orientation_combo = QComboBox()
         self.guide_orientation_combo.addItem("수평선", "horizontal")
@@ -810,12 +820,11 @@ class MainWindow(QMainWindow):
         self.guide_offset_spin.setRange(0, 100000)
         self.guide_offset_spin.setValue(0)
         self.guide_offset_spin.setSuffix(" px")
-        tool_row.addWidget(QLabel(" 가이드 "))
-        tool_row.addWidget(self.guide_orientation_combo)
-        tool_row.addWidget(self.guide_spacing_spin)
-        tool_row.addWidget(self.guide_spacing_unit)
-        tool_row.addWidget(QLabel(" 시작 "))
-        tool_row.addWidget(self.guide_offset_spin)
+        guide_toolbar.addWidget(self.guide_orientation_combo)
+        guide_toolbar.addWidget(self.guide_spacing_spin)
+        guide_toolbar.addWidget(self.guide_spacing_unit)
+        guide_toolbar.addWidget(QLabel("시작"))
+        guide_toolbar.addWidget(self.guide_offset_spin)
 
         add_guides_button = QPushButton("그리기")
         add_guides_button.clicked.connect(self.add_guides)
@@ -823,14 +832,20 @@ class MainWindow(QMainWindow):
         clear_guides_button.clicked.connect(self.clear_guides)
         angle_button = QPushButton("각도 계산")
         angle_button.clicked.connect(self.calculate_angles)
-        tool_row.addWidget(add_guides_button)
-        tool_row.addWidget(clear_guides_button)
-        tool_row.addWidget(angle_button)
-        tool_row.addStretch(1)
+        guide_toolbar.addWidget(add_guides_button)
+        guide_toolbar.addWidget(clear_guides_button)
+        guide_toolbar.addWidget(angle_button)
 
-        panel_layout.addLayout(file_row)
-        panel_layout.addLayout(tool_row)
-        toolbar.addWidget(panel)
+    def _new_toolbar(self, title: str) -> QToolBar:
+        toolbar = QToolBar(title)
+        toolbar.setMovable(True)
+        toolbar.setFloatable(False)
+        toolbar.setStyleSheet(
+            "QToolBar { spacing: 4px; padding: 2px; } "
+            "QToolBar::handle { width: 5px; background: #5a5a5a; margin: 4px 1px; }"
+        )
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
+        return toolbar
 
     def _button_for_action(self, action: QAction) -> QPushButton:
         button = QPushButton(action.text())
@@ -874,6 +889,35 @@ class MainWindow(QMainWindow):
             checkbox.toggled.connect(lambda checked, item_key=key: self.set_visibility(item_key, checked))
             self.visibility_checkboxes[key] = checkbox
             layout.addWidget(checkbox)
+        dock.setWidget(container)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+
+    def _build_scale_preset_dock(self) -> None:
+        dock = QDockWidget("스케일 프리셋", self)
+        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        self.scale_preset_table = QTableWidget(0, 3)
+        self.scale_preset_table.setHorizontalHeaderLabels(["키", "이름", "nm/px"])
+        self.scale_preset_table.verticalHeader().setVisible(False)
+        self.scale_preset_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.scale_preset_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        layout.addWidget(self.scale_preset_table)
+
+        controls = QHBoxLayout()
+        add_button = QPushButton("현재 등록")
+        add_button.clicked.connect(self.add_current_scale_preset)
+        edit_button = QPushButton("편집")
+        edit_button.clicked.connect(self.edit_selected_scale_preset)
+        delete_button = QPushButton("삭제")
+        delete_button.clicked.connect(self.delete_selected_scale_preset)
+        up_button = QPushButton("위")
+        up_button.clicked.connect(lambda: self.move_selected_scale_preset(-1))
+        down_button = QPushButton("아래")
+        down_button.clicked.connect(lambda: self.move_selected_scale_preset(1))
+        for button in [add_button, edit_button, delete_button, up_button, down_button]:
+            controls.addWidget(button)
+        layout.addLayout(controls)
         dock.setWidget(container)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
@@ -1116,6 +1160,12 @@ class MainWindow(QMainWindow):
                 self.visibility[key] = bool(visible)
                 if hasattr(self, "visibility_checkboxes") and key in self.visibility_checkboxes:
                     self.visibility_checkboxes[key].setChecked(bool(visible))
+        self.scale_presets = [
+            ScalePreset(name=item.get("name", f"Preset {idx + 1}"), nm_per_px=float(item["nm_per_px"]))
+            for idx, item in enumerate(payload.get("scale_presets", []))
+            if "nm_per_px" in item
+        ][:9]
+        self._refresh_scale_preset_table()
         self.records = {}
         for item in payload.get("records", []):
             raw_points = item.get("points") or []
@@ -1157,6 +1207,7 @@ class MainWindow(QMainWindow):
                 "show_search_range": self.show_search_range_checkbox.isChecked(),
             },
             "visibility": self.visibility,
+            "scale_presets": [asdict(preset) for preset in self.scale_presets],
             "counter": self._counter,
             "records": [asdict(record) for record in self.records.values()],
         }
@@ -1245,6 +1296,96 @@ class MainWindow(QMainWindow):
         self.nm_per_px = float(value) / length_px
         self._set_status(f"Calibration: {self.nm_per_px:.6g} nm/px")
 
+    def add_current_scale_preset(self) -> None:
+        if not self.nm_per_px:
+            QMessageBox.information(self, "스케일 프리셋", "먼저 스케일바를 캘리브레이션하세요.")
+            return
+        if len(self.scale_presets) >= 9:
+            QMessageBox.information(self, "스케일 프리셋", "숫자키 1~9 슬롯까지만 등록할 수 있습니다.")
+            return
+        default_name = f"Scale {len(self.scale_presets) + 1}"
+        name, ok = QInputDialog.getText(self, "스케일 프리셋", "이름", text=default_name)
+        if not ok:
+            return
+        name = name.strip() or default_name
+        self.scale_presets.append(ScalePreset(name=name, nm_per_px=float(self.nm_per_px)))
+        self._refresh_scale_preset_table()
+        self._set_status(f"{len(self.scale_presets)}번 스케일 프리셋 등록: {name}, {self.nm_per_px:.6g} nm/px")
+
+    def edit_selected_scale_preset(self) -> None:
+        row = self._selected_scale_preset_row()
+        if row is None:
+            return
+        preset = self.scale_presets[row]
+        name, ok = QInputDialog.getText(self, "스케일 프리셋 이름", "이름", text=preset.name)
+        if not ok:
+            return
+        value, ok = QInputDialog.getDouble(
+            self,
+            "스케일 프리셋 값",
+            "nm/px",
+            preset.nm_per_px,
+            0.0000001,
+            1_000_000.0,
+            8,
+        )
+        if not ok:
+            return
+        preset.name = name.strip() or preset.name
+        preset.nm_per_px = float(value)
+        self._refresh_scale_preset_table(select_row=row)
+
+    def delete_selected_scale_preset(self) -> None:
+        row = self._selected_scale_preset_row()
+        if row is None:
+            return
+        del self.scale_presets[row]
+        self._refresh_scale_preset_table(select_row=min(row, len(self.scale_presets) - 1))
+
+    def move_selected_scale_preset(self, delta: int) -> None:
+        row = self._selected_scale_preset_row()
+        if row is None:
+            return
+        new_row = row + delta
+        if not (0 <= new_row < len(self.scale_presets)):
+            return
+        self.scale_presets[row], self.scale_presets[new_row] = self.scale_presets[new_row], self.scale_presets[row]
+        self._refresh_scale_preset_table(select_row=new_row)
+
+    def apply_scale_preset(self, index: int) -> None:
+        if not (0 <= index < len(self.scale_presets)):
+            return
+        preset = self.scale_presets[index]
+        self.nm_per_px = preset.nm_per_px
+        for record_id in [rid for rid, record in self.records.items() if record.kind == "scale"]:
+            del self.records[record_id]
+        self.canvas.redraw_lines(list(self.records.values()))
+        self._refresh_table()
+        self._update_search_range_overlay()
+        self._apply_visibility()
+        self._set_status(f"{index + 1}번 스케일 적용: {preset.name}, {preset.nm_per_px:.6g} nm/px")
+
+    def _selected_scale_preset_row(self) -> Optional[int]:
+        rows = self.scale_preset_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        row = rows[0].row()
+        if 0 <= row < len(self.scale_presets):
+            return row
+        return None
+
+    def _refresh_scale_preset_table(self, select_row: Optional[int] = None) -> None:
+        self.scale_preset_table.setRowCount(len(self.scale_presets))
+        for row, preset in enumerate(self.scale_presets):
+            values = [str(row + 1), preset.name, f"{preset.nm_per_px:.8g}"]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.scale_preset_table.setItem(row, col, item)
+        self.scale_preset_table.resizeColumnsToContents()
+        if select_row is not None and 0 <= select_row < len(self.scale_presets):
+            self.scale_preset_table.selectRow(select_row)
+
     def _create_reference_line(self, start: Point, end: Point) -> None:
         for record_id in [rid for rid, record in self.records.items() if record.kind == "reference"]:
             del self.records[record_id]
@@ -1255,7 +1396,7 @@ class MainWindow(QMainWindow):
             start=start,
             end=end,
             axis=axis,
-            label="horizontal" if axis == "horizontal" else "vertical",
+            label=self._reference_label(axis),
         )
         self.records[record.id] = record
         self._set_status("기준선을 만들었습니다. 기준 토글을 바꾼 뒤 '이미지 맞춤'으로 수평/수직 전환할 수 있습니다.")
@@ -1282,7 +1423,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "이미지 맞춤", "먼저 기준선을 그려주세요.")
             return
         reference.axis = self.axis_combo.currentData()
-        reference.label = "horizontal" if reference.axis == "horizontal" else "vertical"
+        reference.label = self._reference_label(reference.axis)
         angle = line_angle_degrees(reference.start, reference.end)
         target = 0.0 if reference.axis == "horizontal" else 90.0
         rotate_by = angle - target
@@ -1514,7 +1655,7 @@ class MainWindow(QMainWindow):
         if reference is None:
             return
         reference.axis = self.axis_combo.currentData()
-        reference.label = "horizontal" if reference.axis == "horizontal" else "vertical"
+        reference.label = self._reference_label(reference.axis)
         self._refresh_table()
         self._set_status("기준선 축을 바꿨습니다. '이미지 맞춤'을 누르면 새 축 기준으로 정렬됩니다.")
 
@@ -1651,6 +1792,10 @@ class MainWindow(QMainWindow):
             if record.kind == "reference":
                 return record
         return None
+
+    @staticmethod
+    def _reference_label(axis: str) -> str:
+        return "수평 기준선" if axis == "horizontal" else "평행 기준선"
 
     def _refresh_table(self) -> None:
         self._sync_records_from_canvas()
