@@ -72,3 +72,26 @@ def test_search_range_band_and_label_visibility_are_independent():
         assert len(window.canvas.search_range_label_items) == 0
     finally:
         window.close()
+
+
+def test_copy_paste_duplicates_parent_edge_without_angle_children():
+    window = _window_with_edge_image()
+    try:
+        window._create_reference_line((10.0, 10.0), (100.0, 10.0))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edge_id = next(record.id for record in window.records.values() if record.kind == "edge")
+        window.canvas.line_items[edge_id].setSelected(True)
+        window.calculate_angles()
+        assert len(window.canvas.angle_items) > 0
+
+        window.copy_selected_parent_objects()
+        window.paste_parent_objects()
+
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        assert len(edges) == 2
+        assert len(window.record_clipboard) == 1
+        assert len(window.canvas.selected_line_ids()) == 1
+        assert all(record.kind == "edge" for record in window.record_clipboard)
+    finally:
+        window.close()

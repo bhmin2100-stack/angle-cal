@@ -781,6 +781,24 @@ def scale_point(point: Point, center: Point, factor: float) -> Point:
     )
 
 
+def offset_point(point: Point, dx: float, dy: float) -> Point:
+    return (point[0] + dx, point[1] + dy)
+
+
+def clone_record(record: LineRecord) -> LineRecord:
+    return LineRecord(
+        id=record.id,
+        kind=record.kind,
+        start=tuple(record.start),
+        end=tuple(record.end),
+        label=record.label,
+        axis=record.axis,
+        value_nm=record.value_nm,
+        points=[tuple(point) for point in record.points] if record.points else None,
+        edge_mode=record.edge_mode,
+    )
+
+
 def polyline_intersections(edge: LineRecord, guide_line: tuple[Point, Point]) -> list[tuple[Point, float]]:
     crosses: list[tuple[Point, float]] = []
     points = record_points(edge)
@@ -847,6 +865,8 @@ class MainWindow(QMainWindow):
         self.thumbnail_columns = 2
         self.current_tool = "select"
         self.scale_presets: list[ScalePreset] = []
+        self.record_clipboard: list[LineRecord] = []
+        self._paste_offset_steps = 0
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -892,6 +912,14 @@ class MainWindow(QMainWindow):
         self.delete_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
         self.delete_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.delete_action.triggered.connect(self.delete_selected)
+        self.copy_action = QAction("선택 복사", self)
+        self.copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        self.copy_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.copy_action.triggered.connect(self.copy_selected_parent_objects)
+        self.paste_action = QAction("붙여넣기", self)
+        self.paste_action.setShortcut(QKeySequence.StandardKey.Paste)
+        self.paste_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.paste_action.triggered.connect(self.paste_parent_objects)
         self.previous_image_action = QAction("이전 이미지", self)
         self.previous_image_action.setShortcut(QKeySequence(Qt.Key.Key_PageUp))
         self.previous_image_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -902,6 +930,8 @@ class MainWindow(QMainWindow):
         self.next_image_action.triggered.connect(lambda: self.load_relative_browser_image(1))
         self.addAction(self.select_tool_action)
         self.addAction(self.delete_action)
+        self.addAction(self.copy_action)
+        self.addAction(self.paste_action)
         self.addAction(self.previous_image_action)
         self.addAction(self.next_image_action)
         self.scale_preset_actions: list[QAction] = []
@@ -1841,6 +1871,55 @@ class MainWindow(QMainWindow):
             self._refresh_table()
         deleted_count = len(selected) + len(selected_angle_items)
         self._set_status(f"{deleted_count}개 개체를 삭제했습니다.")
+
+    def copy_selected_parent_objects(self) -> None:
+        self._sync_records_from_canvas()
+        selected_ids = self.canvas.selected_line_ids()
+        copied = [
+            clone_record(self.records[record_id])
+            for record_id in selected_ids
+            if record_id in self.records and self.records[record_id].kind in {"edge", "scale"}
+        ]
+        if not copied:
+            self._set_status("복사할 상위개체를 선택하세요. 각도 숫자/호는 복사 대상이 아닙니다.")
+            return
+        self.record_clipboard = copied
+        self._paste_offset_steps = 0
+        QApplication.clipboard().setText(json.dumps([asdict(record) for record in copied], ensure_ascii=False))
+        self._set_status(f"상위개체 {len(copied)}개를 복사했습니다. Ctrl+V로 붙여넣을 수 있습니다.")
+
+    def paste_parent_objects(self) -> None:
+        if self.image_bgr is None:
+            return
+        if not self.record_clipboard:
+            self._set_status("붙여넣을 상위개체가 없습니다. 먼저 Ctrl+C로 복사하세요.")
+            return
+        self._sync_records_from_canvas()
+        self._paste_offset_steps += 1
+        offset = 14.0 * self._paste_offset_steps
+        new_ids: list[str] = []
+        for source in self.record_clipboard:
+            record = clone_record(source)
+            prefix = "S" if record.kind == "scale" else "E"
+            record.id = self._next_id(prefix)
+            record.start = offset_point(record.start, offset, offset)
+            record.end = offset_point(record.end, offset, offset)
+            if record.points:
+                record.points = [offset_point(point, offset, offset) for point in record.points]
+                record.start = record.points[0]
+                record.end = record.points[-1]
+            self.records[record.id] = record
+            new_ids.append(record.id)
+        self.canvas.redraw_lines(list(self.records.values()))
+        self.canvas.scene.clearSelection()
+        for record_id in new_ids:
+            item = self.canvas.line_items.get(record_id)
+            if item is not None:
+                item.setSelected(True)
+        self.calculate_angles()
+        self._update_search_range_overlay()
+        self._apply_visibility()
+        self._set_status(f"상위개체 {len(new_ids)}개를 붙여넣었습니다. 하위 각도 표시들은 새로 계산됩니다.")
 
     def _show_image(self, keep_view: bool = False) -> None:
         if self.image_bgr is None:
