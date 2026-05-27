@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QDoubleSpinBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -73,6 +74,10 @@ class LineRecord:
     value_nm: Optional[float] = None
     points: Optional[list[Point]] = None
     edge_mode: str = "line"
+    angle_sector: int = 0
+    angle_arc_radius: float = 28.0
+    angle_label_side: str = "outside"
+    angle_label_gap: float = 14.0
 
 
 @dataclass
@@ -401,12 +406,12 @@ class AngleCanvas(QGraphicsView):
     def _create_angle_arc(
         self,
         center: Point,
-        angle_a: float,
-        angle_b: float,
+        angle_start: float,
+        angle_end: float,
         radius: float,
         group_id: str,
     ) -> QGraphicsPathItem:
-        path = self._arc_path(center, angle_a, angle_b, radius)
+        path = self._arc_path(center, angle_start, angle_end, radius)
         item = QGraphicsPathItem(path)
         item.setPen(QPen(QColor("#ffd166"), 2.0))
         item.setZValue(20)
@@ -704,12 +709,14 @@ class AngleCanvas(QGraphicsView):
         )
 
     @staticmethod
-    def _arc_path(center: Point, angle_a: float, angle_b: float, radius: float) -> QPainterPath:
-        delta = ((angle_b - angle_a + 90.0) % 180.0) - 90.0
+    def _arc_path(center: Point, angle_start: float, angle_end: float, radius: float) -> QPainterPath:
+        delta = (angle_end - angle_start) % 360.0
+        if delta <= 0:
+            delta = 360.0
         steps = max(8, int(abs(delta) / 4))
         path = QPainterPath()
         for idx in range(steps + 1):
-            angle = math.radians(angle_a + delta * idx / steps)
+            angle = math.radians(angle_start + delta * idx / steps)
             x = center[0] + math.cos(angle) * radius
             y = center[1] + math.sin(angle) * radius
             if idx == 0:
@@ -796,7 +803,49 @@ def clone_record(record: LineRecord) -> LineRecord:
         value_nm=record.value_nm,
         points=[tuple(point) for point in record.points] if record.points else None,
         edge_mode=record.edge_mode,
+        angle_sector=record.angle_sector,
+        angle_arc_radius=record.angle_arc_radius,
+        angle_label_side=record.angle_label_side,
+        angle_label_gap=record.angle_label_gap,
     )
+
+
+def angle_sector_geometry(angle_a: float, angle_b: float, sector_index: int) -> tuple[float, float, float]:
+    rays = sorted(
+        [
+            angle_a % 360.0,
+            (angle_a + 180.0) % 360.0,
+            angle_b % 360.0,
+            (angle_b + 180.0) % 360.0,
+        ]
+    )
+    sectors: list[tuple[float, float, float]] = []
+    for idx, start in enumerate(rays):
+        end = rays[(idx + 1) % len(rays)]
+        span = (end - start) % 360.0
+        if span > 0.01:
+            sectors.append((start, start + span, span))
+    if not sectors:
+        return angle_a % 360.0, (angle_a + 180.0) % 360.0, 180.0
+    return sectors[sector_index % len(sectors)]
+
+
+def angle_label_position_for_sector(
+    center: Point,
+    start_angle: float,
+    span: float,
+    radius: float,
+    side: str,
+    gap: float,
+) -> Point:
+    if side == "inside":
+        distance = max(6.0, radius - gap)
+    elif side == "on_arc":
+        distance = radius
+    else:
+        distance = radius + gap
+    angle = math.radians(start_angle + span / 2.0)
+    return (center[0] + math.cos(angle) * distance, center[1] + math.sin(angle) * distance)
 
 
 def polyline_intersections(edge: LineRecord, guide_line: tuple[Point, Point]) -> list[tuple[Point, float]]:
@@ -840,6 +889,57 @@ class EdgeDetectionSettingsDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self.overlay_checkbox)
 
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
+class AngleDisplaySettingsDialog(QDialog):
+    def __init__(
+        self,
+        sector: int,
+        arc_radius: float,
+        label_side: str,
+        label_gap: float,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("각도 표시 편집")
+        self.setModal(True)
+
+        self.sector_combo = QComboBox()
+        for idx in range(4):
+            self.sector_combo.addItem(f"각도 위치 {idx + 1}", idx)
+        self.sector_combo.setCurrentIndex(max(0, min(3, int(sector))))
+
+        self.arc_radius_spin = QDoubleSpinBox()
+        self.arc_radius_spin.setRange(6.0, 300.0)
+        self.arc_radius_spin.setValue(float(arc_radius))
+        self.arc_radius_spin.setSuffix(" px")
+
+        self.label_side_combo = QComboBox()
+        for label, value in [
+            ("호 바깥쪽", "outside"),
+            ("호 위", "on_arc"),
+            ("호 안쪽", "inside"),
+        ]:
+            self.label_side_combo.addItem(label, value)
+        side_index = self.label_side_combo.findData(label_side)
+        self.label_side_combo.setCurrentIndex(side_index if side_index >= 0 else 0)
+
+        self.label_gap_spin = QDoubleSpinBox()
+        self.label_gap_spin.setRange(0.0, 300.0)
+        self.label_gap_spin.setValue(float(label_gap))
+        self.label_gap_spin.setSuffix(" px")
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.addRow("각도 호 위치", self.sector_combo)
+        form.addRow("각도 호 크기", self.arc_radius_spin)
+        form.addRow("숫자 위치", self.label_side_combo)
+        form.addRow("숫자 거리", self.label_gap_spin)
+        layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -1051,9 +1151,12 @@ class MainWindow(QMainWindow):
         clear_guides_button.clicked.connect(self.clear_guides)
         angle_button = QPushButton("각도 계산")
         angle_button.clicked.connect(self.calculate_angles)
+        angle_settings_button = QPushButton("각도 표시 편집")
+        angle_settings_button.clicked.connect(self.edit_angle_display_for_selected_edges)
         guide_toolbar.addWidget(add_guides_button)
         guide_toolbar.addWidget(clear_guides_button)
         guide_toolbar.addWidget(angle_button)
+        guide_toolbar.addWidget(angle_settings_button)
 
     def _new_toolbar(self, title: str) -> QToolBar:
         toolbar = QToolBar(title)
@@ -1406,6 +1509,10 @@ class MainWindow(QMainWindow):
                 value_nm=item.get("value_nm"),
                 points=[tuple(point) for point in raw_points] or None,
                 edge_mode=record_edge_mode,
+                angle_sector=int(item.get("angle_sector", 0)),
+                angle_arc_radius=float(item.get("angle_arc_radius", 28.0)),
+                angle_label_side=item.get("angle_label_side", "outside"),
+                angle_label_gap=float(item.get("angle_label_gap", 14.0)),
             )
         self._counter = payload.get("counter", len(self.records) + 1)
         self._show_image()
@@ -1778,6 +1885,39 @@ class MainWindow(QMainWindow):
             self._apply_visibility()
             self._set_status("가이드를 지웠습니다.")
 
+    def edit_angle_display_for_selected_edges(self) -> None:
+        self._sync_records_from_canvas()
+        selected_ids = self.canvas.selected_line_ids()
+        edges = [
+            self.records[record_id]
+            for record_id in selected_ids
+            if record_id in self.records and self.records[record_id].kind == "edge"
+        ]
+        if not edges:
+            QMessageBox.information(self, "각도 표시 편집", "먼저 편집할 경계선을 선택하세요.")
+            return
+        base = edges[0]
+        dialog = AngleDisplaySettingsDialog(
+            base.angle_sector,
+            base.angle_arc_radius,
+            base.angle_label_side,
+            base.angle_label_gap,
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        sector = int(dialog.sector_combo.currentData())
+        arc_radius = float(dialog.arc_radius_spin.value())
+        label_side = str(dialog.label_side_combo.currentData())
+        label_gap = float(dialog.label_gap_spin.value())
+        for edge in edges:
+            edge.angle_sector = sector
+            edge.angle_arc_radius = arc_radius
+            edge.angle_label_side = label_side
+            edge.angle_label_gap = label_gap
+        self.calculate_angles()
+        self._set_status(f"선택한 경계선 {len(edges)}개의 각도 표시 설정을 바꿨습니다.")
+
     def calculate_angles(self) -> None:
         if self.image_bgr is None:
             return
@@ -1824,14 +1964,22 @@ class MainWindow(QMainWindow):
                 guide_angle = line_angle_degrees(guide.start, guide.end)
                 crosses = polyline_intersections(edge, guide_line)
                 for cross_idx, (cross, edge_angle) in enumerate(crosses, start=1):
-                    angle = acute_angle_difference(edge_angle, guide_angle)
-                    label_pos = self._label_position(cross, edge_angle, guide_angle, 42.0)
+                    arc_start, arc_end, angle = angle_sector_geometry(edge_angle, guide_angle, edge.angle_sector)
+                    label_pos = angle_label_position_for_sector(
+                        cross,
+                        arc_start,
+                        angle,
+                        edge.angle_arc_radius,
+                        edge.angle_label_side,
+                        edge.angle_label_gap,
+                    )
                     self.canvas.add_angle_annotation(
                         f"{angle:.2f}°",
                         label_pos,
                         center=cross,
-                        angle_a=edge_angle,
-                        angle_b=guide_angle,
+                        angle_a=arc_start,
+                        angle_b=arc_end,
+                        radius=edge.angle_arc_radius,
                         parent_record_id=edge.id,
                     )
                     length_px = record_length(edge)
