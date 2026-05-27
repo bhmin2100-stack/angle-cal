@@ -4,8 +4,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem
+from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem
 
+import angle_cal.app as app_module
 from angle_cal.app import LineRecord, MainWindow, ScalePreset, StructureTemplate, structure_template_from_dict, structure_template_to_dict
 
 
@@ -297,6 +298,53 @@ def test_selected_edge_angle_display_sector_controls_measurement_angle():
         assert len(guide_rows) == 1
         assert 149 <= guide_rows[0]["angle_deg"] <= 151
         assert len(window.canvas.angle_items) >= 2
+    finally:
+        window.close()
+
+
+def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(monkeypatch):
+    class _Value:
+        def __init__(self, value):
+            self._value = value
+
+        def value(self):
+            return self._value
+
+        def currentData(self):
+            return self._value
+
+    class _Dialog:
+        def __init__(self, *args, **kwargs):
+            self.sector_combo = _Value(2)
+            self.arc_radius_spin = _Value(55.0)
+            self.label_side_combo = _Value("inside")
+            self.label_gap_spin = _Value(9.0)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(app_module, "AngleDisplaySettingsDialog", _Dialog)
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 20.0), (20.0, 80.0))
+        window._create_edge_line((60.0, 20.0), (60.0, 80.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.edit_angle_display_for_selected_edges()
+
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        assert all(edge.angle_sector == 2 for edge in edges)
+        assert all(edge.angle_arc_radius == 55.0 for edge in edges)
+        assert all(edge.angle_label_side == "inside" for edge in edges)
+        assert all(edge.angle_label_gap == 9.0 for edge in edges)
+        assert window.default_angle_sector == 2
+
+        window._create_edge_line((90.0, 20.0), (90.0, 80.0))
+        newest = list(window.records.values())[-1]
+        assert newest.angle_sector == 2
+        assert newest.angle_arc_radius == 55.0
+        assert newest.angle_label_side == "inside"
+        assert newest.angle_label_gap == 9.0
     finally:
         window.close()
 

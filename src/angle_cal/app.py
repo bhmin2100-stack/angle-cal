@@ -1528,6 +1528,10 @@ class MainWindow(QMainWindow):
         self.structure_templates: list[StructureTemplate] = []
         self.record_clipboard: list[LineRecord] = []
         self._paste_offset_steps = 0
+        self.default_angle_sector = 0
+        self.default_angle_arc_radius = 28.0
+        self.default_angle_label_side = "outside"
+        self.default_angle_label_gap = 14.0
         self.hidden_angle_measurements: set[str] = set()
         self.undo_stack: list[dict] = []
         self._restoring_undo = False
@@ -2608,6 +2612,10 @@ class MainWindow(QMainWindow):
             recognition_points=list(points or [start, end]),
             edge_mode=edge_mode,
             edge_segmented=edge_mode == "polyline",
+            angle_sector=self.default_angle_sector,
+            angle_arc_radius=self.default_angle_arc_radius,
+            angle_label_side=self.default_angle_label_side,
+            angle_label_gap=self.default_angle_label_gap,
         )
         self.records[record.id] = record
         self._set_status(f"{'이어진 직선' if edge_mode == 'polyline' else '직선'} 경계선을 추가했습니다.")
@@ -3052,15 +3060,15 @@ class MainWindow(QMainWindow):
             for record_id in selected_ids
             if record_id in self.records and self.records[record_id].kind == "edge"
         ]
-        if not edges:
-            QMessageBox.information(self, "각도 표시 편집", "먼저 편집할 경계선을 선택하세요.")
-            return
-        base = edges[0]
+        editing_all = not edges
+        if editing_all:
+            edges = [record for record in self.records.values() if record.kind == "edge"]
+        base = edges[0] if edges else None
         dialog = AngleDisplaySettingsDialog(
-            base.angle_sector,
-            base.angle_arc_radius,
-            base.angle_label_side,
-            base.angle_label_gap,
+            base.angle_sector if base is not None else self.default_angle_sector,
+            base.angle_arc_radius if base is not None else self.default_angle_arc_radius,
+            base.angle_label_side if base is not None else self.default_angle_label_side,
+            base.angle_label_gap if base is not None else self.default_angle_label_gap,
             self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -3070,13 +3078,19 @@ class MainWindow(QMainWindow):
         arc_radius = float(dialog.arc_radius_spin.value())
         label_side = str(dialog.label_side_combo.currentData())
         label_gap = float(dialog.label_gap_spin.value())
+        if editing_all:
+            self.default_angle_sector = sector
+            self.default_angle_arc_radius = arc_radius
+            self.default_angle_label_side = label_side
+            self.default_angle_label_gap = label_gap
         for edge in edges:
             edge.angle_sector = sector
             edge.angle_arc_radius = arc_radius
             edge.angle_label_side = label_side
             edge.angle_label_gap = label_gap
         self.calculate_angles(reset_hidden=False)
-        self._set_status(f"선택한 경계선 {len(edges)}개의 각도 표시 설정을 바꿨습니다.")
+        target_text = "전체 경계선" if editing_all else "선택한 경계선"
+        self._set_status(f"{target_text} {len(edges)}개의 각도 표시 설정을 바꿨습니다.")
 
     def calculate_angles(self, reset_hidden: bool = True) -> None:
         if self.image_bgr is None:
