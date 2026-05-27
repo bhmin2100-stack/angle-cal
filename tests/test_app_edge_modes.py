@@ -93,6 +93,36 @@ def test_straight_edge_still_shows_single_reference_angle():
         window.close()
 
 
+def test_deleted_angle_annotation_stays_hidden_until_manual_recalculate():
+    window = _window_with_edge_image()
+    try:
+        window._create_reference_line((10.0, 10.0), (100.0, 10.0))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.calculate_angles(reset_hidden=True)
+        assert len(window.canvas.angle_items) == 1
+
+        window.canvas.angle_items[0].setSelected(True)
+        window.delete_selected()
+        assert len(window.canvas.angle_items) == 0
+        assert window.hidden_angle_measurements
+
+        window._create_edge_line((90.0, 20.0), (90.0, 100.0))
+        added_edge_id = max(record.id for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.line_items[added_edge_id].setSelected(True)
+        window.delete_selected()
+
+        assert len(window.canvas.angle_items) == 0
+        assert len([row for row in window.last_measurements if row["kind"] == "edge_to_reference"]) == 1
+
+        window.calculate_angles(reset_hidden=True)
+        assert len(window.canvas.angle_items) == 1
+    finally:
+        window.close()
+
+
 def test_search_range_band_and_label_visibility_are_independent():
     window = _window_with_edge_image()
     try:

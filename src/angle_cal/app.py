@@ -95,6 +95,7 @@ class StructureTemplate:
 
 
 ANGLE_GROUP_KEY = 1
+ANGLE_MEASUREMENT_KEY = 2
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 
@@ -184,6 +185,7 @@ class AngleCanvas(QGraphicsView):
         self.detection_preview_items: list[QGraphicsItem] = []
         self.angle_groups: dict[str, list[QGraphicsItem]] = {}
         self.angle_group_parents: dict[str, str] = {}
+        self.angle_group_measurements: dict[str, str] = {}
         self._angle_counter = 1
         self.search_range_radius_px = 35
         self.show_search_range = True
@@ -251,6 +253,7 @@ class AngleCanvas(QGraphicsView):
         self.detection_preview_items.clear()
         self.angle_groups.clear()
         self.angle_group_parents.clear()
+        self.angle_group_measurements.clear()
         self.pixmap_item = self.scene.addPixmap(pixmap)
         self.pixmap_item.setZValue(0)
         self.scene.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
@@ -400,6 +403,7 @@ class AngleCanvas(QGraphicsView):
         self.angle_items.clear()
         self.angle_groups.clear()
         self.angle_group_parents.clear()
+        self.angle_group_measurements.clear()
 
     def clear_cd_items(self) -> None:
         for item in self.cd_items:
@@ -480,14 +484,17 @@ class AngleCanvas(QGraphicsView):
         angle_b: Optional[float] = None,
         radius: float = 28.0,
         parent_record_id: Optional[str] = None,
+        measurement_id: Optional[str] = None,
     ) -> list[QGraphicsItem]:
         group_id = f"A{self._angle_counter}"
         self._angle_counter += 1
+        measurement_id = measurement_id or group_id
         items: list[QGraphicsItem] = []
         if center is not None and angle_a is not None and angle_b is not None:
-            items.append(self._create_angle_arc(center, angle_a, angle_b, radius, group_id))
-        items.append(self._create_angle_label(text, label_pos, group_id))
+            items.append(self._create_angle_arc(center, angle_a, angle_b, radius, group_id, measurement_id))
+        items.append(self._create_angle_label(text, label_pos, group_id, measurement_id))
         self.angle_groups[group_id] = items
+        self.angle_group_measurements[group_id] = measurement_id
         if parent_record_id is not None:
             self.angle_group_parents[group_id] = parent_record_id
         return items
@@ -499,6 +506,7 @@ class AngleCanvas(QGraphicsView):
         angle_end: float,
         radius: float,
         group_id: str,
+        measurement_id: str,
     ) -> QGraphicsPathItem:
         path = self._arc_path(center, angle_start, angle_end, radius)
         item = QGraphicsPathItem(path)
@@ -507,11 +515,12 @@ class AngleCanvas(QGraphicsView):
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         item.setData(ANGLE_GROUP_KEY, group_id)
+        item.setData(ANGLE_MEASUREMENT_KEY, measurement_id)
         self.scene.addItem(item)
         self.angle_items.append(item)
         return item
 
-    def _create_angle_label(self, text: str, pos: Point, group_id: str) -> QGraphicsTextItem:
+    def _create_angle_label(self, text: str, pos: Point, group_id: str, measurement_id: str) -> QGraphicsTextItem:
         item = QGraphicsTextItem()
         item.setHtml(
             "<div style='background-color:rgba(24,24,24,185);"
@@ -524,6 +533,7 @@ class AngleCanvas(QGraphicsView):
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         item.setData(ANGLE_GROUP_KEY, group_id)
+        item.setData(ANGLE_MEASUREMENT_KEY, measurement_id)
         self.scene.addItem(item)
         self.angle_items.append(item)
         return item
@@ -547,6 +557,19 @@ class AngleCanvas(QGraphicsView):
                 selected.append(item)
         return selected
 
+    def selected_angle_measurement_ids(self) -> set[str]:
+        measurement_ids: set[str] = set()
+        group_ids = {item.data(ANGLE_GROUP_KEY) for item in self.scene.selectedItems() if item.data(ANGLE_GROUP_KEY)}
+        for group_id in group_ids:
+            measurement_id = self.angle_group_measurements.get(str(group_id))
+            if measurement_id:
+                measurement_ids.add(measurement_id)
+        for item in self.scene.selectedItems():
+            measurement_id = item.data(ANGLE_MEASUREMENT_KEY)
+            if measurement_id:
+                measurement_ids.add(str(measurement_id))
+        return measurement_ids
+
     def remove_angle_items(self, items: list[QGraphicsPathItem | QGraphicsTextItem]) -> None:
         for item in items:
             if item in self.angle_items:
@@ -560,6 +583,11 @@ class AngleCanvas(QGraphicsView):
         self.angle_group_parents = {
             group_id: parent_id
             for group_id, parent_id in self.angle_group_parents.items()
+            if group_id in self.angle_groups
+        }
+        self.angle_group_measurements = {
+            group_id: measurement_id
+            for group_id, measurement_id in self.angle_group_measurements.items()
             if group_id in self.angle_groups
         }
 
@@ -1194,6 +1222,7 @@ class MainWindow(QMainWindow):
         self.structure_templates: list[StructureTemplate] = []
         self.record_clipboard: list[LineRecord] = []
         self._paste_offset_steps = 0
+        self.hidden_angle_measurements: set[str] = set()
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -1394,7 +1423,7 @@ class MainWindow(QMainWindow):
         clear_guides_button = QPushButton("가이드 지우기")
         clear_guides_button.clicked.connect(self.clear_guides)
         angle_button = QPushButton("각도 계산")
-        angle_button.clicked.connect(self.calculate_angles)
+        angle_button.clicked.connect(lambda: self.calculate_angles(reset_hidden=True))
         angle_settings_button = QPushButton("각도 표시 편집")
         angle_settings_button.clicked.connect(self.edit_angle_display_for_selected_edges)
         cd_button = QPushButton("CD 길이")
@@ -1581,6 +1610,7 @@ class MainWindow(QMainWindow):
         self.project_path = None
         self.nm_per_px = previous_nm_per_px if preserve_calibration else None
         self.records.clear()
+        self.hidden_angle_measurements.clear()
         self._counter = 1
         self._show_image()
         self._refresh_table()
@@ -1770,6 +1800,7 @@ class MainWindow(QMainWindow):
         ]
         self._refresh_structure_combo()
         self.records = {}
+        self.hidden_angle_measurements.clear()
         for item in payload.get("records", []):
             self.records[item["id"]] = line_record_from_dict(item)
         self._counter = payload.get("counter", len(self.records) + 1)
@@ -1829,7 +1860,7 @@ class MainWindow(QMainWindow):
         if self.canvas.cd_items:
             self.calculate_cd_lengths()
         else:
-            self.calculate_angles()
+            self.calculate_angles(reset_hidden=False)
         path, _ = QFileDialog.getSaveFileName(self, "CSV 내보내기", "", "CSV (*.csv)")
         if not path:
             return
@@ -2064,7 +2095,7 @@ class MainWindow(QMainWindow):
         self.image_bgr = rotated
         self._show_image(keep_view=False)
         self.canvas.redraw_lines(list(self.records.values()))
-        self.calculate_angles()
+        self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status(f"이미지를 {rotate_by:.3f}도 회전해 기준을 맞췄습니다.")
@@ -2102,7 +2133,7 @@ class MainWindow(QMainWindow):
                     record.edge_segmented = False
                     moved += 1
         self.canvas.redraw_lines(list(self.records.values()))
-        self.calculate_angles()
+        self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status(f"{moved}/{len(edge_records)}개 경계선을 선택한 형태로 명도 변화 최대 위치에 맞췄습니다.")
@@ -2148,7 +2179,7 @@ class MainWindow(QMainWindow):
             )
             self.records[record.id] = record
         self.canvas.redraw_lines(list(self.records.values()))
-        self.calculate_angles()
+        self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status(f"{orientation} 가이드 {count}개를 만들었습니다.")
@@ -2174,7 +2205,7 @@ class MainWindow(QMainWindow):
         if len(edges) < 2 or not guides:
             QMessageBox.information(self, "CD 길이", "CD 길이를 재려면 경계선 2개 이상과 가이드선이 필요합니다.")
             return
-        self.calculate_angles()
+        self.calculate_angles(reset_hidden=False)
         self._sync_records_from_canvas()
         edges = [record for record in self.records.values() if record.kind == "edge"]
         guides = [record for record in self.records.values() if record.kind == "guide"]
@@ -2311,7 +2342,7 @@ class MainWindow(QMainWindow):
         ) >= 2:
             self.calculate_cd_lengths()
         else:
-            self.calculate_angles()
+            self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
         skipped = " 기존 가이드를 유지했습니다." if has_guides else ""
@@ -2395,12 +2426,14 @@ class MainWindow(QMainWindow):
             edge.angle_arc_radius = arc_radius
             edge.angle_label_side = label_side
             edge.angle_label_gap = label_gap
-        self.calculate_angles()
+        self.calculate_angles(reset_hidden=False)
         self._set_status(f"선택한 경계선 {len(edges)}개의 각도 표시 설정을 바꿨습니다.")
 
-    def calculate_angles(self) -> None:
+    def calculate_angles(self, reset_hidden: bool = True) -> None:
         if self.image_bgr is None:
             return
+        if reset_hidden:
+            self.hidden_angle_measurements.clear()
         self._sync_records_from_canvas()
         self.canvas.clear_angle_items()
         self.canvas.clear_cd_items()
@@ -2433,10 +2466,17 @@ class MainWindow(QMainWindow):
                         (segment_start[1] + segment_end[1]) / 2.0,
                     )
                     label_pos = self._label_position(midpoint, segment_angle, reference_angle, 22.0)
-                    self.canvas.add_angle_annotation(f"{angle:.2f}°", label_pos, parent_record_id=edge.id)
+                    measurement_id = f"{edge.id}_seg{segment_idx}_to_{reference_name}"
+                    if measurement_id not in self.hidden_angle_measurements:
+                        self.canvas.add_angle_annotation(
+                            f"{angle:.2f}°",
+                            label_pos,
+                            parent_record_id=edge.id,
+                            measurement_id=measurement_id,
+                        )
                     self.last_measurements.append(
                         {
-                            "measurement": f"{edge.id}_seg{segment_idx}_to_{reference_name}",
+                            "measurement": measurement_id,
                             "edge_id": edge.id,
                             "guide_id": "",
                             "kind": "edge_segment_to_reference",
@@ -2453,11 +2493,18 @@ class MainWindow(QMainWindow):
             angle = acute_angle_difference(edge_angle, reference_angle)
             midpoint = ((edge.start[0] + edge.end[0]) / 2.0, (edge.start[1] + edge.end[1]) / 2.0)
             label_pos = self._label_position(midpoint, edge_angle, reference_angle, 34.0)
-            self.canvas.add_angle_annotation(f"{angle:.2f}°", label_pos, parent_record_id=edge.id)
+            measurement_id = f"{edge.id}_to_{reference_name}"
+            if measurement_id not in self.hidden_angle_measurements:
+                self.canvas.add_angle_annotation(
+                    f"{angle:.2f}°",
+                    label_pos,
+                    parent_record_id=edge.id,
+                    measurement_id=measurement_id,
+                )
             length_px = record_length(edge)
             self.last_measurements.append(
                 {
-                    "measurement": f"{edge.id}_to_{reference_name}",
+                    "measurement": measurement_id,
                     "edge_id": edge.id,
                     "guide_id": "",
                     "kind": "edge_to_reference",
@@ -2485,20 +2532,23 @@ class MainWindow(QMainWindow):
                         edge.angle_label_side,
                         edge.angle_label_gap,
                     )
-                    self.canvas.add_angle_annotation(
-                        f"{angle:.2f}°",
-                        label_pos,
-                        center=cross,
-                        angle_a=arc_start,
-                        angle_b=arc_end,
-                        radius=edge.angle_arc_radius,
-                        parent_record_id=edge.id,
-                    )
                     length_px = record_length(edge)
                     suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
+                    measurement_id = f"{edge.id}_x_{guide.id}{suffix}"
+                    if measurement_id not in self.hidden_angle_measurements:
+                        self.canvas.add_angle_annotation(
+                            f"{angle:.2f}°",
+                            label_pos,
+                            center=cross,
+                            angle_a=arc_start,
+                            angle_b=arc_end,
+                            radius=edge.angle_arc_radius,
+                            parent_record_id=edge.id,
+                            measurement_id=measurement_id,
+                        )
                     self.last_measurements.append(
                         {
-                            "measurement": f"{edge.id}_x_{guide.id}{suffix}",
+                            "measurement": measurement_id,
                             "edge_id": edge.id,
                             "guide_id": guide.id,
                             "kind": "edge_guide_intersection",
@@ -2519,11 +2569,12 @@ class MainWindow(QMainWindow):
         selected_angle_items = self.canvas.selected_angle_items()
         if not selected and not selected_angle_items:
             return
+        self.hidden_angle_measurements.update(self.canvas.selected_angle_measurement_ids())
         for record_id in selected:
             self.records.pop(record_id, None)
         if selected:
             self.canvas.redraw_lines(list(self.records.values()))
-            self.calculate_angles()
+            self.calculate_angles(reset_hidden=False)
             self._update_search_range_overlay()
             self._apply_visibility()
         elif selected_angle_items:
@@ -2576,7 +2627,7 @@ class MainWindow(QMainWindow):
             item = self.canvas.line_items.get(record_id)
             if item is not None:
                 item.setSelected(True)
-        self.calculate_angles()
+        self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status(f"상위개체 {len(new_ids)}개를 붙여넣었습니다. 하위 각도 표시들은 새로 계산됩니다.")
@@ -2620,7 +2671,7 @@ class MainWindow(QMainWindow):
                     item = self.canvas.line_items.get(record_id)
                     if item is not None:
                         item.setSelected(True)
-                self.calculate_angles()
+                self.calculate_angles(reset_hidden=False)
                 self._update_search_range_overlay()
                 self._apply_visibility()
         mode_label = "세그먼트" if mode == "curve" else "직선"
