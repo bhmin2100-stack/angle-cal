@@ -94,6 +94,8 @@ class ScalePreset:
     nm_per_px: float
     bar_px: float = 100.0
     bar_nm: Optional[float] = None
+    start: Optional[Point] = None
+    end: Optional[Point] = None
 
 
 @dataclass
@@ -586,17 +588,15 @@ class AngleCanvas(QGraphicsView):
                 text = f"L {length_px * nm_per_px:.3g} nm"
             else:
                 text = f"L {length_px:.2f} px"
-            midpoint = points[len(points) // 2]
-            normal_start = points[max(0, len(points) // 2 - 1)]
-            normal_end = points[min(len(points) - 1, len(points) // 2)]
-            nx, ny = normal_for_line(normal_start, normal_end)
+            midpoint = ((points[0][0] + points[-1][0]) / 2.0, (points[0][1] + points[-1][1]) / 2.0)
             label = QGraphicsTextItem()
             label.setHtml(
                 "<div style='background-color:rgba(35,20,45,185);"
                 "color:#f5ddff;padding:2px 5px;border-radius:3px;'>"
                 f"{text}</div>"
             )
-            label.setPos(midpoint[0] + nx * 16.0, midpoint[1] + ny * 16.0)
+            label_rect = label.boundingRect()
+            label.setPos(midpoint[0] - label_rect.width() / 2.0, midpoint[1] - label_rect.height() / 2.0)
             label.setZValue(28)
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -2231,6 +2231,8 @@ class MainWindow(QMainWindow):
                 nm_per_px=float(item["nm_per_px"]),
                 bar_px=float(item.get("bar_px", 100.0)),
                 bar_nm=float(item["bar_nm"]) if item.get("bar_nm") is not None else None,
+                start=tuple(item["start"]) if item.get("start") is not None else None,
+                end=tuple(item["end"]) if item.get("end") is not None else None,
             )
             for idx, item in enumerate(payload.get("scale_presets", []))
             if "nm_per_px" in item
@@ -2392,10 +2394,16 @@ class MainWindow(QMainWindow):
             scale_record = scale_records[-1]
             bar_px = record_length(scale_record)
             bar_nm = float(scale_record.value_nm) if scale_record.value_nm is not None else bar_px * float(self.nm_per_px)
+            start = tuple(scale_record.start)
+            end = tuple(scale_record.end)
         else:
             bar_px = 100.0
             bar_nm = bar_px * float(self.nm_per_px)
-        self.scale_presets.append(ScalePreset(name=name, nm_per_px=float(self.nm_per_px), bar_px=bar_px, bar_nm=bar_nm))
+            start = None
+            end = None
+        self.scale_presets.append(
+            ScalePreset(name=name, nm_per_px=float(self.nm_per_px), bar_px=bar_px, bar_nm=bar_nm, start=start, end=end)
+        )
         self._refresh_scale_preset_table()
         self._set_status(f"{len(self.scale_presets)}번 스케일 프리셋 등록: {name}, {self.nm_per_px:.6g} nm/px, 바 {bar_px:.2f}px")
 
@@ -2460,11 +2468,14 @@ class MainWindow(QMainWindow):
             return
         height, width = self.image_bgr.shape[:2]
         bar_px = max(5.0, min(float(preset.bar_px), max(5.0, width * 0.8)))
-        margin = max(12.0, min(width, height) * 0.06)
-        start_x = min(max(margin, 0.0), max(0.0, width - bar_px - margin))
-        y = max(margin, height - margin)
-        start = (float(start_x), float(y))
-        end = (float(start_x + bar_px), float(y))
+        if preset.start is not None and preset.end is not None:
+            start, end = self._scale_preset_points_in_image(preset.start, preset.end, width, height)
+        else:
+            margin = max(12.0, min(width, height) * 0.06)
+            start_x = min(max(margin, 0.0), max(0.0, width - bar_px - margin))
+            y = max(margin, height - margin)
+            start = (float(start_x), float(y))
+            end = (float(start_x + bar_px), float(y))
         bar_nm = float(preset.bar_nm) if preset.bar_nm is not None else bar_px * preset.nm_per_px
         record_id = self._next_id("S")
         self.records[record_id] = LineRecord(
@@ -2474,6 +2485,29 @@ class MainWindow(QMainWindow):
             end=end,
             label=f"{bar_nm:g} nm",
             value_nm=bar_nm,
+        )
+
+    @staticmethod
+    def _scale_preset_points_in_image(start: Point, end: Point, width: int, height: int) -> tuple[Point, Point]:
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        clamped_start_x = min(max(float(start[0]), 0.0), max(0.0, float(width)))
+        clamped_start_y = min(max(float(start[1]), 0.0), max(0.0, float(height)))
+        clamped_end_x = clamped_start_x + dx
+        clamped_end_y = clamped_start_y + dy
+        shift_x = 0.0
+        shift_y = 0.0
+        if clamped_end_x < 0.0:
+            shift_x = -clamped_end_x
+        elif clamped_end_x > width:
+            shift_x = float(width) - clamped_end_x
+        if clamped_end_y < 0.0:
+            shift_y = -clamped_end_y
+        elif clamped_end_y > height:
+            shift_y = float(height) - clamped_end_y
+        return (
+            (clamped_start_x + shift_x, clamped_start_y + shift_y),
+            (clamped_end_x + shift_x, clamped_end_y + shift_y),
         )
 
     def _selected_scale_preset_row(self) -> Optional[int]:

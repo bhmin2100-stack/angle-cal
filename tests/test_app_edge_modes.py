@@ -431,6 +431,9 @@ def test_edge_length_overlay_uses_calibration_and_visibility():
 
         assert len(window.canvas.edge_length_items) == 1
         assert "200" in window.canvas.edge_length_items[0].toHtml()
+        center = window.canvas.edge_length_items[0].sceneBoundingRect().center()
+        assert abs(center.x() - 70.0) < 1.0
+        assert abs(center.y() - 60.0) < 1.0
 
         window.set_visibility("edge_length", False)
         assert len(window.canvas.edge_length_items) == 0
@@ -478,12 +481,16 @@ def test_edge_length_overlay_skips_polyline_edges():
 def test_scale_preset_apply_restores_scale_bar():
     window = _window_with_edge_image()
     try:
-        window.scale_presets = [ScalePreset("100 nm", nm_per_px=2.0, bar_px=50.0, bar_nm=100.0)]
+        window.scale_presets = [
+            ScalePreset("100 nm", nm_per_px=2.0, bar_px=50.0, bar_nm=100.0, start=(25.0, 35.0), end=(75.0, 35.0))
+        ]
 
         window.apply_scale_preset(0)
 
         scales = [record for record in window.records.values() if record.kind == "scale"]
         assert len(scales) == 1
+        assert scales[0].start == (25.0, 35.0)
+        assert scales[0].end == (75.0, 35.0)
         assert scales[0].value_nm == 100.0
         assert scales[0].label == "100 nm"
         assert round(scales[0].end[0] - scales[0].start[0], 3) == 50.0
