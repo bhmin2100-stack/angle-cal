@@ -225,6 +225,7 @@ class AngleCanvas(QGraphicsView):
         self.show_search_range = True
         self.show_search_range_band = True
         self.show_search_range_label = True
+        self.show_point_handles = True
         self.current_tool = "select"
         self._drawing_start: Optional[QPointF] = None
         self._temp_line: Optional[QGraphicsLineItem] = None
@@ -324,6 +325,9 @@ class AngleCanvas(QGraphicsView):
             return
         self._refreshing_point_handles = True
         try:
+            if hasattr(self, "show_point_handles") and not self.show_point_handles:
+                self.clear_point_handles()
+                return
             if self.selected_point_handles():
                 return
             selected_items = [
@@ -339,6 +343,13 @@ class AngleCanvas(QGraphicsView):
                     self.point_handle_items.append(handle)
         finally:
             self._refreshing_point_handles = False
+
+    def set_point_handles_visible(self, visible: bool) -> None:
+        self.show_point_handles = visible
+        if visible:
+            self.refresh_point_handles()
+        else:
+            self.clear_point_handles()
 
     def update_owner_point_from_handle(self, handle: PointHandleItem) -> None:
         if self._updating_from_point_handle:
@@ -1431,6 +1442,7 @@ class MainWindow(QMainWindow):
             "edge_length": True,
             "range": True,
             "range_label": True,
+            "point_handle": True,
         }
 
         self.canvas = AngleCanvas()
@@ -1798,6 +1810,7 @@ class MainWindow(QMainWindow):
             ("edge_length", "경계 길이"),
             ("range", "인식 범위 영역"),
             ("range_label", "인식 범위 숫자"),
+            ("point_handle", "편집점"),
         ]:
             checkbox = QCheckBox(label)
             checkbox.setChecked(self.visibility[key])
@@ -3221,6 +3234,8 @@ class MainWindow(QMainWindow):
         elif key == "edge_length":
             self._update_edge_length_overlay()
             self._apply_visibility()
+        elif key == "point_handle":
+            self.canvas.set_point_handles_visible(visible)
         else:
             self._apply_visibility()
 
@@ -3291,6 +3306,7 @@ class MainWindow(QMainWindow):
             item.setVisible(self.visibility.get("range", True))
         for item in self.canvas.search_range_label_items:
             item.setVisible(self.visibility.get("range_label", True))
+        self.canvas.set_point_handles_visible(self.visibility.get("point_handle", True))
 
     def _search_range_label(self) -> str:
         radius = self.search_radius_spin.value()
@@ -3311,6 +3327,7 @@ class MainWindow(QMainWindow):
         self._refresh_table()
         self._update_search_range_overlay()
         self._update_object_visibility_controls()
+        self.canvas.refresh_point_handles()
 
     def _sync_records_from_canvas(self) -> None:
         for record_id, item in self.canvas.line_items.items():

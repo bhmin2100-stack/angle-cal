@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication, QGraphicsPathItem, QGraphicsTextItem
 
 from angle_cal.app import LineRecord, MainWindow, StructureTemplate, structure_template_from_dict, structure_template_to_dict
@@ -466,6 +466,31 @@ def test_point_handles_edit_line_endpoints_and_delete_polyline_points():
         assert window.canvas.delete_selected_point_handles()
         window._sync_records_from_canvas()
         assert len(window.records[poly_edge.id].points) == 2
+    finally:
+        window.close()
+
+
+def test_point_handles_follow_line_move_and_can_be_hidden():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.canvas.refresh_point_handles()
+
+        assert len(window.canvas.point_handle_items) == 2
+        assert window.canvas.point_handle_items[0].pos() == QPointF(20.0, 60.0)
+
+        assert window.canvas._nudge_selected_items(Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+        assert len(window.canvas.point_handle_items) == 2
+        assert window.canvas.point_handle_items[0].pos() == QPointF(30.0, 60.0)
+
+        window.set_visibility("point_handle", False)
+        assert len(window.canvas.point_handle_items) == 0
+
+        window.set_visibility("point_handle", True)
+        assert len(window.canvas.point_handle_items) == 2
     finally:
         window.close()
 
