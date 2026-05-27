@@ -62,6 +62,26 @@ def test_repeated_recognition_uses_stable_original_edge_path():
         window.close()
 
 
+def test_moving_segmented_edge_shifts_recognition_path():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        window.curve_sensitivity_spin.setValue(10)
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.recognize_edges()
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        assert edge.edge_segmented is True
+        original_recognition_points = list(edge.recognition_points)
+
+        item = window.canvas.line_items[edge.id]
+        item.moveBy(24.0, 3.0)
+        window._sync_records_from_canvas()
+
+        assert edge.recognition_points == [(point[0] + 24.0, point[1] + 3.0) for point in original_recognition_points]
+    finally:
+        window.close()
+
+
 def test_connected_line_edges_recognize_as_joined_chain():
     window = _window_with_edge_image()
     try:

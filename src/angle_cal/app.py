@@ -1178,6 +1178,25 @@ def recognition_points(record: LineRecord) -> list[Point]:
     return record_points(record)
 
 
+def translated_points(points: list[Point], dx: float, dy: float) -> list[Point]:
+    return [(point[0] + dx, point[1] + dy) for point in points]
+
+
+def uniform_translation_delta(old_points: list[Point], new_points: list[Point], tolerance: float = 0.01) -> Optional[Point]:
+    if len(old_points) != len(new_points) or not old_points:
+        return None
+    dx = new_points[0][0] - old_points[0][0]
+    dy = new_points[0][1] - old_points[0][1]
+    for old_point, new_point in zip(old_points[1:], new_points[1:]):
+        if abs((new_point[0] - old_point[0]) - dx) > tolerance:
+            return None
+        if abs((new_point[1] - old_point[1]) - dy) > tolerance:
+            return None
+    if abs(dx) <= tolerance and abs(dy) <= tolerance:
+        return (0.0, 0.0)
+    return (dx, dy)
+
+
 def record_length(record: LineRecord) -> float:
     points = record_points(record)
     return sum(line_length(start, end) for start, end in zip(points, points[1:]))
@@ -3526,6 +3545,14 @@ class MainWindow(QMainWindow):
             elif isinstance(item, AnnotationCurveItem):
                 points = points_from_path_item(item)
                 if len(points) >= 2:
+                    previous_points = record_points(record)
+                    if record.kind == "edge" and record.edge_segmented:
+                        delta = uniform_translation_delta(previous_points, points)
+                        if delta is not None:
+                            if record.recognition_points:
+                                record.recognition_points = translated_points(record.recognition_points, delta[0], delta[1])
+                        else:
+                            record.recognition_points = points
                     record.points = points
                     record.start = points[0]
                     record.end = points[-1]
