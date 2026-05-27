@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QGraphicsPathItem, QGraphicsTextItem
 
 from angle_cal.app import LineRecord, MainWindow, StructureTemplate, structure_template_from_dict, structure_template_to_dict
 
@@ -209,3 +209,60 @@ def test_structure_template_round_trip_dict():
     assert loaded.name == "CD pair"
     assert loaded.cd_segment_mode == "even"
     assert loaded.records[0].angle_sector == 2
+
+
+def test_selection_filter_keeps_only_requested_object_type():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.records["G99"] = LineRecord(
+            id="G99",
+            kind="guide",
+            start=(40.0, 42.679),
+            end=(100.0, 77.321),
+            label="guide",
+            axis="custom",
+        )
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.calculate_angles()
+
+        for item in [window.canvas.line_items[edge.id], *window.canvas.angle_items]:
+            item.setSelected(True)
+        window.canvas._selection_filter = "edge"
+        window.canvas._apply_selection_filter()
+        assert window.canvas.selected_line_ids() == [edge.id]
+
+        window.canvas._selection_filter = "angle_arc"
+        window.canvas.scene.clearSelection()
+        for item in window.canvas.angle_items:
+            item.setSelected(True)
+        window.canvas._apply_selection_filter()
+        assert all(isinstance(item, QGraphicsPathItem) for item in window.canvas.scene.selectedItems())
+
+        window.canvas._selection_filter = "angle_label"
+        window.canvas.scene.clearSelection()
+        for item in window.canvas.angle_items:
+            item.setSelected(True)
+        window.canvas._apply_selection_filter()
+        assert all(isinstance(item, QGraphicsTextItem) for item in window.canvas.scene.selectedItems())
+    finally:
+        window.close()
+
+
+def test_edge_length_overlay_uses_calibration_and_visibility():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        window.nm_per_px = 2.0
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window._update_edge_length_overlay()
+
+        assert len(window.canvas.edge_length_items) == 1
+        assert "200" in window.canvas.edge_length_items[0].toHtml()
+
+        window.set_visibility("edge_length", False)
+        assert len(window.canvas.edge_length_items) == 0
+    finally:
+        window.close()

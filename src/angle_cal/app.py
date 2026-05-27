@@ -165,6 +165,7 @@ class AngleCanvas(QGraphicsView):
         super().__init__()
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -175,6 +176,7 @@ class AngleCanvas(QGraphicsView):
         self.line_items: dict[str, AnnotationLineItem | AnnotationCurveItem] = {}
         self.angle_items: list[QGraphicsPathItem | QGraphicsTextItem] = []
         self.cd_items: list[QGraphicsItem] = []
+        self.edge_length_items: list[QGraphicsItem] = []
         self.search_range_band_items: list[QGraphicsItem] = []
         self.search_range_label_items: list[QGraphicsItem] = []
         self.detection_preview_items: list[QGraphicsItem] = []
@@ -195,6 +197,8 @@ class AngleCanvas(QGraphicsView):
         self._pan_last = QPoint()
         self._resizing = False
         self._resize_last = QPoint()
+        self._selection_filter: Optional[str] = None
+        self._filtering_selection = False
         self._expanding_angle_selection = False
         self.scene.selectionChanged.connect(self._expand_angle_group_selection)
 
@@ -236,6 +240,7 @@ class AngleCanvas(QGraphicsView):
         self.line_items.clear()
         self.angle_items.clear()
         self.cd_items.clear()
+        self.edge_length_items.clear()
         self.search_range_band_items.clear()
         self.search_range_label_items.clear()
         self.detection_preview_items.clear()
@@ -396,6 +401,47 @@ class AngleCanvas(QGraphicsView):
             self.scene.removeItem(item)
         self.cd_items.clear()
 
+    def clear_edge_length_items(self) -> None:
+        for item in self.edge_length_items:
+            self.scene.removeItem(item)
+        self.edge_length_items.clear()
+
+    def update_edge_length_overlay(
+        self,
+        records: list[LineRecord],
+        nm_per_px: Optional[float],
+        visible: bool,
+    ) -> None:
+        self.clear_edge_length_items()
+        if not visible or self.pixmap_item is None:
+            return
+        for record in records:
+            if record.kind != "edge":
+                continue
+            points = record_points(record)
+            if len(points) < 2:
+                continue
+            length_px = record_length(record)
+            if nm_per_px:
+                text = f"L {length_px * nm_per_px:.3g} nm"
+            else:
+                text = f"L {length_px:.2f} px"
+            midpoint = points[len(points) // 2]
+            normal_start = points[max(0, len(points) // 2 - 1)]
+            normal_end = points[min(len(points) - 1, len(points) // 2)]
+            nx, ny = normal_for_line(normal_start, normal_end)
+            label = QGraphicsTextItem()
+            label.setHtml(
+                "<div style='background-color:rgba(35,20,45,185);"
+                "color:#f5ddff;padding:2px 5px;border-radius:3px;'>"
+                f"{text}</div>"
+            )
+            label.setPos(midpoint[0] + nx * 16.0, midpoint[1] + ny * 16.0)
+            label.setZValue(28)
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            self.scene.addItem(label)
+            self.edge_length_items.append(label)
+
     def add_cd_measurement(self, start: Point, end: Point, text: str, label_pos: Point) -> list[QGraphicsItem]:
         items: list[QGraphicsItem] = []
         line = QGraphicsLineItem(start[0], start[1], end[0], end[1])
@@ -513,7 +559,12 @@ class AngleCanvas(QGraphicsView):
         }
 
     def _expand_angle_group_selection(self) -> None:
+        if self._filtering_selection:
+            return
         if self._expanding_angle_selection:
+            return
+        if self._selection_filter is not None:
+            self._apply_selection_filter()
             return
         selected_group_ids = {
             item.data(ANGLE_GROUP_KEY)
@@ -529,6 +580,26 @@ class AngleCanvas(QGraphicsView):
                     item.setSelected(True)
         finally:
             self._expanding_angle_selection = False
+
+    def _apply_selection_filter(self) -> None:
+        if self._selection_filter is None or self._filtering_selection:
+            return
+        self._filtering_selection = True
+        try:
+            for item in self.scene.selectedItems():
+                if not self._matches_selection_filter(item):
+                    item.setSelected(False)
+        finally:
+            self._filtering_selection = False
+
+    def _matches_selection_filter(self, item: QGraphicsItem) -> bool:
+        if self._selection_filter == "edge":
+            return isinstance(item, (AnnotationLineItem, AnnotationCurveItem)) and item.kind == "edge"
+        if self._selection_filter == "angle_arc":
+            return isinstance(item, QGraphicsPathItem) and item in self.angle_items
+        if self._selection_filter == "angle_label":
+            return isinstance(item, QGraphicsTextItem) and item in self.angle_items
+        return True
 
     def selected_persistent_bounds(self) -> Optional[QRectF]:
         items = [item for item in self.scene.selectedItems() if isinstance(item, (AnnotationLineItem, AnnotationCurveItem))]
@@ -557,6 +628,7 @@ class AngleCanvas(QGraphicsView):
         super().wheelEvent(event)
 
     def mousePressEvent(self, event):  # noqa: N802
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
         if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
             self._start_pan(event.pos())
             event.accept()
@@ -669,6 +741,7 @@ class AngleCanvas(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+        self._apply_selection_filter()
         self.scene_changed.emit()
 
     def mouseDoubleClickEvent(self, event):  # noqa: N802
@@ -685,6 +758,15 @@ class AngleCanvas(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802
+        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W, Qt.Key.Key_E):
+            self._selection_filter = {
+                Qt.Key.Key_Q: "edge",
+                Qt.Key.Key_W: "angle_arc",
+                Qt.Key.Key_E: "angle_label",
+            }[event.key()]
+            self._apply_selection_filter()
+            event.accept()
+            return
         if self.current_tool == "edge" and self.edge_draw_mode == "curve":
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self._finish_curve()
@@ -695,6 +777,13 @@ class AngleCanvas(QGraphicsView):
                 event.accept()
                 return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):  # noqa: N802
+        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W, Qt.Key.Key_E):
+            self._selection_filter = None
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
 
     def _append_curve_point(self, point: QPointF) -> None:
         if self._curve_points:
@@ -1075,6 +1164,7 @@ class MainWindow(QMainWindow):
             "guide": True,
             "angle": True,
             "cd": True,
+            "edge_length": True,
             "range": True,
             "range_label": True,
         }
@@ -1342,6 +1432,7 @@ class MainWindow(QMainWindow):
             ("guide", "가이드"),
             ("angle", "각도 숫자/호"),
             ("cd", "CD 길이"),
+            ("edge_length", "경계 길이"),
             ("range", "인식 범위 영역"),
             ("range_label", "인식 범위 숫자"),
         ]:
@@ -2562,12 +2653,25 @@ class MainWindow(QMainWindow):
             list(self.records.values()),
             self._search_range_label(),
         )
+        self._update_edge_length_overlay(sync=False)
         self._apply_visibility()
+
+    def _update_edge_length_overlay(self, sync: bool = True) -> None:
+        if sync:
+            self._sync_records_from_canvas()
+        self.canvas.update_edge_length_overlay(
+            list(self.records.values()),
+            self.nm_per_px,
+            self.visibility.get("edge_length", True),
+        )
 
     def set_visibility(self, key: str, visible: bool) -> None:
         self.visibility[key] = visible
         if key in {"range", "range_label"}:
             self._update_search_range_overlay()
+        elif key == "edge_length":
+            self._update_edge_length_overlay()
+            self._apply_visibility()
         else:
             self._apply_visibility()
 
@@ -2580,6 +2684,8 @@ class MainWindow(QMainWindow):
             item.setVisible(self.visibility.get("angle", True))
         for item in self.canvas.cd_items:
             item.setVisible(self.visibility.get("cd", True))
+        for item in self.canvas.edge_length_items:
+            item.setVisible(self.visibility.get("edge_length", True))
         for item in self.canvas.search_range_band_items:
             item.setVisible(self.visibility.get("range", True))
         for item in self.canvas.search_range_label_items:
