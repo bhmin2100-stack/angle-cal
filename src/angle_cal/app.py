@@ -56,6 +56,7 @@ from .image_ops import (
     normal_for_line,
     read_image,
     rotate_image_and_points,
+    snap_line_to_gradient,
     snap_line_to_gradient_curve,
     to_gray,
 )
@@ -71,6 +72,7 @@ class LineRecord:
     axis: str = "horizontal"
     value_nm: Optional[float] = None
     points: Optional[list[Point]] = None
+    edge_mode: str = "line"
 
 
 @dataclass
@@ -100,6 +102,7 @@ class AnnotationCurveItem(QGraphicsPathItem):
         super().__init__(path_from_points(record.points or [record.start, record.end]))
         self.record_id = record.id
         self.kind = record.kind
+        self.anchor_points = list(record.points or [record.start, record.end])
         self.setPen(pen)
         self.setZValue(10)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
@@ -111,12 +114,27 @@ def path_from_points(points: list[Point]) -> QPainterPath:
     if not points:
         return path
     path.moveTo(points[0][0], points[0][1])
-    for point in points[1:]:
-        path.lineTo(point[0], point[1])
+    if len(points) == 2:
+        path.lineTo(points[1][0], points[1][1])
+        return path
+    for idx in range(len(points) - 1):
+        p0 = points[max(0, idx - 1)]
+        p1 = points[idx]
+        p2 = points[idx + 1]
+        p3 = points[min(len(points) - 1, idx + 2)]
+        c1 = (p1[0] + (p2[0] - p0[0]) / 6.0, p1[1] + (p2[1] - p0[1]) / 6.0)
+        c2 = (p2[0] - (p3[0] - p1[0]) / 6.0, p2[1] - (p3[1] - p1[1]) / 6.0)
+        path.cubicTo(c1[0], c1[1], c2[0], c2[1], p2[0], p2[1])
     return path
 
 
 def points_from_path_item(item: QGraphicsPathItem) -> list[Point]:
+    anchor_points = getattr(item, "anchor_points", None)
+    if anchor_points:
+        return [
+            (float(item.mapToScene(QPointF(point[0], point[1])).x()), float(item.mapToScene(QPointF(point[0], point[1])).y()))
+            for point in anchor_points
+        ]
     path = item.path()
     points: list[Point] = []
     for idx in range(path.elementCount()):
@@ -127,7 +145,7 @@ def points_from_path_item(item: QGraphicsPathItem) -> list[Point]:
 
 
 class AngleCanvas(QGraphicsView):
-    line_created = Signal(str, tuple, tuple)
+    line_created = Signal(str, tuple, tuple, object)
     scene_changed = Signal()
     scale_requested = Signal(float)
 
@@ -154,6 +172,9 @@ class AngleCanvas(QGraphicsView):
         self.current_tool = "select"
         self._drawing_start: Optional[QPointF] = None
         self._temp_line: Optional[QGraphicsLineItem] = None
+        self.edge_draw_mode = "line"
+        self._curve_points: list[QPointF] = []
+        self._temp_curve: Optional[QGraphicsPathItem] = None
         self._panning = False
         self._pan_last = QPoint()
         self._resizing = False
@@ -163,6 +184,8 @@ class AngleCanvas(QGraphicsView):
 
     def set_tool(self, tool: str) -> None:
         self.current_tool = tool
+        if tool != "edge" or self.edge_draw_mode != "curve":
+            self._clear_curve_preview()
         if tool == "pan":
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -173,10 +196,15 @@ class AngleCanvas(QGraphicsView):
             self.unsetCursor()
             self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
 
+    def set_edge_draw_mode(self, mode: str) -> None:
+        self.edge_draw_mode = mode
+        self.cancel_interaction()
+
     def cancel_interaction(self) -> None:
         if self._temp_line is not None:
             self.scene.removeItem(self._temp_line)
             self._temp_line = None
+        self._clear_curve_preview()
         self._drawing_start = None
         self._panning = False
         self._resizing = False
@@ -497,6 +525,10 @@ class AngleCanvas(QGraphicsView):
             and self.current_tool in {"scale", "reference", "edge"}
             and self.pixmap_item is not None
         ):
+            if self.current_tool == "edge" and self.edge_draw_mode == "curve":
+                self._append_curve_point(self._clamp_to_image(self.mapToScene(event.pos())))
+                event.accept()
+                return
             self._drawing_start = self._clamp_to_image(self.mapToScene(event.pos()))
             self._temp_line = QGraphicsLineItem(
                 self._drawing_start.x(),
@@ -528,6 +560,12 @@ class AngleCanvas(QGraphicsView):
                 end.x(),
                 end.y(),
             )
+            event.accept()
+            return
+
+        if self._temp_curve is not None and self._curve_points:
+            preview_point = self._clamp_to_image(self.mapToScene(event.pos()))
+            self._update_curve_preview(preview_point)
             event.accept()
             return
 
@@ -570,11 +608,75 @@ class AngleCanvas(QGraphicsView):
                     self.current_tool,
                     (float(start.x()), float(start.y())),
                     (float(end.x()), float(end.y())),
+                    None,
                 )
             event.accept()
             return
         super().mouseReleaseEvent(event)
         self.scene_changed.emit()
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.current_tool == "edge"
+            and self.edge_draw_mode == "curve"
+            and self.pixmap_item is not None
+        ):
+            self._append_curve_point(self._clamp_to_image(self.mapToScene(event.pos())))
+            self._finish_curve()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event):  # noqa: N802
+        if self.current_tool == "edge" and self.edge_draw_mode == "curve":
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._finish_curve()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Escape and self._curve_points:
+                self.cancel_interaction()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def _append_curve_point(self, point: QPointF) -> None:
+        if self._curve_points:
+            last = self._curve_points[-1]
+            if math.hypot(point.x() - last.x(), point.y() - last.y()) < 2:
+                return
+        self._curve_points.append(point)
+        if self._temp_curve is None:
+            self._temp_curve = QGraphicsPathItem()
+            self._temp_curve.setPen(QPen(QColor("#4cc9f0"), 2.0, Qt.PenStyle.DashLine))
+            self._temp_curve.setZValue(40)
+            self.scene.addItem(self._temp_curve)
+        self._update_curve_preview()
+
+    def _update_curve_preview(self, preview_point: Optional[QPointF] = None) -> None:
+        if self._temp_curve is None:
+            return
+        points = [(float(point.x()), float(point.y())) for point in self._curve_points]
+        if preview_point is not None:
+            points.append((float(preview_point.x()), float(preview_point.y())))
+        self._temp_curve.setPath(path_from_points(points))
+
+    def _finish_curve(self) -> None:
+        if len(self._curve_points) < 2:
+            self._clear_curve_preview()
+            return
+        points = [(float(point.x()), float(point.y())) for point in self._curve_points]
+        start = points[0]
+        end = points[-1]
+        self._clear_curve_preview()
+        if record_length(LineRecord("_preview", "edge", start, end, points=points, edge_mode="curve")) > 3:
+            self.line_created.emit(self.current_tool, start, end, points)
+
+    def _clear_curve_preview(self) -> None:
+        if self._temp_curve is not None:
+            self.scene.removeItem(self._temp_curve)
+            self._temp_curve = None
+        self._curve_points = []
 
     def _start_pan(self, pos: QPoint) -> None:
         self._panning = True
@@ -850,6 +952,14 @@ class MainWindow(QMainWindow):
         reference_toolbar.addWidget(align_button)
 
         detect_toolbar = self._new_toolbar("인식")
+
+        self.edge_mode_combo = QComboBox()
+        self.edge_mode_combo.addItem("직선", "line")
+        self.edge_mode_combo.addItem("곡선", "curve")
+        self.edge_mode_combo.currentIndexChanged.connect(self._edge_mode_changed)
+        detect_toolbar.addWidget(QLabel("경계 형태"))
+        detect_toolbar.addWidget(self.edge_mode_combo)
+        self.canvas.set_edge_draw_mode(self.edge_mode_combo.currentData())
 
         self.search_radius_spin = QSpinBox()
         self.search_radius_spin.setRange(2, 300)
@@ -1223,6 +1333,10 @@ class MainWindow(QMainWindow):
         self.project_path = path
         self.nm_per_px = payload.get("nm_per_px")
         edge_detection = payload.get("edge_detection", {})
+        edge_mode = edge_detection.get("edge_mode", self.edge_mode_combo.currentData())
+        mode_index = self.edge_mode_combo.findData(edge_mode)
+        if mode_index >= 0:
+            self.edge_mode_combo.setCurrentIndex(mode_index)
         self.search_radius_spin.setValue(int(edge_detection.get("search_radius_px", self.search_radius_spin.value())))
         self.curve_sensitivity_spin.setValue(
             int(edge_detection.get("curve_sensitivity", self.curve_sensitivity_spin.value()))
@@ -1243,6 +1357,9 @@ class MainWindow(QMainWindow):
         self.records = {}
         for item in payload.get("records", []):
             raw_points = item.get("points") or []
+            record_edge_mode = item.get("edge_mode")
+            if record_edge_mode not in {"line", "curve"}:
+                record_edge_mode = "curve" if raw_points else "line"
             self.records[item["id"]] = LineRecord(
                 id=item["id"],
                 kind=item["kind"],
@@ -1252,6 +1369,7 @@ class MainWindow(QMainWindow):
                 axis=item.get("axis", "horizontal"),
                 value_nm=item.get("value_nm"),
                 points=[tuple(point) for point in raw_points] or None,
+                edge_mode=record_edge_mode,
             )
         self._counter = payload.get("counter", len(self.records) + 1)
         self._show_image()
@@ -1276,6 +1394,7 @@ class MainWindow(QMainWindow):
             "image_path": self.image_path,
             "nm_per_px": self.nm_per_px,
             "edge_detection": {
+                "edge_mode": self.edge_mode_combo.currentData(),
                 "search_radius_px": self.search_radius_spin.value(),
                 "curve_sensitivity": self.curve_sensitivity_spin.value(),
                 "show_search_range": self.show_search_range_checkbox.isChecked(),
@@ -1331,13 +1450,13 @@ class MainWindow(QMainWindow):
                 writer.writerow(row)
         self._set_status(f"CSV 저장: {Path(path).name}")
 
-    def _handle_line_created(self, tool: str, start: Point, end: Point) -> None:
+    def _handle_line_created(self, tool: str, start: Point, end: Point, points: Optional[list[Point]]) -> None:
         if tool == "scale":
             self._create_scale_line(start, end)
         elif tool == "reference":
             self._create_reference_line(start, end)
         elif tool == "edge":
-            self._create_edge_line(start, end)
+            self._create_edge_line(start, end, points)
         self.canvas.redraw_lines(list(self.records.values()))
         self._refresh_table()
         self._update_search_range_overlay()
@@ -1475,7 +1594,10 @@ class MainWindow(QMainWindow):
         self.records[record.id] = record
         self._set_status("기준선을 만들었습니다. 기준 토글을 바꾼 뒤 '이미지 맞춤'으로 수평/수직 전환할 수 있습니다.")
 
-    def _create_edge_line(self, start: Point, end: Point) -> None:
+    def _create_edge_line(self, start: Point, end: Point, points: Optional[list[Point]] = None) -> None:
+        edge_mode = self.edge_mode_combo.currentData()
+        if edge_mode != "curve":
+            points = None
         record = LineRecord(
             id=self._next_id("E"),
             kind="edge",
@@ -1483,10 +1605,11 @@ class MainWindow(QMainWindow):
             end=end,
             label="edge",
             axis=self.axis_combo.currentData(),
-            points=None,
+            points=points,
+            edge_mode=edge_mode,
         )
         self.records[record.id] = record
-        self._set_status("경계선을 추가했습니다.")
+        self._set_status(f"{'곡선' if edge_mode == 'curve' else '직선'} 경계선을 추가했습니다.")
 
     def align_to_reference(self) -> None:
         if self.image_bgr is None:
@@ -1542,17 +1665,25 @@ class MainWindow(QMainWindow):
         sensitivity = self.curve_sensitivity_spin.value()
         moved = 0
         for record in edge_records:
-            result = snap_line_to_gradient_curve(gray, record.start, record.end, radius, sensitivity)
-            if result is not None:
-                record.start = result.start
-                record.end = result.end
-                record.points = result.points
-                moved += 1
+            if record.edge_mode == "curve":
+                result = snap_line_to_gradient_curve(gray, record.start, record.end, radius, sensitivity)
+                if result is not None:
+                    record.start = result.start
+                    record.end = result.end
+                    record.points = result.points
+                    moved += 1
+            else:
+                result = snap_line_to_gradient(gray, record.start, record.end, radius)
+                if result is not None:
+                    record.start = result.start
+                    record.end = result.end
+                    record.points = None
+                    moved += 1
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles()
         self._update_search_range_overlay()
         self._apply_visibility()
-        self._set_status(f"{moved}/{len(edge_records)}개 경계선을 명도 변화 최대 위치를 따라 곡선으로 변환했습니다.")
+        self._set_status(f"{moved}/{len(edge_records)}개 경계선을 선택한 형태로 명도 변화 최대 위치에 맞췄습니다.")
 
     def add_guides(self) -> None:
         if self.image_bgr is None:
@@ -1721,6 +1852,38 @@ class MainWindow(QMainWindow):
         self.canvas.set_tool(tool)
         if hasattr(self, "tool_buttons") and tool in self.tool_buttons:
             self.tool_buttons[tool].setChecked(True)
+
+    def _edge_mode_changed(self) -> None:
+        mode = self.edge_mode_combo.currentData()
+        self.canvas.set_edge_draw_mode(mode)
+        selected_ids = set(self.canvas.selected_line_ids())
+        changed = 0
+        if selected_ids:
+            self._sync_records_from_canvas()
+            for record_id in selected_ids:
+                record = self.records.get(record_id)
+                if record is None or record.kind != "edge":
+                    continue
+                record.edge_mode = mode
+                if mode == "line":
+                    record.points = None
+                changed += 1
+            if changed:
+                self.canvas.redraw_lines(list(self.records.values()))
+                for record_id in selected_ids:
+                    item = self.canvas.line_items.get(record_id)
+                    if item is not None:
+                        item.setSelected(True)
+                self.calculate_angles()
+                self._update_search_range_overlay()
+                self._apply_visibility()
+        mode_label = "곡선" if mode == "curve" else "직선"
+        if changed:
+            self._set_status(f"선택한 경계선 {changed}개를 {mode_label} 모드로 바꿨습니다.")
+        elif mode == "curve":
+            self._set_status("경계 형태: 곡선. 경계선 도구에서 점을 찍고 더블클릭 또는 Enter로 확정합니다.")
+        else:
+            self._set_status("경계 형태: 직선. 경계선 도구에서 드래그로 선분을 긋습니다.")
 
     def _axis_changed(self) -> None:
         if self.current_tool != "reference":
