@@ -3,6 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QGraphicsPathItem, QGraphicsTextItem
 
 from angle_cal.app import LineRecord, MainWindow, StructureTemplate, structure_template_from_dict, structure_template_to_dict
@@ -264,5 +265,21 @@ def test_edge_length_overlay_uses_calibration_and_visibility():
 
         window.set_visibility("edge_length", False)
         assert len(window.canvas.edge_length_items) == 0
+    finally:
+        window.close()
+
+
+def test_ctrl_pan_restore_returns_to_edge_cursor():
+    window = _window_with_edge_image()
+    try:
+        window.set_current_tool("edge")
+        window.canvas._start_pan(window.canvas.viewport().rect().center())
+        assert window.canvas.cursor().shape() == Qt.CursorShape.ClosedHandCursor
+
+        window.canvas._panning = False
+        window.canvas._restore_tool_cursor()
+
+        assert window.canvas.cursor().shape() == Qt.CursorShape.ArrowCursor
+        assert window.canvas.current_tool == "edge"
     finally:
         window.close()

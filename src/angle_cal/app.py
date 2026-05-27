@@ -228,6 +228,9 @@ class AngleCanvas(QGraphicsView):
         self._drawing_start = None
         self._panning = False
         self._resizing = False
+        self._restore_tool_cursor()
+
+    def _restore_tool_cursor(self) -> None:
         if self.current_tool == "pan":
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         elif self.current_tool == "resize":
@@ -714,8 +717,7 @@ class AngleCanvas(QGraphicsView):
             Qt.MouseButton.RightButton,
         ):
             self._panning = False
-            if self.current_tool == "pan":
-                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self._restore_tool_cursor()
             event.accept()
             return
 
