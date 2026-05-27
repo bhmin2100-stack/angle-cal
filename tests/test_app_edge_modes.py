@@ -39,6 +39,25 @@ def test_recognize_keeps_line_mode_straight():
         window.close()
 
 
+def test_connected_line_edges_recognize_as_joined_chain():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        window._create_edge_line((70.0, 20.0), (70.0, 60.0))
+        window._create_edge_line((70.0, 60.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.recognize_edges()
+
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        assert len(edges) == 2
+        assert abs(edges[0].end[0] - edges[1].start[0]) < 0.001
+        assert abs(edges[0].end[1] - edges[1].start[1]) < 0.001
+        assert 80 <= edges[0].end[0] <= 83
+    finally:
+        window.close()
+
+
 def test_recognize_converts_polyline_mode_to_connected_segments():
     window = _window_with_edge_image()
     try:
@@ -401,5 +420,37 @@ def test_arrow_keys_nudge_selected_edge_and_ctrl_uses_one_pixel():
         window._sync_records_from_canvas()
         assert window.records[edge.id].start == (30.0, 59.0)
         assert window.records[edge.id].end == (130.0, 59.0)
+    finally:
+        window.close()
+
+
+def test_point_handles_edit_line_endpoints_and_delete_polyline_points():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        line_edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.line_items[line_edge.id].setSelected(True)
+        window.canvas.refresh_point_handles()
+
+        assert len(window.canvas.point_handle_items) == 2
+        window.canvas.point_handle_items[1].setPos(130.0, 66.0)
+        window._sync_records_from_canvas()
+        assert window.records[line_edge.id].end == (130.0, 66.0)
+
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
+        window._create_edge_line((40.0, 20.0), (70.0, 60.0), [(40.0, 20.0), (55.0, 40.0), (70.0, 60.0)])
+        poly_edge = max((record for record in window.records.values() if record.kind == "edge"), key=lambda record: record.id)
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.scene.clearSelection()
+        window.canvas.line_items[poly_edge.id].setSelected(True)
+        window.canvas.refresh_point_handles()
+
+        assert len(window.canvas.point_handle_items) == 3
+        window.canvas.point_handle_items[1].setSelected(True)
+        assert window.canvas.delete_selected_point_handles()
+        window._sync_records_from_canvas()
+        assert len(window.records[poly_edge.id].points) == 2
     finally:
         window.close()

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGridLayout,
     QFileDialog,
+    QGraphicsEllipseItem,
     QGraphicsLineItem,
     QGraphicsPathItem,
     QGraphicsPixmapItem,
@@ -127,6 +128,28 @@ class AnnotationCurveItem(QGraphicsPathItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
 
 
+class PointHandleItem(QGraphicsEllipseItem):
+    def __init__(self, owner: AnnotationLineItem | AnnotationCurveItem, point_index: int, pos: Point, canvas: "AngleCanvas"):
+        radius = 4.5
+        super().__init__(-radius, -radius, radius * 2, radius * 2)
+        self.owner = owner
+        self.point_index = point_index
+        self.canvas = canvas
+        self.setPos(pos[0], pos[1])
+        self.setBrush(QBrush(QColor("#ffffff")))
+        self.setPen(QPen(QColor("#ffb703"), 1.6))
+        self.setZValue(55)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def itemChange(self, change, value):  # noqa: N802
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+            self.canvas.update_owner_point_from_handle(self)
+        return super().itemChange(change, value)
+
+
 def path_from_points(points: list[Point], smooth: bool = True) -> QPainterPath:
     path = QPainterPath()
     if not points:
@@ -147,7 +170,12 @@ def path_from_points(points: list[Point], smooth: bool = True) -> QPainterPath:
     return path
 
 
-def points_from_path_item(item: QGraphicsPathItem) -> list[Point]:
+def points_from_path_item(item: QGraphicsPathItem | QGraphicsLineItem) -> list[Point]:
+    if isinstance(item, QGraphicsLineItem):
+        line = item.line()
+        p1 = item.mapToScene(line.p1())
+        p2 = item.mapToScene(line.p2())
+        return [(float(p1.x()), float(p1.y())), (float(p2.x()), float(p2.y()))]
     anchor_points = getattr(item, "anchor_points", None)
     if anchor_points:
         return [
@@ -187,6 +215,7 @@ class AngleCanvas(QGraphicsView):
         self.search_range_band_items: list[QGraphicsItem] = []
         self.search_range_label_items: list[QGraphicsItem] = []
         self.detection_preview_items: list[QGraphicsItem] = []
+        self.point_handle_items: list[PointHandleItem] = []
         self.angle_groups: dict[str, list[QGraphicsItem]] = {}
         self.angle_group_parents: dict[str, str] = {}
         self.angle_group_measurements: dict[str, str] = {}
@@ -208,7 +237,10 @@ class AngleCanvas(QGraphicsView):
         self._selection_filter: Optional[str] = None
         self._filtering_selection = False
         self._expanding_angle_selection = False
+        self._refreshing_point_handles = False
+        self._updating_from_point_handle = False
         self.scene.selectionChanged.connect(self._expand_angle_group_selection)
+        self.scene.selectionChanged.connect(self.refresh_point_handles)
 
     def set_tool(self, tool: str) -> None:
         self.current_tool = tool
@@ -255,6 +287,7 @@ class AngleCanvas(QGraphicsView):
         self.search_range_band_items.clear()
         self.search_range_label_items.clear()
         self.detection_preview_items.clear()
+        self.point_handle_items.clear()
         self.angle_groups.clear()
         self.angle_group_parents.clear()
         self.angle_group_measurements.clear()
@@ -265,6 +298,7 @@ class AngleCanvas(QGraphicsView):
         self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def redraw_lines(self, records: list[LineRecord]) -> None:
+        self.clear_point_handles()
         for item in list(self.line_items.values()):
             self.scene.removeItem(item)
         self.line_items.clear()
@@ -275,6 +309,83 @@ class AngleCanvas(QGraphicsView):
                 item = AnnotationLineItem(record, self._pen_for_record(record))
             self.scene.addItem(item)
             self.line_items[record.id] = item
+        self.refresh_point_handles()
+
+    def clear_point_handles(self) -> None:
+        for item in list(self.point_handle_items):
+            self.scene.removeItem(item)
+        self.point_handle_items.clear()
+
+    def refresh_point_handles(self) -> None:
+        if self._refreshing_point_handles:
+            return
+        self._refreshing_point_handles = True
+        try:
+            if self.selected_point_handles():
+                return
+            selected_items = [
+                item
+                for item in self.scene.selectedItems()
+                if isinstance(item, (AnnotationLineItem, AnnotationCurveItem)) and item.kind in {"edge", "scale", "reference"}
+            ]
+            self.clear_point_handles()
+            for item in selected_items:
+                for idx, point in enumerate(points_from_path_item(item)):
+                    handle = PointHandleItem(item, idx, point, self)
+                    self.scene.addItem(handle)
+                    self.point_handle_items.append(handle)
+        finally:
+            self._refreshing_point_handles = False
+
+    def update_owner_point_from_handle(self, handle: PointHandleItem) -> None:
+        if self._updating_from_point_handle:
+            return
+        self._updating_from_point_handle = True
+        try:
+            scene_pos = handle.scenePos()
+            owner = handle.owner
+            if isinstance(owner, AnnotationLineItem):
+                line = owner.line()
+                local_pos = owner.mapFromScene(scene_pos)
+                if handle.point_index == 0:
+                    line.setP1(local_pos)
+                else:
+                    line.setP2(local_pos)
+                owner.setLine(line)
+            elif isinstance(owner, AnnotationCurveItem):
+                points = list(owner.anchor_points)
+                if 0 <= handle.point_index < len(points):
+                    local_pos = owner.mapFromScene(scene_pos)
+                    points[handle.point_index] = (float(local_pos.x()), float(local_pos.y()))
+                    owner.anchor_points = points
+                    owner.setPath(path_from_points(points, smooth=False))
+            self.scene_changed.emit()
+        finally:
+            self._updating_from_point_handle = False
+
+    def selected_point_handles(self) -> list[PointHandleItem]:
+        return [item for item in self.scene.selectedItems() if isinstance(item, PointHandleItem)]
+
+    def delete_selected_point_handles(self) -> bool:
+        handles = sorted(self.selected_point_handles(), key=lambda item: item.point_index, reverse=True)
+        if not handles:
+            return False
+        changed = False
+        for handle in handles:
+            owner = handle.owner
+            if not isinstance(owner, AnnotationCurveItem):
+                continue
+            points = list(owner.anchor_points)
+            if len(points) <= 2 or not (0 <= handle.point_index < len(points)):
+                continue
+            del points[handle.point_index]
+            owner.anchor_points = points
+            owner.setPath(path_from_points(points, smooth=False))
+            changed = True
+        if changed:
+            self.refresh_point_handles()
+            self.scene_changed.emit()
+        return changed
 
     def set_search_range(
         self,
@@ -796,6 +907,10 @@ class AngleCanvas(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802
+        if event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+            if self.delete_selected_point_handles():
+                event.accept()
+                return
         if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
             if self._nudge_selected_items(event.key(), event.modifiers()):
                 event.accept()
@@ -982,6 +1097,49 @@ def scale_point(point: Point, center: Point, factor: float) -> Point:
         center[0] + (point[0] - center[0]) * factor,
         center[1] + (point[1] - center[1]) * factor,
     )
+
+
+def cumulative_lengths(points: list[Point]) -> list[float]:
+    lengths = [0.0]
+    for start, end in zip(points, points[1:]):
+        lengths.append(lengths[-1] + line_length(start, end))
+    return lengths
+
+
+def point_at_polyline_distance(points: list[Point], distance: float) -> Point:
+    if not points:
+        return (0.0, 0.0)
+    if len(points) == 1:
+        return points[0]
+    remaining = max(0.0, distance)
+    for start, end in zip(points, points[1:]):
+        segment_length = line_length(start, end)
+        if segment_length <= 0:
+            continue
+        if remaining <= segment_length:
+            fraction = remaining / segment_length
+            return (
+                start[0] + (end[0] - start[0]) * fraction,
+                start[1] + (end[1] - start[1]) * fraction,
+            )
+        remaining -= segment_length
+    return points[-1]
+
+
+def polyline_slice(points: list[Point], start_distance: float, end_distance: float) -> list[Point]:
+    if end_distance < start_distance:
+        start_distance, end_distance = end_distance, start_distance
+    lengths = cumulative_lengths(points)
+    sliced = [point_at_polyline_distance(points, start_distance)]
+    for point, distance in zip(points[1:-1], lengths[1:-1]):
+        if start_distance < distance < end_distance:
+            sliced.append(point)
+    sliced.append(point_at_polyline_distance(points, end_distance))
+    return sliced
+
+
+def points_close(a: Point, b: Point, tolerance: float = 6.0) -> bool:
+    return line_length(a, b) <= tolerance
 
 
 def offset_point(point: Point, dx: float, dy: float) -> Point:
@@ -2160,18 +2318,11 @@ class MainWindow(QMainWindow):
         radius = self.search_radius_spin.value()
         sensitivity = self.curve_sensitivity_spin.value()
         moved = 0
-        for record in edge_records:
-            if record.edge_mode in {"curve", "polyline"}:
-                source_points = record_points(record)
-                result = snap_polyline_to_gradient(gray, source_points, radius, sensitivity)
-                if result is not None:
-                    record.start = result.start
-                    record.end = result.end
-                    record.points = result.points
-                    record.edge_mode = "polyline"
-                    record.edge_segmented = True
-                    moved += 1
-            else:
+        for chain in self._connected_edge_chains(edge_records):
+            if len(chain) == 1 and chain[0][0].edge_mode == "line":
+                record, reverse = chain[0]
+                if reverse:
+                    record.start, record.end = record.end, record.start
                 result = snap_line_to_gradient(gray, record.start, record.end, radius)
                 if result is not None:
                     record.start = result.start
@@ -2179,11 +2330,98 @@ class MainWindow(QMainWindow):
                     record.points = None
                     record.edge_segmented = False
                     moved += 1
+                continue
+
+            source_points = self._chain_points(chain)
+            result = snap_polyline_to_gradient(gray, source_points, radius, sensitivity)
+            if result is None:
+                continue
+            self._apply_snapped_chain(chain, source_points, result.points)
+            moved += len(chain)
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status(f"{moved}/{len(edge_records)}개 경계선을 선택한 형태로 명도 변화 최대 위치에 맞췄습니다.")
+
+    def _connected_edge_chains(self, records: list[LineRecord]) -> list[list[tuple[LineRecord, bool]]]:
+        remaining = list(records)
+        chains: list[list[tuple[LineRecord, bool]]] = []
+        while remaining:
+            record = remaining.pop(0)
+            chain: list[tuple[LineRecord, bool]] = [(record, False)]
+            changed = True
+            while changed:
+                changed = False
+                chain_start = self._oriented_points(chain[0][0], chain[0][1])[0]
+                chain_end = self._oriented_points(chain[-1][0], chain[-1][1])[-1]
+                for candidate in list(remaining):
+                    points = record_points(candidate)
+                    candidate_start = points[0]
+                    candidate_end = points[-1]
+                    if points_close(chain_end, candidate_start):
+                        chain.append((candidate, False))
+                    elif points_close(chain_end, candidate_end):
+                        chain.append((candidate, True))
+                    elif points_close(chain_start, candidate_end):
+                        chain.insert(0, (candidate, False))
+                    elif points_close(chain_start, candidate_start):
+                        chain.insert(0, (candidate, True))
+                    else:
+                        continue
+                    remaining.remove(candidate)
+                    changed = True
+                    break
+            chains.append(chain)
+        return chains
+
+    @staticmethod
+    def _oriented_points(record: LineRecord, reverse: bool) -> list[Point]:
+        points = list(record_points(record))
+        return list(reversed(points)) if reverse else points
+
+    def _chain_points(self, chain: list[tuple[LineRecord, bool]]) -> list[Point]:
+        points: list[Point] = []
+        for record, reverse in chain:
+            record_chain_points = self._oriented_points(record, reverse)
+            if points and points_close(points[-1], record_chain_points[0]):
+                points.extend(record_chain_points[1:])
+            else:
+                points.extend(record_chain_points)
+        return points
+
+    def _apply_snapped_chain(
+        self,
+        chain: list[tuple[LineRecord, bool]],
+        source_points: list[Point],
+        snapped_points: list[Point],
+    ) -> None:
+        source_total = record_length(LineRecord("_chain", "edge", source_points[0], source_points[-1], points=source_points))
+        snapped_total = record_length(LineRecord("_snapped", "edge", snapped_points[0], snapped_points[-1], points=snapped_points))
+        if source_total <= 0 or snapped_total <= 0:
+            return
+        source_cursor = 0.0
+        snapped_cursor = 0.0
+        for record, reverse in chain:
+            original_points = self._oriented_points(record, reverse)
+            original_length = record_length(LineRecord("_part", "edge", original_points[0], original_points[-1], points=original_points))
+            snapped_next = snapped_total * min(1.0, (source_cursor + original_length) / source_total)
+            snapped_slice = polyline_slice(snapped_points, snapped_cursor, snapped_next)
+            if reverse:
+                snapped_slice = list(reversed(snapped_slice))
+            if record.edge_mode in {"curve", "polyline"} or len(snapped_slice) > 2:
+                record.points = snapped_slice
+                record.edge_mode = "polyline"
+                record.edge_segmented = True
+                record.start = snapped_slice[0]
+                record.end = snapped_slice[-1]
+            else:
+                record.points = None
+                record.edge_segmented = False
+                record.start = snapped_slice[0]
+                record.end = snapped_slice[-1]
+            source_cursor += original_length
+            snapped_cursor = snapped_next
 
     def add_guides(self) -> None:
         if self.image_bgr is None:
@@ -2612,6 +2850,14 @@ class MainWindow(QMainWindow):
         self._set_status(f"각도 {len(self.last_measurements)}개를 계산했습니다. 숫자 라벨은 선택해서 옮길 수 있습니다.")
 
     def delete_selected(self) -> None:
+        if self.canvas.selected_point_handles():
+            if self.canvas.delete_selected_point_handles():
+                self._sync_records_from_canvas()
+                self.calculate_angles(reset_hidden=False)
+                self._update_search_range_overlay()
+                self._apply_visibility()
+                self._set_status("선택한 편집점을 삭제했습니다.")
+                return
         selected = set(self.canvas.selected_line_ids())
         selected_angle_items = self.canvas.selected_angle_items()
         if not selected and not selected_angle_items:
