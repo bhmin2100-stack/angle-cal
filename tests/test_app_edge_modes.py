@@ -23,18 +23,41 @@ def _window_with_edge_image():
     return window
 
 
-def test_recognize_keeps_line_mode_straight():
+def test_recognize_segments_line_mode_by_segment_size():
     window = _window_with_edge_image()
     try:
         window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        window.curve_sensitivity_spin.setValue(10)
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
 
         window.recognize_edges()
 
         edge = next(record for record in window.records.values() if record.kind == "edge")
         assert edge.edge_mode == "line"
-        assert edge.points is None
+        assert edge.points is not None
+        assert len(edge.points) > 2
+        assert edge.edge_segmented is True
         assert 80 <= (edge.start[0] + edge.end[0]) / 2 <= 83
+    finally:
+        window.close()
+
+
+def test_repeated_recognition_uses_stable_original_edge_path():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        window.curve_sensitivity_spin.setValue(10)
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+
+        window.recognize_edges()
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        first_points = list(edge.points)
+
+        window.recognize_edges()
+        second_points = list(edge.points)
+
+        assert first_points == second_points
+        assert edge.recognition_points == [(70.0, 20.0), (70.0, 100.0)]
     finally:
         window.close()
 
@@ -410,6 +433,29 @@ def test_edge_length_overlay_uses_calibration_and_visibility():
         assert "200" in window.canvas.edge_length_items[0].toHtml()
 
         window.set_visibility("edge_length", False)
+        assert len(window.canvas.edge_length_items) == 0
+    finally:
+        window.close()
+
+
+def test_edge_length_label_is_deletable_child_object():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window._update_edge_length_overlay()
+
+        assert len(window.canvas.edge_length_items) == 1
+        label = window.canvas.edge_length_items[0]
+        label.setSelected(True)
+
+        window.delete_selected()
+
+        assert len(window.canvas.edge_length_items) == 0
+        assert window.records[edge.id].show_edge_length is False
+
+        window._update_edge_length_overlay()
         assert len(window.canvas.edge_length_items) == 0
     finally:
         window.close()

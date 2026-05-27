@@ -58,7 +58,6 @@ from .image_ops import (
     normal_for_line,
     read_image,
     rotate_image_and_points,
-    snap_line_to_gradient,
     snap_polyline_to_gradient,
     to_gray,
 )
@@ -74,6 +73,7 @@ class LineRecord:
     axis: str = "horizontal"
     value_nm: Optional[float] = None
     points: Optional[list[Point]] = None
+    recognition_points: Optional[list[Point]] = None
     edge_mode: str = "line"
     angle_sector: int = 0
     angle_arc_radius: float = 28.0
@@ -103,6 +103,8 @@ class StructureTemplate:
 
 ANGLE_GROUP_KEY = 1
 ANGLE_MEASUREMENT_KEY = 2
+LENGTH_GROUP_KEY = 3
+LENGTH_PARENT_KEY = 4
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 
@@ -223,6 +225,8 @@ class AngleCanvas(QGraphicsView):
         self.angle_groups: dict[str, list[QGraphicsItem]] = {}
         self.angle_group_parents: dict[str, str] = {}
         self.angle_group_measurements: dict[str, str] = {}
+        self.edge_length_groups: dict[str, list[QGraphicsItem]] = {}
+        self.edge_length_group_parents: dict[str, str] = {}
         self._angle_counter = 1
         self.search_range_radius_px = 35
         self.show_search_range = True
@@ -296,6 +300,8 @@ class AngleCanvas(QGraphicsView):
         self.angle_groups.clear()
         self.angle_group_parents.clear()
         self.angle_group_measurements.clear()
+        self.edge_length_groups.clear()
+        self.edge_length_group_parents.clear()
         self.pixmap_item = self.scene.addPixmap(pixmap)
         self.pixmap_item.setZValue(0)
         self.scene.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
@@ -551,6 +557,8 @@ class AngleCanvas(QGraphicsView):
         for item in self.edge_length_items:
             self.scene.removeItem(item)
         self.edge_length_items.clear()
+        self.edge_length_groups.clear()
+        self.edge_length_group_parents.clear()
 
     def update_edge_length_overlay(
         self,
@@ -588,9 +596,15 @@ class AngleCanvas(QGraphicsView):
             )
             label.setPos(midpoint[0] + nx * 16.0, midpoint[1] + ny * 16.0)
             label.setZValue(28)
-            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+            group_id = f"L_{record.id}"
+            label.setData(LENGTH_GROUP_KEY, group_id)
+            label.setData(LENGTH_PARENT_KEY, record.id)
             self.scene.addItem(label)
             self.edge_length_items.append(label)
+            self.edge_length_groups[group_id] = [label]
+            self.edge_length_group_parents[group_id] = record.id
 
     def add_cd_measurement(self, start: Point, end: Point, text: str, label_pos: Point) -> list[QGraphicsItem]:
         items: list[QGraphicsItem] = []
@@ -698,6 +712,31 @@ class AngleCanvas(QGraphicsView):
                 selected.append(item)
         return selected
 
+    def selected_edge_length_items(self) -> list[QGraphicsItem]:
+        selected: list[QGraphicsItem] = []
+        group_ids = {item.data(LENGTH_GROUP_KEY) for item in self.scene.selectedItems() if item.data(LENGTH_GROUP_KEY)}
+        for group_id in group_ids:
+            for item in self.edge_length_groups.get(str(group_id), []):
+                if item in self.edge_length_items and item not in selected:
+                    selected.append(item)
+        for item in self.scene.selectedItems():
+            if item in self.edge_length_items and item not in selected:
+                selected.append(item)
+        return selected
+
+    def selected_edge_length_parent_ids(self) -> set[str]:
+        parent_ids: set[str] = set()
+        group_ids = {item.data(LENGTH_GROUP_KEY) for item in self.scene.selectedItems() if item.data(LENGTH_GROUP_KEY)}
+        for group_id in group_ids:
+            parent_id = self.edge_length_group_parents.get(str(group_id))
+            if parent_id:
+                parent_ids.add(parent_id)
+        for item in self.scene.selectedItems():
+            parent_id = item.data(LENGTH_PARENT_KEY)
+            if parent_id:
+                parent_ids.add(str(parent_id))
+        return parent_ids
+
     def selected_angle_measurement_ids(self) -> set[str]:
         measurement_ids: set[str] = set()
         group_ids = {item.data(ANGLE_GROUP_KEY) for item in self.scene.selectedItems() if item.data(ANGLE_GROUP_KEY)}
@@ -730,6 +769,22 @@ class AngleCanvas(QGraphicsView):
             group_id: measurement_id
             for group_id, measurement_id in self.angle_group_measurements.items()
             if group_id in self.angle_groups
+        }
+
+    def remove_edge_length_items(self, items: list[QGraphicsItem]) -> None:
+        for item in items:
+            if item in self.edge_length_items:
+                self.edge_length_items.remove(item)
+            self.scene.removeItem(item)
+        self.edge_length_groups = {
+            group_id: [item for item in group_items if item in self.edge_length_items]
+            for group_id, group_items in self.edge_length_groups.items()
+        }
+        self.edge_length_groups = {group_id: items for group_id, items in self.edge_length_groups.items() if items}
+        self.edge_length_group_parents = {
+            group_id: parent_id
+            for group_id, parent_id in self.edge_length_group_parents.items()
+            if group_id in self.edge_length_groups
         }
 
     def _expand_angle_group_selection(self) -> None:
@@ -1116,6 +1171,12 @@ def record_points(record: LineRecord) -> list[Point]:
     return [record.start, record.end]
 
 
+def recognition_points(record: LineRecord) -> list[Point]:
+    if record.recognition_points and len(record.recognition_points) >= 2:
+        return record.recognition_points
+    return record_points(record)
+
+
 def record_length(record: LineRecord) -> float:
     points = record_points(record)
     return sum(line_length(start, end) for start, end in zip(points, points[1:]))
@@ -1198,6 +1259,7 @@ def clone_record(record: LineRecord) -> LineRecord:
         axis=record.axis,
         value_nm=record.value_nm,
         points=[tuple(point) for point in record.points] if record.points else None,
+        recognition_points=[tuple(point) for point in record.recognition_points] if record.recognition_points else None,
         edge_mode=record.edge_mode,
         angle_sector=record.angle_sector,
         angle_arc_radius=record.angle_arc_radius,
@@ -1213,6 +1275,7 @@ def clone_record(record: LineRecord) -> LineRecord:
 
 def line_record_from_dict(item: dict) -> LineRecord:
     raw_points = item.get("points") or []
+    raw_recognition_points = item.get("recognition_points") or []
     record_edge_mode = item.get("edge_mode")
     if record_edge_mode == "curve":
         record_edge_mode = "polyline"
@@ -1227,6 +1290,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         axis=item.get("axis", "horizontal"),
         value_nm=item.get("value_nm"),
         points=[tuple(point) for point in raw_points] or None,
+        recognition_points=[tuple(point) for point in raw_recognition_points] or None,
         edge_mode=record_edge_mode,
         angle_sector=int(item.get("angle_sector", 0)),
         angle_arc_radius=float(item.get("angle_arc_radius", 28.0)),
@@ -2456,6 +2520,7 @@ class MainWindow(QMainWindow):
             label="edge",
             axis=self.axis_combo.currentData(),
             points=points,
+            recognition_points=list(points or [start, end]),
             edge_mode=edge_mode,
             edge_segmented=edge_mode == "polyline",
         )
@@ -2496,9 +2561,13 @@ class MainWindow(QMainWindow):
             current_points = record_points(record)
             points.extend(current_points)
             point_counts.append(len(current_points))
+            if record.recognition_points:
+                points.extend(record.recognition_points)
+                point_counts.append(-len(record.recognition_points))
         rotated, transformed = rotate_image_and_points(self.image_bgr, points, rotate_by)
         cursor = 0
-        for record, count in zip(lines, point_counts):
+        for record in lines:
+            count = point_counts.pop(0)
             next_cursor = cursor + count
             record_transformed = transformed[cursor:next_cursor]
             record.start = record_transformed[0]
@@ -2506,6 +2575,11 @@ class MainWindow(QMainWindow):
             if record.points:
                 record.points = record_transformed
             cursor = next_cursor
+            if point_counts and point_counts[0] < 0:
+                recognition_count = -point_counts.pop(0)
+                next_cursor = cursor + recognition_count
+                record.recognition_points = transformed[cursor:next_cursor]
+                cursor = next_cursor
         self.image_bgr = rotated
         self._show_image(keep_view=False)
         self.canvas.redraw_lines(list(self.records.values()))
@@ -2531,19 +2605,6 @@ class MainWindow(QMainWindow):
         segment_size_px = self.curve_sensitivity_spin.value()
         moved = 0
         for chain in self._connected_edge_chains(edge_records):
-            if len(chain) == 1 and chain[0][0].edge_mode == "line":
-                record, reverse = chain[0]
-                if reverse:
-                    record.start, record.end = record.end, record.start
-                result = snap_line_to_gradient(gray, record.start, record.end, radius)
-                if result is not None:
-                    record.start = result.start
-                    record.end = result.end
-                    record.points = None
-                    record.edge_segmented = False
-                    moved += 1
-                continue
-
             source_points = self._chain_points(chain)
             result = snap_polyline_to_gradient(gray, source_points, radius, segment_size_px)
             if result is None:
@@ -2568,7 +2629,7 @@ class MainWindow(QMainWindow):
                 chain_start = self._oriented_points(chain[0][0], chain[0][1])[0]
                 chain_end = self._oriented_points(chain[-1][0], chain[-1][1])[-1]
                 for candidate in list(remaining):
-                    points = record_points(candidate)
+                    points = recognition_points(candidate)
                     candidate_start = points[0]
                     candidate_end = points[-1]
                     if points_close(chain_end, candidate_start):
@@ -2589,7 +2650,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _oriented_points(record: LineRecord, reverse: bool) -> list[Point]:
-        points = list(record_points(record))
+        points = list(recognition_points(record))
         return list(reversed(points)) if reverse else points
 
     def _chain_points(self, chain: list[tuple[LineRecord, bool]]) -> list[Point]:
@@ -2623,7 +2684,6 @@ class MainWindow(QMainWindow):
                 snapped_slice = list(reversed(snapped_slice))
             if record.edge_mode in {"curve", "polyline"} or len(snapped_slice) > 2:
                 record.points = snapped_slice
-                record.edge_mode = "polyline"
                 record.edge_segmented = True
                 record.start = snapped_slice[0]
                 record.end = snapped_slice[-1]
@@ -3071,20 +3131,25 @@ class MainWindow(QMainWindow):
     def delete_selected(self) -> None:
         selected = set(self.canvas.selected_line_ids())
         selected_angle_items = self.canvas.selected_angle_items()
+        selected_edge_length_items = self.canvas.selected_edge_length_items()
         selected_point_handles = self.canvas.selected_point_handles()
-        if not selected and not selected_angle_items and not selected_point_handles:
+        if not selected and not selected_angle_items and not selected_edge_length_items and not selected_point_handles:
             return
-        if not selected and not selected_angle_items and selected_point_handles:
+        if not selected and not selected_angle_items and not selected_edge_length_items and selected_point_handles:
             self.save_undo_snapshot()
             if self.canvas.delete_selected_point_handles():
                 self._sync_records_from_canvas()
                 self.calculate_angles(reset_hidden=False)
                 self._update_search_range_overlay()
                 self._apply_visibility()
-                self._set_status("선택한 편집점을 삭제했습니다.")
+            self._set_status("선택한 편집점을 삭제했습니다.")
             return
         self.save_undo_snapshot()
         self.hidden_angle_measurements.update(self.canvas.selected_angle_measurement_ids())
+        for parent_id in self.canvas.selected_edge_length_parent_ids():
+            record = self.records.get(parent_id)
+            if record is not None:
+                record.show_edge_length = False
         if selected:
             self.canvas.clear_point_handles()
         for record_id in selected:
@@ -3097,7 +3162,10 @@ class MainWindow(QMainWindow):
         if selected_angle_items and not selected:
             self.canvas.remove_angle_items(selected_angle_items)
             self._refresh_table()
-        deleted_count = len(selected) + len(selected_angle_items)
+        if selected_edge_length_items and not selected:
+            self.canvas.remove_edge_length_items(selected_edge_length_items)
+            self._update_object_visibility_controls()
+        deleted_count = len(selected) + len(selected_angle_items) + len(selected_edge_length_items)
         self._set_status(f"{deleted_count}개 개체를 삭제했습니다.")
 
     def copy_selected_parent_objects(self) -> None:
@@ -3137,6 +3205,8 @@ class MainWindow(QMainWindow):
                 record.points = [offset_point(point, offset, offset) for point in record.points]
                 record.start = record.points[0]
                 record.end = record.points[-1]
+            if record.recognition_points:
+                record.recognition_points = [offset_point(point, offset, offset) for point in record.recognition_points]
             self.records[record.id] = record
             new_ids.append(record.id)
         self.canvas.redraw_lines(list(self.records.values()))
@@ -3183,6 +3253,9 @@ class MainWindow(QMainWindow):
                 if mode == "line":
                     record.points = None
                     record.edge_segmented = False
+                    record.recognition_points = [record.start, record.end]
+                elif mode == "polyline":
+                    record.recognition_points = record_points(record)
                 changed += 1
             if changed:
                 self.canvas.redraw_lines(list(self.records.values()))
@@ -3243,6 +3316,8 @@ class MainWindow(QMainWindow):
                 record.end = points[-1]
                 if record.points:
                     record.points = points
+                if record.recognition_points:
+                    record.recognition_points = [scale_point(point, center, factor) for point in record.recognition_points]
             self.canvas.redraw_lines(list(self.records.values()))
             for record_id in selected_ids:
                 item = self.canvas.line_items.get(record_id)
@@ -3429,12 +3504,16 @@ class MainWindow(QMainWindow):
                 record.end = (float(p2.x()), float(p2.y()))
                 if record.kind != "edge":
                     record.points = None
+                elif not record.edge_segmented:
+                    record.recognition_points = [record.start, record.end]
             elif isinstance(item, AnnotationCurveItem):
                 points = points_from_path_item(item)
                 if len(points) >= 2:
                     record.points = points
                     record.start = points[0]
                     record.end = points[-1]
+                    if record.kind == "edge" and not record.edge_segmented:
+                        record.recognition_points = points
 
     def _reference_record(self) -> Optional[LineRecord]:
         for record in self.records.values():
