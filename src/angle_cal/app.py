@@ -111,7 +111,7 @@ class AnnotationLineItem(QGraphicsLineItem):
         self.kind = record.kind
         self.setPen(pen)
         self.setZValue(10 if record.kind != "guide" else 4)
-        if record.kind in {"edge", "scale"}:
+        if record.kind in {"edge", "scale", "guide"}:
             self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
 
@@ -333,7 +333,7 @@ class AngleCanvas(QGraphicsView):
             selected_items = [
                 item
                 for item in self.scene.selectedItems()
-                if isinstance(item, (AnnotationLineItem, AnnotationCurveItem)) and item.kind in {"edge", "scale", "reference"}
+                if isinstance(item, (AnnotationLineItem, AnnotationCurveItem)) and item.kind in {"edge", "scale", "reference", "guide"}
             ]
             self.clear_point_handles()
             for item in selected_items:
@@ -822,7 +822,7 @@ class AngleCanvas(QGraphicsView):
 
         if (
             event.button() == Qt.MouseButton.LeftButton
-            and self.current_tool in {"scale", "reference", "edge"}
+            and self.current_tool in {"scale", "reference", "edge", "guide"}
             and self.pixmap_item is not None
         ):
             if self.current_tool == "edge" and self.edge_draw_mode == "polyline":
@@ -1553,6 +1553,7 @@ class MainWindow(QMainWindow):
             ("스케일바", "scale"),
             ("기준선", "reference"),
             ("경계선", "edge"),
+            ("가이드선", "guide"),
         ]:
             button = QPushButton(label)
             button.setCheckable(True)
@@ -2229,6 +2230,8 @@ class MainWindow(QMainWindow):
             self._create_reference_line(start, end)
         elif tool == "edge":
             self._create_edge_line(start, end, points)
+        elif tool == "guide":
+            self._create_guide_line(start, end)
         self.canvas.redraw_lines(list(self.records.values()))
         self._refresh_table()
         self._update_search_range_overlay()
@@ -2397,6 +2400,19 @@ class MainWindow(QMainWindow):
         )
         self.records[record.id] = record
         self._set_status(f"{'이어진 직선' if edge_mode == 'polyline' else '직선'} 경계선을 추가했습니다.")
+
+    def _create_guide_line(self, start: Point, end: Point) -> None:
+        axis = "horizontal" if abs(end[0] - start[0]) >= abs(end[1] - start[1]) else "vertical"
+        record = LineRecord(
+            id=self._next_id("G"),
+            kind="guide",
+            start=start,
+            end=end,
+            label=f"{axis} guide",
+            axis=axis,
+        )
+        self.records[record.id] = record
+        self._set_status("가이드선을 추가했습니다. 선택 후 방향키로 이동하거나 Delete로 삭제할 수 있습니다.")
 
     def align_to_reference(self) -> None:
         if self.image_bgr is None:
@@ -2580,6 +2596,7 @@ class MainWindow(QMainWindow):
         if count > 500:
             QMessageBox.information(self, "가이드", "가이드가 너무 많습니다. 간격을 키워주세요.")
             return
+        created = 0
         for idx in range(count):
             pos = offset + idx * spacing
             if orientation == "horizontal":
@@ -2599,11 +2616,12 @@ class MainWindow(QMainWindow):
                 axis=orientation,
             )
             self.records[record.id] = record
+            created += 1
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
-        self._set_status(f"{orientation} 가이드 {count}개를 만들었습니다.")
+        self._set_status(f"{orientation} 가이드 {created}개를 만들었습니다.")
 
     def clear_guides(self, redraw: bool = True) -> None:
         if redraw:

@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication, QGraphicsPathItem, QGraphicsTextItem
+from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem
 
 from angle_cal.app import LineRecord, MainWindow, StructureTemplate, structure_template_from_dict, structure_template_to_dict
 
@@ -280,6 +280,46 @@ def test_structure_template_paste_skips_guides_when_current_image_has_guides():
         assert len(guides) == 1
         assert window.cd_segment_combo.currentData() == "odd"
         assert len([row for row in window.last_measurements if row["kind"] == "cd_length"]) == 1
+    finally:
+        window.close()
+
+
+def test_guides_draw_select_move_and_delete():
+    window = _window_with_edge_image()
+    try:
+        window.guide_orientation_combo.setCurrentIndex(window.guide_orientation_combo.findData("horizontal"))
+        window.guide_spacing_spin.setValue(40)
+
+        window.add_guides()
+
+        guides = [record for record in window.records.values() if record.kind == "guide"]
+        assert len(guides) == 4
+        guide = guides[0]
+        original_y = guide.start[1]
+        item = window.canvas.line_items[guide.id]
+        assert item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+        assert item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+
+        item.setSelected(True)
+        assert window.canvas._nudge_selected_items(Qt.Key.Key_Down, Qt.KeyboardModifier.ControlModifier)
+        window._sync_records_from_canvas()
+        assert window.records[guide.id].start[1] == original_y + 1.0
+
+        window.delete_selected()
+        assert guide.id not in window.records
+    finally:
+        window.close()
+
+
+def test_guide_tool_creates_manual_guide_line():
+    window = _window_with_edge_image()
+    try:
+        window._handle_line_created("guide", (10.0, 30.0), (120.0, 30.0), None)
+
+        guides = [record for record in window.records.values() if record.kind == "guide"]
+        assert len(guides) == 1
+        assert guides[0].axis == "horizontal"
+        assert guides[0].id in window.canvas.line_items
     finally:
         window.close()
 
