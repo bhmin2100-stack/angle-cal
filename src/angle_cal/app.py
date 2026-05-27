@@ -933,8 +933,8 @@ class MainWindow(QMainWindow):
         reference_toolbar = self._new_toolbar("기준")
 
         self.axis_combo = QComboBox()
-        self.axis_combo.addItem("수평 기준선", "horizontal")
-        self.axis_combo.addItem("평행 기준선", "vertical")
+        self.axis_combo.addItem("수평기준선", "horizontal")
+        self.axis_combo.addItem("수직기준선", "vertical")
         self.axis_combo.currentIndexChanged.connect(self._axis_changed)
         reference_toolbar.addWidget(self.axis_combo)
 
@@ -2031,7 +2031,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _reference_label(axis: str) -> str:
-        return "수평 기준선" if axis == "horizontal" else "평행 기준선"
+        return "수평기준선" if axis == "horizontal" else "수직기준선"
 
     def _refresh_table(self) -> None:
         self._sync_records_from_canvas()
