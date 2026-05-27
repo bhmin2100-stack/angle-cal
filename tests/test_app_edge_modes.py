@@ -488,3 +488,52 @@ def test_deleting_line_clears_point_handles():
         assert not [item for item in window.canvas.scene.items() if item.__class__.__name__ == "PointHandleItem"]
     finally:
         window.close()
+
+
+def test_undo_restores_keyboard_move_and_delete():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.line_items[edge.id].setSelected(True)
+
+        assert window.canvas._nudge_selected_items(Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+        window._sync_records_from_canvas()
+        assert window.records[edge.id].start == (30.0, 60.0)
+
+        window.undo()
+        assert window.records[edge.id].start == (20.0, 60.0)
+        assert window.records[edge.id].end == (120.0, 60.0)
+
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.delete_selected()
+        assert edge.id not in window.records
+
+        window.undo()
+        assert edge.id in window.records
+        assert window.records[edge.id].start == (20.0, 60.0)
+        assert window.records[edge.id].end == (120.0, 60.0)
+    finally:
+        window.close()
+
+
+def test_undo_restores_angle_label_move():
+    window = _window_with_edge_image()
+    try:
+        window._create_reference_line((10.0, 10.0), (100.0, 10.0))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.calculate_angles(reset_hidden=True)
+        label = next(item for item in window.canvas.angle_items if item.__class__.__name__ == "QGraphicsTextItem")
+        original_pos = label.pos()
+        label.setSelected(True)
+
+        assert window.canvas._nudge_selected_items(Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+        assert label.pos().x() == original_pos.x() + 10.0
+
+        window.undo()
+        restored_label = next(item for item in window.canvas.angle_items if item.__class__.__name__ == "QGraphicsTextItem")
+        assert restored_label.pos() == original_pos
+    finally:
+        window.close()

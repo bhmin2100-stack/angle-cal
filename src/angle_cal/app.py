@@ -195,6 +195,7 @@ class AngleCanvas(QGraphicsView):
     line_created = Signal(str, tuple, tuple, object)
     scene_changed = Signal()
     scale_requested = Signal(float)
+    edit_started = Signal()
 
     def __init__(self):
         super().__init__()
@@ -344,6 +345,7 @@ class AngleCanvas(QGraphicsView):
             return
         self._updating_from_point_handle = True
         try:
+            self.edit_started.emit()
             scene_pos = handle.scenePos()
             owner = handle.owner
             if isinstance(owner, AnnotationLineItem):
@@ -372,6 +374,7 @@ class AngleCanvas(QGraphicsView):
         handles = sorted(self.selected_point_handles(), key=lambda item: item.point_index, reverse=True)
         if not handles:
             return False
+        self.edit_started.emit()
         changed = False
         for handle in handles:
             owner = handle.owner
@@ -800,6 +803,7 @@ class AngleCanvas(QGraphicsView):
             return
 
         if event.button() == Qt.MouseButton.LeftButton and self.current_tool == "resize":
+            self.edit_started.emit()
             self._resizing = True
             self._resize_last = event.pos()
             event.accept()
@@ -826,6 +830,10 @@ class AngleCanvas(QGraphicsView):
             self.scene.addItem(self._temp_line)
             event.accept()
             return
+        if event.button() == Qt.MouseButton.LeftButton:
+            item = self.itemAt(event.pos())
+            if item is not None and item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsMovable:
+                self.edit_started.emit()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):  # noqa: N802
@@ -1004,6 +1012,7 @@ class AngleCanvas(QGraphicsView):
             dy = step
         else:
             return False
+        self.edit_started.emit()
         for item in selected:
             if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsMovable:
                 item.moveBy(dx, dy)
@@ -1409,6 +1418,8 @@ class MainWindow(QMainWindow):
         self.record_clipboard: list[LineRecord] = []
         self._paste_offset_steps = 0
         self.hidden_angle_measurements: set[str] = set()
+        self.undo_stack: list[dict] = []
+        self._restoring_undo = False
         self._updating_object_visibility_controls = False
         self.visibility: dict[str, bool] = {
             "scale": True,
@@ -1427,6 +1438,7 @@ class MainWindow(QMainWindow):
         self.canvas.line_created.connect(self._handle_line_created)
         self.canvas.scene_changed.connect(self._handle_scene_changed)
         self.canvas.scale_requested.connect(self.scale_selected_objects)
+        self.canvas.edit_started.connect(self.save_undo_snapshot)
         self.detection_preview_timer = QTimer(self)
         self.detection_preview_timer.setSingleShot(True)
         self.detection_preview_timer.timeout.connect(self.canvas.clear_detection_preview)
@@ -1461,6 +1473,10 @@ class MainWindow(QMainWindow):
         self.delete_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
         self.delete_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.delete_action.triggered.connect(self.delete_selected)
+        self.undo_action = QAction("되돌리기", self)
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.undo_action.triggered.connect(self.undo)
         self.copy_action = QAction("선택 복사", self)
         self.copy_action.setShortcut(QKeySequence.StandardKey.Copy)
         self.copy_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -1487,6 +1503,7 @@ class MainWindow(QMainWindow):
         self.next_image_action.triggered.connect(lambda: self.load_relative_browser_image(1))
         self.addAction(self.select_tool_action)
         self.addAction(self.delete_action)
+        self.addAction(self.undo_action)
         self.addAction(self.copy_action)
         self.addAction(self.paste_action)
         self.addAction(self.save_structure_action)
@@ -1664,6 +1681,84 @@ class MainWindow(QMainWindow):
         button.clicked.connect(action.trigger)
         return button
 
+    def save_undo_snapshot(self) -> None:
+        if self._restoring_undo or self.image_bgr is None:
+            return
+        self._sync_records_from_canvas()
+        snapshot = {
+            "image_bgr": self.image_bgr.copy() if self.image_bgr is not None else None,
+            "records": [asdict(record) for record in self.records.values()],
+            "counter": self._counter,
+            "nm_per_px": self.nm_per_px,
+            "hidden_angle_measurements": list(self.hidden_angle_measurements),
+            "angle_item_states": self._angle_item_states(),
+        }
+        self.undo_stack.append(snapshot)
+        if len(self.undo_stack) > 30:
+            self.undo_stack.pop(0)
+
+    def undo(self) -> None:
+        if not self.undo_stack:
+            self._set_status("되돌릴 작업이 없습니다.")
+            return
+        snapshot = self.undo_stack.pop()
+        self._restoring_undo = True
+        try:
+            image = snapshot.get("image_bgr")
+            if image is not None:
+                self.image_bgr = image.copy()
+            self.records = {item["id"]: line_record_from_dict(item) for item in snapshot.get("records", [])}
+            self._counter = int(snapshot.get("counter", len(self.records) + 1))
+            self.nm_per_px = snapshot.get("nm_per_px")
+            self.hidden_angle_measurements = set(snapshot.get("hidden_angle_measurements", []))
+            self.canvas.clear_point_handles()
+            self._show_image(keep_view=True)
+            self.canvas.redraw_lines(list(self.records.values()))
+            self.calculate_angles(reset_hidden=False)
+            self._restore_angle_item_states(snapshot.get("angle_item_states", []))
+            self._update_search_range_overlay()
+            self._update_edge_length_overlay(sync=False)
+            self._apply_visibility()
+            self._refresh_table()
+            self._set_status("되돌렸습니다.")
+        finally:
+            self._restoring_undo = False
+
+    def _angle_item_states(self) -> list[dict]:
+        states: list[dict] = []
+        for item in self.canvas.angle_items:
+            pos = item.pos()
+            states.append(
+                {
+                    "measurement_id": item.data(ANGLE_MEASUREMENT_KEY),
+                    "group_id": item.data(ANGLE_GROUP_KEY),
+                    "kind": "label" if isinstance(item, QGraphicsTextItem) else "arc",
+                    "x": float(pos.x()),
+                    "y": float(pos.y()),
+                    "scale": float(item.scale()),
+                }
+            )
+        return states
+
+    def _restore_angle_item_states(self, states: list[dict]) -> None:
+        pending = list(states)
+        for item in self.canvas.angle_items:
+            item_kind = "label" if isinstance(item, QGraphicsTextItem) else "arc"
+            match_index = next(
+                (
+                    idx
+                    for idx, state in enumerate(pending)
+                    if state.get("measurement_id") == item.data(ANGLE_MEASUREMENT_KEY)
+                    and state.get("kind") == item_kind
+                ),
+                None,
+            )
+            if match_index is None:
+                continue
+            state = pending.pop(match_index)
+            item.setPos(float(state.get("x", 0.0)), float(state.get("y", 0.0)))
+            item.setScale(float(state.get("scale", 1.0)))
+
     def _build_measurements_dock(self) -> None:
         dock = QDockWidget("측정값", self)
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
@@ -1829,6 +1924,7 @@ class MainWindow(QMainWindow):
         self.project_path = None
         self.nm_per_px = previous_nm_per_px if preserve_calibration else None
         self.records.clear()
+        self.undo_stack.clear()
         self.hidden_angle_measurements.clear()
         self._counter = 1
         self._show_image()
@@ -2023,6 +2119,7 @@ class MainWindow(QMainWindow):
         self._refresh_structure_combo()
         self.records = {}
         self.hidden_angle_measurements.clear()
+        self.undo_stack.clear()
         for item in payload.get("records", []):
             self.records[item["id"]] = line_record_from_dict(item)
         self._counter = payload.get("counter", len(self.records) + 1)
@@ -2112,6 +2209,7 @@ class MainWindow(QMainWindow):
         self._set_status(f"CSV 저장: {Path(path).name}")
 
     def _handle_line_created(self, tool: str, start: Point, end: Point, points: Optional[list[Point]]) -> None:
+        self.save_undo_snapshot()
         if tool == "scale":
             self._create_scale_line(start, end)
         elif tool == "reference":
@@ -2295,6 +2393,7 @@ class MainWindow(QMainWindow):
         if reference is None:
             QMessageBox.information(self, "이미지 맞춤", "먼저 기준선을 그려주세요.")
             return
+        self.save_undo_snapshot()
         reference.axis = self.axis_combo.currentData()
         reference.label = self._reference_label(reference.axis)
         angle = line_angle_degrees(reference.start, reference.end)
@@ -2336,6 +2435,7 @@ class MainWindow(QMainWindow):
         if not edge_records:
             QMessageBox.information(self, "인식", "인식할 경계선이 없습니다.")
             return
+        self.save_undo_snapshot()
         gray = to_gray(self.image_bgr)
         radius = self.search_radius_spin.value()
         segment_size_px = self.curve_sensitivity_spin.value()
@@ -2449,6 +2549,7 @@ class MainWindow(QMainWindow):
         if self.image_bgr is None:
             return
         self._sync_records_from_canvas()
+        self.save_undo_snapshot()
         orientation = self.guide_orientation_combo.currentData()
         spacing = float(self.guide_spacing_spin.value())
         if self.guide_spacing_unit.currentData() == "nm":
@@ -2492,6 +2593,8 @@ class MainWindow(QMainWindow):
         self._set_status(f"{orientation} 가이드 {count}개를 만들었습니다.")
 
     def clear_guides(self, redraw: bool = True) -> None:
+        if redraw:
+            self.save_undo_snapshot()
         for record_id in [rid for rid, record in self.records.items() if record.kind == "guide"]:
             del self.records[record_id]
         self.canvas.clear_angle_items()
@@ -2618,6 +2721,7 @@ class MainWindow(QMainWindow):
         if template is None:
             QMessageBox.information(self, "구조 붙여넣기", "먼저 구조 드롭다운에서 불러올 구조를 선택하세요.")
             return
+        self.save_undo_snapshot()
         self._sync_records_from_canvas()
         has_guides = any(record.kind == "guide" for record in self.records.values())
         new_ids: list[str] = []
@@ -2724,6 +2828,7 @@ class MainWindow(QMainWindow):
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        self.save_undo_snapshot()
         sector = int(dialog.sector_combo.currentData())
         arc_radius = float(dialog.arc_radius_spin.value())
         label_side = str(dialog.label_side_combo.currentData())
@@ -2873,6 +2978,7 @@ class MainWindow(QMainWindow):
 
     def delete_selected(self) -> None:
         if self.canvas.selected_point_handles():
+            self.save_undo_snapshot()
             if self.canvas.delete_selected_point_handles():
                 self._sync_records_from_canvas()
                 self.calculate_angles(reset_hidden=False)
@@ -2884,6 +2990,7 @@ class MainWindow(QMainWindow):
         selected_angle_items = self.canvas.selected_angle_items()
         if not selected and not selected_angle_items:
             return
+        self.save_undo_snapshot()
         self.hidden_angle_measurements.update(self.canvas.selected_angle_measurement_ids())
         if selected:
             self.canvas.clear_point_handles()
@@ -2922,6 +3029,7 @@ class MainWindow(QMainWindow):
         if not self.record_clipboard:
             self._set_status("붙여넣을 상위개체가 없습니다. 먼저 Ctrl+C로 복사하세요.")
             return
+        self.save_undo_snapshot()
         self._sync_records_from_canvas()
         self._paste_offset_steps += 1
         offset = 14.0 * self._paste_offset_steps
@@ -2973,6 +3081,7 @@ class MainWindow(QMainWindow):
         changed = 0
         if selected_ids:
             self._sync_records_from_canvas()
+            self.save_undo_snapshot()
             for record_id in selected_ids:
                 record = self.records.get(record_id)
                 if record is None or record.kind != "edge":
