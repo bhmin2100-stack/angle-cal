@@ -9,7 +9,7 @@ import sys
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -413,8 +413,11 @@ class AngleCanvas(QGraphicsView):
             return
         width = min(190.0, max(120.0, rect.width() * 0.22))
         height = 72.0
-        left = rect.right() - width - 14.0
-        top = rect.top() + 14.0
+        visible_center = self.mapToScene(self.viewport().rect().center())
+        left = float(visible_center.x()) - width / 2.0
+        top = float(visible_center.y()) - height / 2.0
+        left = min(max(left, rect.left() + 8.0), rect.right() - width - 8.0)
+        top = min(max(top, rect.top() + 8.0), rect.bottom() - height - 8.0)
         panel = QGraphicsPolygonItem(
             QPolygonF(
                 [
@@ -1417,6 +1420,9 @@ class MainWindow(QMainWindow):
         self.canvas.line_created.connect(self._handle_line_created)
         self.canvas.scene_changed.connect(self._handle_scene_changed)
         self.canvas.scale_requested.connect(self.scale_selected_objects)
+        self.detection_preview_timer = QTimer(self)
+        self.detection_preview_timer.setSingleShot(True)
+        self.detection_preview_timer.timeout.connect(self.canvas.clear_detection_preview)
 
         self._build_actions()
         self._build_toolbar()
@@ -3058,7 +3064,8 @@ class MainWindow(QMainWindow):
 
     def _edge_detection_settings_changed(self) -> None:
         self._update_search_range_overlay()
-        self._show_detection_preview()
+        if self.sender() in {self.curve_sensitivity_spin, None}:
+            self._show_detection_preview()
         radius = self.search_radius_spin.value()
         sensitivity = self.curve_sensitivity_spin.value()
         if self.show_search_range_checkbox.isChecked():
@@ -3180,6 +3187,7 @@ class MainWindow(QMainWindow):
             self.curve_sensitivity_spin.value(),
             self._search_range_label(),
         )
+        self.detection_preview_timer.start(1300)
 
     def _handle_scene_changed(self) -> None:
         self._refresh_table()
