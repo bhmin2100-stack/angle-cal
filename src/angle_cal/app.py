@@ -509,7 +509,10 @@ class AngleCanvas(QGraphicsView):
             event.accept()
             return
 
-        if event.button() == Qt.MouseButton.LeftButton and self.current_tool == "pan":
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and (self.current_tool == "pan" or event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        ):
             self._start_pan(event.pos())
             event.accept()
             return
