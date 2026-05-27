@@ -6,7 +6,7 @@ import numpy as np
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem
 
-from angle_cal.app import LineRecord, MainWindow, StructureTemplate, structure_template_from_dict, structure_template_to_dict
+from angle_cal.app import LineRecord, MainWindow, ScalePreset, StructureTemplate, structure_template_from_dict, structure_template_to_dict
 
 
 def _app():
@@ -405,6 +405,23 @@ def test_edge_length_overlay_skips_polyline_edges():
         window._update_edge_length_overlay()
 
         assert len(window.canvas.edge_length_items) == 0
+    finally:
+        window.close()
+
+
+def test_scale_preset_apply_restores_scale_bar():
+    window = _window_with_edge_image()
+    try:
+        window.scale_presets = [ScalePreset("100 nm", nm_per_px=2.0, bar_px=50.0, bar_nm=100.0)]
+
+        window.apply_scale_preset(0)
+
+        scales = [record for record in window.records.values() if record.kind == "scale"]
+        assert len(scales) == 1
+        assert scales[0].value_nm == 100.0
+        assert scales[0].label == "100 nm"
+        assert round(scales[0].end[0] - scales[0].start[0], 3) == 50.0
+        assert window.nm_per_px == 2.0
     finally:
         window.close()
 

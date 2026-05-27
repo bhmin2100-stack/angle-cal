@@ -90,6 +90,8 @@ class LineRecord:
 class ScalePreset:
     name: str
     nm_per_px: float
+    bar_px: float = 100.0
+    bar_nm: Optional[float] = None
 
 
 @dataclass
@@ -2120,7 +2122,12 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "visibility_checkboxes") and key in self.visibility_checkboxes:
                     self.visibility_checkboxes[key].setChecked(bool(visible))
         self.scale_presets = [
-            ScalePreset(name=item.get("name", f"Preset {idx + 1}"), nm_per_px=float(item["nm_per_px"]))
+            ScalePreset(
+                name=item.get("name", f"Preset {idx + 1}"),
+                nm_per_px=float(item["nm_per_px"]),
+                bar_px=float(item.get("bar_px", 100.0)),
+                bar_nm=float(item["bar_nm"]) if item.get("bar_nm") is not None else None,
+            )
             for idx, item in enumerate(payload.get("scale_presets", []))
             if "nm_per_px" in item
         ][:9]
@@ -2276,9 +2283,17 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         name = name.strip() or default_name
-        self.scale_presets.append(ScalePreset(name=name, nm_per_px=float(self.nm_per_px)))
+        scale_records = [record for record in self.records.values() if record.kind == "scale"]
+        if scale_records:
+            scale_record = scale_records[-1]
+            bar_px = record_length(scale_record)
+            bar_nm = float(scale_record.value_nm) if scale_record.value_nm is not None else bar_px * float(self.nm_per_px)
+        else:
+            bar_px = 100.0
+            bar_nm = bar_px * float(self.nm_per_px)
+        self.scale_presets.append(ScalePreset(name=name, nm_per_px=float(self.nm_per_px), bar_px=bar_px, bar_nm=bar_nm))
         self._refresh_scale_preset_table()
-        self._set_status(f"{len(self.scale_presets)}번 스케일 프리셋 등록: {name}, {self.nm_per_px:.6g} nm/px")
+        self._set_status(f"{len(self.scale_presets)}번 스케일 프리셋 등록: {name}, {self.nm_per_px:.6g} nm/px, 바 {bar_px:.2f}px")
 
     def edit_selected_scale_preset(self) -> None:
         row = self._selected_scale_preset_row()
@@ -2301,6 +2316,7 @@ class MainWindow(QMainWindow):
             return
         preset.name = name.strip() or preset.name
         preset.nm_per_px = float(value)
+        preset.bar_nm = preset.bar_px * preset.nm_per_px
         self._refresh_scale_preset_table(select_row=row)
 
     def delete_selected_scale_preset(self) -> None:
@@ -2324,14 +2340,37 @@ class MainWindow(QMainWindow):
         if not (0 <= index < len(self.scale_presets)):
             return
         preset = self.scale_presets[index]
+        self.save_undo_snapshot()
         self.nm_per_px = preset.nm_per_px
         for record_id in [rid for rid, record in self.records.items() if record.kind == "scale"]:
             del self.records[record_id]
+        self._create_scale_record_from_preset(preset)
         self.canvas.redraw_lines(list(self.records.values()))
         self._refresh_table()
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status(f"{index + 1}번 스케일 적용: {preset.name}, {preset.nm_per_px:.6g} nm/px")
+
+    def _create_scale_record_from_preset(self, preset: ScalePreset) -> None:
+        if self.image_bgr is None:
+            return
+        height, width = self.image_bgr.shape[:2]
+        bar_px = max(5.0, min(float(preset.bar_px), max(5.0, width * 0.8)))
+        margin = max(12.0, min(width, height) * 0.06)
+        start_x = min(max(margin, 0.0), max(0.0, width - bar_px - margin))
+        y = max(margin, height - margin)
+        start = (float(start_x), float(y))
+        end = (float(start_x + bar_px), float(y))
+        bar_nm = float(preset.bar_nm) if preset.bar_nm is not None else bar_px * preset.nm_per_px
+        record_id = self._next_id("S")
+        self.records[record_id] = LineRecord(
+            id=record_id,
+            kind="scale",
+            start=start,
+            end=end,
+            label=f"{bar_nm:g} nm",
+            value_nm=bar_nm,
+        )
 
     def _selected_scale_preset_row(self) -> Optional[int]:
         rows = self.scale_preset_table.selectionModel().selectedRows()
