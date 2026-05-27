@@ -3058,7 +3058,12 @@ class MainWindow(QMainWindow):
         self._set_status(f"각도 {len(self.last_measurements)}개를 계산했습니다. 숫자 라벨은 선택해서 옮길 수 있습니다.")
 
     def delete_selected(self) -> None:
-        if self.canvas.selected_point_handles():
+        selected = set(self.canvas.selected_line_ids())
+        selected_angle_items = self.canvas.selected_angle_items()
+        selected_point_handles = self.canvas.selected_point_handles()
+        if not selected and not selected_angle_items and not selected_point_handles:
+            return
+        if not selected and not selected_angle_items and selected_point_handles:
             self.save_undo_snapshot()
             if self.canvas.delete_selected_point_handles():
                 self._sync_records_from_canvas()
@@ -3066,10 +3071,6 @@ class MainWindow(QMainWindow):
                 self._update_search_range_overlay()
                 self._apply_visibility()
                 self._set_status("선택한 편집점을 삭제했습니다.")
-                return
-        selected = set(self.canvas.selected_line_ids())
-        selected_angle_items = self.canvas.selected_angle_items()
-        if not selected and not selected_angle_items:
             return
         self.save_undo_snapshot()
         self.hidden_angle_measurements.update(self.canvas.selected_angle_measurement_ids())
@@ -3082,7 +3083,7 @@ class MainWindow(QMainWindow):
             self.calculate_angles(reset_hidden=False)
             self._update_search_range_overlay()
             self._apply_visibility()
-        elif selected_angle_items:
+        if selected_angle_items and not selected:
             self.canvas.remove_angle_items(selected_angle_items)
             self._refresh_table()
         deleted_count = len(selected) + len(selected_angle_items)

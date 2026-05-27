@@ -592,6 +592,25 @@ def test_deleting_line_clears_point_handles():
         window.close()
 
 
+def test_delete_prefers_parent_line_over_selected_point_handle():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
+        window._create_edge_line((20.0, 20.0), (80.0, 80.0), [(20.0, 20.0), (50.0, 50.0), (80.0, 80.0)])
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.canvas.refresh_point_handles()
+        window.canvas.point_handle_items[1].setSelected(True)
+
+        window.delete_selected()
+
+        assert edge.id not in window.records
+        assert len(window.canvas.point_handle_items) == 0
+    finally:
+        window.close()
+
+
 def test_undo_restores_keyboard_move_and_delete():
     window = _window_with_edge_image()
     try:
