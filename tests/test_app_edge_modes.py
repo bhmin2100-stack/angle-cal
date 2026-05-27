@@ -39,16 +39,16 @@ def test_recognize_keeps_line_mode_straight():
         window.close()
 
 
-def test_recognize_converts_curve_mode_to_points():
+def test_recognize_converts_polyline_mode_to_connected_segments():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("curve"))
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
 
         window.recognize_edges()
 
         edge = next(record for record in window.records.values() if record.kind == "edge")
-        assert edge.edge_mode == "curve"
+        assert edge.edge_mode == "polyline"
         assert edge.edge_segmented is True
         assert edge.points is not None
         assert len(edge.points) > 2
@@ -63,7 +63,7 @@ def test_segmented_edge_shows_segment_reference_angles_after_recognition():
     window = _window_with_edge_image()
     try:
         window._create_reference_line((10.0, 10.0), (100.0, 10.0))
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("curve"))
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
         window.recognize_edges()
 
@@ -332,6 +332,38 @@ def test_edge_length_overlay_uses_calibration_and_visibility():
 
         window.set_visibility("edge_length", False)
         assert len(window.canvas.edge_length_items) == 0
+    finally:
+        window.close()
+
+
+def test_selected_object_visibility_can_be_mixed_and_applied():
+    window = _window_with_edge_image()
+    try:
+        window._create_reference_line((10.0, 10.0), (100.0, 10.0))
+        window._create_edge_line((40.0, 20.0), (40.0, 100.0))
+        window._create_edge_line((80.0, 20.0), (80.0, 100.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        edges[0].show_angle = True
+        edges[1].show_angle = False
+        window.canvas.redraw_lines(list(window.records.values()))
+        for edge in edges:
+            window.canvas.line_items[edge.id].setSelected(True)
+
+        window._update_object_visibility_controls()
+
+        checkbox = window.object_visibility_checkboxes["show_angle"]
+        assert checkbox.checkState() == Qt.CheckState.PartiallyChecked
+
+        checkbox.setCheckState(Qt.CheckState.Checked)
+        assert all(edge.show_angle for edge in edges)
+        window.calculate_angles(reset_hidden=True)
+        assert len(window.canvas.angle_items) == 2
+
+        checkbox.setCheckState(Qt.CheckState.Unchecked)
+        assert not any(edge.show_angle for edge in edges)
+        window.calculate_angles(reset_hidden=True)
+        assert len(window.canvas.angle_items) == 0
+        assert len([row for row in window.last_measurements if row["kind"] == "edge_to_reference"]) == 2
     finally:
         window.close()
 

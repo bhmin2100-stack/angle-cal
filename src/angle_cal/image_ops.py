@@ -223,7 +223,46 @@ def snap_line_to_gradient_curve(
     search_radius_px: int = 30,
     sensitivity: int = 65,
 ) -> Optional[SnapCurveResult]:
-    """Trace a local curved boundary near a user-drawn line.
+    return snap_polyline_to_gradient(gray, [start, end], search_radius_px, sensitivity)
+
+
+def _resample_polyline(points: Sequence[Point], step_px: float) -> list[Point]:
+    cleaned: list[Point] = []
+    for point in points:
+        if not cleaned or line_length(cleaned[-1], point) > 1e-6:
+            cleaned.append((float(point[0]), float(point[1])))
+    if len(cleaned) < 2:
+        return cleaned
+
+    sampled: list[Point] = [cleaned[0]]
+    carry = 0.0
+    for start, end in zip(cleaned, cleaned[1:]):
+        segment_length = line_length(start, end)
+        if segment_length <= 0:
+            continue
+        distance = step_px - carry if carry > 0 else step_px
+        while distance < segment_length:
+            fraction = distance / segment_length
+            sampled.append(
+                (
+                    start[0] + (end[0] - start[0]) * fraction,
+                    start[1] + (end[1] - start[1]) * fraction,
+                )
+            )
+            distance += step_px
+        carry = max(0.0, segment_length - (distance - step_px))
+    if line_length(sampled[-1], cleaned[-1]) > 1e-6:
+        sampled.append(cleaned[-1])
+    return sampled
+
+
+def snap_polyline_to_gradient(
+    gray: np.ndarray,
+    points: Sequence[Point],
+    search_radius_px: int = 30,
+    sensitivity: int = 65,
+) -> Optional[SnapCurveResult]:
+    """Trace a connected polyline boundary near user-drawn connected segments.
 
     Sensitivity controls both point density and smoothing. Higher values follow
     local brightness changes more closely; lower values smooth the resulting
@@ -231,32 +270,47 @@ def snap_line_to_gradient_curve(
     """
     if search_radius_px <= 0:
         return None
-    length = line_length(start, end)
-    if length < 2:
+    if len(points) < 2:
         return None
 
     sensitivity = int(np.clip(sensitivity, 1, 100))
-    dx = end[0] - start[0]
-    dy = end[1] - start[1]
-    tx = dx / length
-    ty = dy / length
-    nx, ny = normal_for_line(start, end)
-    if nx == 0 and ny == 0:
-        return None
 
     step_px = 18.0 - sensitivity * 0.14
     step_px = float(np.clip(step_px, 3.0, 18.0))
-    point_count = int(np.clip(math.ceil(length / step_px) + 1, 6, 240))
-    t_values = np.linspace(0.0, 1.0, point_count, dtype=np.float32)
+    sampled_points = _resample_polyline(points, step_px)
+    if len(sampled_points) < 2:
+        return None
+    if len(sampled_points) > 240:
+        indexes = np.linspace(0, len(sampled_points) - 1, 240).round().astype(int)
+        sampled_points = [sampled_points[int(index)] for index in indexes]
+    point_count = len(sampled_points)
     offsets = np.arange(-search_radius_px, search_radius_px + 1, dtype=np.float32)
     local_half_width = float(np.clip(step_px * 0.55, 1.5, 8.0))
     local_tangent_offsets = np.linspace(-local_half_width, local_half_width, 5, dtype=np.float32)
 
     best_offsets = np.full(point_count, np.nan, dtype=np.float32)
     strengths = np.full(point_count, np.nan, dtype=np.float32)
-    for idx, t in enumerate(t_values):
-        bx = start[0] + dx * float(t)
-        by = start[1] + dy * float(t)
+    tangents: list[Point] = []
+    normals: list[Point] = []
+    for idx, point in enumerate(sampled_points):
+        prev_point = sampled_points[max(0, idx - 1)]
+        next_point = sampled_points[min(point_count - 1, idx + 1)]
+        tangent_length = line_length(prev_point, next_point)
+        if tangent_length <= 0:
+            tangents.append((0.0, 0.0))
+            normals.append((0.0, 0.0))
+            continue
+        tx = (next_point[0] - prev_point[0]) / tangent_length
+        ty = (next_point[1] - prev_point[1]) / tangent_length
+        tangents.append((tx, ty))
+        normals.append((-ty, tx))
+
+    for idx, point in enumerate(sampled_points):
+        tx, ty = tangents[idx]
+        nx, ny = normals[idx]
+        if nx == 0 and ny == 0:
+            continue
+        bx, by = point
         profile = np.empty(offsets.shape, dtype=np.float32)
         for offset_idx, offset in enumerate(offsets):
             xs = bx + tx * local_tangent_offsets + nx * offset
@@ -296,9 +350,7 @@ def snap_line_to_gradient_curve(
         best_offsets = np.convolve(np.pad(best_offsets, (pad, pad), mode="edge"), kernel, mode="valid").astype(np.float32)
 
     points = []
-    for t, offset in zip(t_values, best_offsets):
-        bx = start[0] + dx * float(t)
-        by = start[1] + dy * float(t)
+    for (bx, by), (nx, ny), offset in zip(sampled_points, normals, best_offsets):
         points.append((float(bx + nx * offset), float(by + ny * offset)))
 
     return SnapCurveResult(points=points, offsets=best_offsets, gradient_strength=strengths)

@@ -12,6 +12,7 @@ from angle_cal.image_ops import (
     read_image,
     rotate_image_and_points,
     snap_line_to_gradient_curve,
+    snap_polyline_to_gradient,
     snap_line_to_gradient,
 )
 
@@ -54,6 +55,27 @@ def test_snap_line_to_gradient_curve_follows_curved_edge():
     assert len(result.points) > 10
     assert xs.std() > 3
     assert 72 <= xs.mean() <= 90
+
+
+def test_snap_polyline_to_gradient_uses_drawn_connected_segments():
+    image = np.zeros((140, 180), dtype=np.float32)
+    for y in range(image.shape[0]):
+        boundary_x = int(round(62 + 0.34 * y))
+        image[y, boundary_x:] = 255
+
+    result = snap_polyline_to_gradient(
+        image,
+        [(50, 15), (70, 70), (95, 125)],
+        search_radius_px=25,
+        sensitivity=80,
+    )
+
+    assert result is not None
+    xs = np.array([point[0] for point in result.points])
+    ys = np.array([point[1] for point in result.points])
+    assert len(result.points) > 10
+    assert ys.max() - ys.min() > 90
+    assert xs[-1] - xs[0] > 25
 
 
 def test_rotate_points_can_align_downward_line_to_horizontal():

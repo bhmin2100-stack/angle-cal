@@ -58,7 +58,7 @@ from .image_ops import (
     read_image,
     rotate_image_and_points,
     snap_line_to_gradient,
-    snap_line_to_gradient_curve,
+    snap_polyline_to_gradient,
     to_gray,
 )
 
@@ -79,6 +79,10 @@ class LineRecord:
     angle_label_side: str = "outside"
     angle_label_gap: float = 14.0
     edge_segmented: bool = False
+    show_angle: bool = True
+    show_range: bool = True
+    show_range_label: bool = True
+    show_edge_length: bool = True
 
 
 @dataclass
@@ -113,7 +117,7 @@ class AnnotationLineItem(QGraphicsLineItem):
 
 class AnnotationCurveItem(QGraphicsPathItem):
     def __init__(self, record: LineRecord, pen: QPen):
-        super().__init__(path_from_points(record.points or [record.start, record.end], smooth=not record.edge_segmented))
+        super().__init__(path_from_points(record.points or [record.start, record.end], smooth=False))
         self.record_id = record.id
         self.kind = record.kind
         self.anchor_points = list(record.points or [record.start, record.end])
@@ -208,7 +212,7 @@ class AngleCanvas(QGraphicsView):
 
     def set_tool(self, tool: str) -> None:
         self.current_tool = tool
-        if tool != "edge" or self.edge_draw_mode != "curve":
+        if tool != "edge" or self.edge_draw_mode != "polyline":
             self._clear_curve_preview()
         if tool == "pan":
             self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -373,7 +377,7 @@ class AngleCanvas(QGraphicsView):
             if record.kind != "edge":
                 continue
             polygons = self._search_range_polygons(record, radius)
-            if self.show_search_range_band:
+            if self.show_search_range_band and record.show_range:
                 for polygon in polygons:
                     item = QGraphicsPolygonItem(polygon)
                     item.setPen(QPen(QColor(0, 220, 110, 220), 1.2, Qt.PenStyle.DashLine))
@@ -382,7 +386,7 @@ class AngleCanvas(QGraphicsView):
                     item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
                     self.scene.addItem(item)
                     self.search_range_band_items.append(item)
-            if polygons and self.show_search_range_label:
+            if polygons and self.show_search_range_label and record.show_range_label:
                 label = QGraphicsTextItem(range_label)
                 label.setDefaultTextColor(QColor("#b8ffd0"))
                 label.setHtml(
@@ -426,6 +430,8 @@ class AngleCanvas(QGraphicsView):
             return
         for record in records:
             if record.kind != "edge":
+                continue
+            if not record.show_edge_length:
                 continue
             points = record_points(record)
             if len(points) < 2:
@@ -686,7 +692,7 @@ class AngleCanvas(QGraphicsView):
             and self.current_tool in {"scale", "reference", "edge"}
             and self.pixmap_item is not None
         ):
-            if self.current_tool == "edge" and self.edge_draw_mode == "curve":
+            if self.current_tool == "edge" and self.edge_draw_mode == "polyline":
                 self._append_curve_point(self._clamp_to_image(self.mapToScene(event.pos())))
                 event.accept()
                 return
@@ -780,7 +786,7 @@ class AngleCanvas(QGraphicsView):
         if (
             event.button() == Qt.MouseButton.LeftButton
             and self.current_tool == "edge"
-            and self.edge_draw_mode == "curve"
+            and self.edge_draw_mode == "polyline"
             and self.pixmap_item is not None
         ):
             self._append_curve_point(self._clamp_to_image(self.mapToScene(event.pos())))
@@ -803,7 +809,7 @@ class AngleCanvas(QGraphicsView):
             self._apply_selection_filter()
             event.accept()
             return
-        if self.current_tool == "edge" and self.edge_draw_mode == "curve":
+        if self.current_tool == "edge" and self.edge_draw_mode == "polyline":
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self._finish_curve()
                 event.accept()
@@ -840,7 +846,7 @@ class AngleCanvas(QGraphicsView):
         points = [(float(point.x()), float(point.y())) for point in self._curve_points]
         if preview_point is not None:
             points.append((float(preview_point.x()), float(preview_point.y())))
-        self._temp_curve.setPath(path_from_points(points))
+        self._temp_curve.setPath(path_from_points(points, smooth=False))
 
     def _finish_curve(self) -> None:
         if len(self._curve_points) < 2:
@@ -850,7 +856,7 @@ class AngleCanvas(QGraphicsView):
         start = points[0]
         end = points[-1]
         self._clear_curve_preview()
-        if record_length(LineRecord("_preview", "edge", start, end, points=points, edge_mode="curve")) > 3:
+        if record_length(LineRecord("_preview", "edge", start, end, points=points, edge_mode="polyline")) > 3:
             self.line_created.emit(self.current_tool, start, end, points)
 
     def _clear_curve_preview(self) -> None:
@@ -998,14 +1004,20 @@ def clone_record(record: LineRecord) -> LineRecord:
         angle_label_side=record.angle_label_side,
         angle_label_gap=record.angle_label_gap,
         edge_segmented=record.edge_segmented,
+        show_angle=record.show_angle,
+        show_range=record.show_range,
+        show_range_label=record.show_range_label,
+        show_edge_length=record.show_edge_length,
     )
 
 
 def line_record_from_dict(item: dict) -> LineRecord:
     raw_points = item.get("points") or []
     record_edge_mode = item.get("edge_mode")
-    if record_edge_mode not in {"line", "curve"}:
-        record_edge_mode = "curve" if raw_points else "line"
+    if record_edge_mode == "curve":
+        record_edge_mode = "polyline"
+    if record_edge_mode not in {"line", "polyline"}:
+        record_edge_mode = "polyline" if raw_points else "line"
     return LineRecord(
         id=item["id"],
         kind=item["kind"],
@@ -1021,6 +1033,10 @@ def line_record_from_dict(item: dict) -> LineRecord:
         angle_label_side=item.get("angle_label_side", "outside"),
         angle_label_gap=float(item.get("angle_label_gap", 14.0)),
         edge_segmented=bool(item.get("edge_segmented", bool(raw_points and len(raw_points) > 6))),
+        show_angle=bool(item.get("show_angle", True)),
+        show_range=bool(item.get("show_range", True)),
+        show_range_label=bool(item.get("show_range_label", True)),
+        show_edge_length=bool(item.get("show_edge_length", True)),
     )
 
 
@@ -1223,6 +1239,7 @@ class MainWindow(QMainWindow):
         self.record_clipboard: list[LineRecord] = []
         self._paste_offset_steps = 0
         self.hidden_angle_measurements: set[str] = set()
+        self._updating_object_visibility_controls = False
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -1246,6 +1263,7 @@ class MainWindow(QMainWindow):
         self._build_measurements_dock()
         self._build_scale_preset_dock()
         self._build_thumbnail_dock()
+        self.canvas.scene.selectionChanged.connect(self._update_object_visibility_controls)
         self.setStatusBar(QStatusBar())
         self._set_status("이미지를 불러오면 시작할 수 있습니다.")
 
@@ -1358,7 +1376,7 @@ class MainWindow(QMainWindow):
 
         self.edge_mode_combo = QComboBox()
         self.edge_mode_combo.addItem("직선", "line")
-        self.edge_mode_combo.addItem("세그먼트", "curve")
+        self.edge_mode_combo.addItem("이어진 직선", "polyline")
         self.edge_mode_combo.currentIndexChanged.connect(self._edge_mode_changed)
         detect_toolbar.addWidget(QLabel("경계 형태"))
         detect_toolbar.addWidget(self.edge_mode_combo)
@@ -1490,11 +1508,16 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         legend_label = QLabel("표시")
         layout.addWidget(legend_label)
+        visibility_layout = QHBoxLayout()
+        global_visibility_layout = QVBoxLayout()
+        object_visibility_layout = QVBoxLayout()
+        global_visibility_layout.addWidget(QLabel("전체 표시"))
+        object_visibility_layout.addWidget(QLabel("선택 개체 표시"))
         self.visibility_checkboxes: dict[str, QCheckBox] = {}
         for key, label in [
             ("scale", "스케일바"),
             ("reference", "기준선"),
-            ("edge", "경계/세그먼트"),
+            ("edge", "경계/이어진 직선"),
             ("guide", "가이드"),
             ("angle", "각도 숫자/호"),
             ("cd", "CD 길이"),
@@ -1506,7 +1529,24 @@ class MainWindow(QMainWindow):
             checkbox.setChecked(self.visibility[key])
             checkbox.toggled.connect(lambda checked, item_key=key: self.set_visibility(item_key, checked))
             self.visibility_checkboxes[key] = checkbox
-            layout.addWidget(checkbox)
+            global_visibility_layout.addWidget(checkbox)
+
+        self.object_visibility_checkboxes: dict[str, QCheckBox] = {}
+        for key, label in [
+            ("show_angle", "각도 숫자/호"),
+            ("show_edge_length", "경계 길이"),
+            ("show_range", "인식 범위 영역"),
+            ("show_range_label", "인식 범위 숫자"),
+        ]:
+            checkbox = QCheckBox(label)
+            checkbox.setTristate(True)
+            checkbox.stateChanged.connect(lambda state, item_key=key: self.set_selected_object_visibility(item_key, state))
+            self.object_visibility_checkboxes[key] = checkbox
+            object_visibility_layout.addWidget(checkbox)
+        visibility_layout.addLayout(global_visibility_layout)
+        visibility_layout.addLayout(object_visibility_layout)
+        layout.addLayout(visibility_layout)
+        self._update_object_visibility_controls()
         dock.setWidget(container)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
@@ -1769,6 +1809,8 @@ class MainWindow(QMainWindow):
         self.nm_per_px = payload.get("nm_per_px")
         edge_detection = payload.get("edge_detection", {})
         edge_mode = edge_detection.get("edge_mode", self.edge_mode_combo.currentData())
+        if edge_mode == "curve":
+            edge_mode = "polyline"
         mode_index = self.edge_mode_combo.findData(edge_mode)
         if mode_index >= 0:
             self.edge_mode_combo.setCurrentIndex(mode_index)
@@ -2047,8 +2089,10 @@ class MainWindow(QMainWindow):
 
     def _create_edge_line(self, start: Point, end: Point, points: Optional[list[Point]] = None) -> None:
         edge_mode = self.edge_mode_combo.currentData()
-        if edge_mode != "curve":
+        if edge_mode != "polyline":
             points = None
+        else:
+            points = points or [start, end]
         record = LineRecord(
             id=self._next_id("E"),
             kind="edge",
@@ -2058,9 +2102,10 @@ class MainWindow(QMainWindow):
             axis=self.axis_combo.currentData(),
             points=points,
             edge_mode=edge_mode,
+            edge_segmented=edge_mode == "polyline",
         )
         self.records[record.id] = record
-        self._set_status(f"{'세그먼트' if edge_mode == 'curve' else '직선'} 경계선을 추가했습니다.")
+        self._set_status(f"{'이어진 직선' if edge_mode == 'polyline' else '직선'} 경계선을 추가했습니다.")
 
     def align_to_reference(self) -> None:
         if self.image_bgr is None:
@@ -2116,12 +2161,14 @@ class MainWindow(QMainWindow):
         sensitivity = self.curve_sensitivity_spin.value()
         moved = 0
         for record in edge_records:
-            if record.edge_mode == "curve":
-                result = snap_line_to_gradient_curve(gray, record.start, record.end, radius, sensitivity)
+            if record.edge_mode in {"curve", "polyline"}:
+                source_points = record_points(record)
+                result = snap_polyline_to_gradient(gray, source_points, radius, sensitivity)
                 if result is not None:
                     record.start = result.start
                     record.end = result.end
                     record.points = result.points
+                    record.edge_mode = "polyline"
                     record.edge_segmented = True
                     moved += 1
             else:
@@ -2467,7 +2514,7 @@ class MainWindow(QMainWindow):
                     )
                     label_pos = self._label_position(midpoint, segment_angle, reference_angle, 22.0)
                     measurement_id = f"{edge.id}_seg{segment_idx}_to_{reference_name}"
-                    if measurement_id not in self.hidden_angle_measurements:
+                    if edge.show_angle and measurement_id not in self.hidden_angle_measurements:
                         self.canvas.add_angle_annotation(
                             f"{angle:.2f}°",
                             label_pos,
@@ -2494,7 +2541,7 @@ class MainWindow(QMainWindow):
             midpoint = ((edge.start[0] + edge.end[0]) / 2.0, (edge.start[1] + edge.end[1]) / 2.0)
             label_pos = self._label_position(midpoint, edge_angle, reference_angle, 34.0)
             measurement_id = f"{edge.id}_to_{reference_name}"
-            if measurement_id not in self.hidden_angle_measurements:
+            if edge.show_angle and measurement_id not in self.hidden_angle_measurements:
                 self.canvas.add_angle_annotation(
                     f"{angle:.2f}°",
                     label_pos,
@@ -2535,7 +2582,7 @@ class MainWindow(QMainWindow):
                     length_px = record_length(edge)
                     suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
                     measurement_id = f"{edge.id}_x_{guide.id}{suffix}"
-                    if measurement_id not in self.hidden_angle_measurements:
+                    if edge.show_angle and measurement_id not in self.hidden_angle_measurements:
                         self.canvas.add_angle_annotation(
                             f"{angle:.2f}°",
                             label_pos,
@@ -2674,11 +2721,11 @@ class MainWindow(QMainWindow):
                 self.calculate_angles(reset_hidden=False)
                 self._update_search_range_overlay()
                 self._apply_visibility()
-        mode_label = "세그먼트" if mode == "curve" else "직선"
+        mode_label = "이어진 직선" if mode == "polyline" else "직선"
         if changed:
             self._set_status(f"선택한 경계선 {changed}개를 {mode_label} 모드로 바꿨습니다.")
-        elif mode == "curve":
-            self._set_status("경계 형태: 세그먼트. 경계선 도구에서 점을 찍고 더블클릭 또는 Enter로 확정합니다.")
+        elif mode == "polyline":
+            self._set_status("경계 형태: 이어진 직선. 경계선 도구에서 점을 찍고 더블클릭 또는 Enter로 확정합니다.")
         else:
             self._set_status("경계 형태: 직선. 경계선 도구에서 드래그로 선분을 긋습니다.")
 
@@ -2797,6 +2844,58 @@ class MainWindow(QMainWindow):
         else:
             self._apply_visibility()
 
+    def _selected_edge_records(self) -> list[LineRecord]:
+        return [
+            self.records[record_id]
+            for record_id in self.canvas.selected_line_ids()
+            if record_id in self.records and self.records[record_id].kind == "edge"
+        ]
+
+    def _update_object_visibility_controls(self) -> None:
+        if not hasattr(self, "object_visibility_checkboxes"):
+            return
+        selected_edges = self._selected_edge_records()
+        self._updating_object_visibility_controls = True
+        try:
+            for key, checkbox in self.object_visibility_checkboxes.items():
+                checkbox.setEnabled(bool(selected_edges))
+                if not selected_edges:
+                    checkbox.setCheckState(Qt.CheckState.Unchecked)
+                    continue
+                values = [bool(getattr(record, key)) for record in selected_edges]
+                if all(values):
+                    checkbox.setCheckState(Qt.CheckState.Checked)
+                elif not any(values):
+                    checkbox.setCheckState(Qt.CheckState.Unchecked)
+                else:
+                    checkbox.setCheckState(Qt.CheckState.PartiallyChecked)
+        finally:
+            self._updating_object_visibility_controls = False
+
+    def set_selected_object_visibility(self, key: str, state: int) -> None:
+        if self._updating_object_visibility_controls:
+            return
+        check_state = Qt.CheckState(state)
+        if check_state == Qt.CheckState.PartiallyChecked:
+            return
+        selected_edges = self._selected_edge_records()
+        if not selected_edges:
+            self._update_object_visibility_controls()
+            return
+        visible = check_state == Qt.CheckState.Checked
+        for record in selected_edges:
+            setattr(record, key, visible)
+        if key == "show_angle":
+            self.calculate_angles(reset_hidden=False)
+        elif key == "show_edge_length":
+            self._update_edge_length_overlay()
+            self._apply_visibility()
+        elif key in {"show_range", "show_range_label"}:
+            self._update_search_range_overlay()
+            self._apply_visibility()
+        self._update_object_visibility_controls()
+        self._set_status(f"선택 경계선 {len(selected_edges)}개의 표시 기준을 바꿨습니다.")
+
     def _apply_visibility(self) -> None:
         for record_id, item in self.canvas.line_items.items():
             record = self.records.get(record_id)
@@ -2830,6 +2929,7 @@ class MainWindow(QMainWindow):
     def _handle_scene_changed(self) -> None:
         self._refresh_table()
         self._update_search_range_overlay()
+        self._update_object_visibility_controls()
 
     def _sync_records_from_canvas(self) -> None:
         for record_id, item in self.canvas.line_items.items():
