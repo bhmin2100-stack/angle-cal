@@ -123,3 +123,40 @@ def test_selected_edge_angle_display_sector_controls_measurement_angle():
         assert len(window.canvas.angle_items) >= 2
     finally:
         window.close()
+
+
+def test_cd_length_modes_measure_adjacent_edge_intersections():
+    window = _window_with_edge_image()
+    try:
+        for x in (40.0, 80.0, 120.0):
+            window._create_edge_line((x, 10.0), (x, 110.0))
+        window.records["G99"] = LineRecord(
+            id="G99",
+            kind="guide",
+            start=(0.0, 60.0),
+            end=(150.0, 60.0),
+            label="guide",
+            axis="horizontal",
+        )
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.cd_segment_combo.setCurrentIndex(window.cd_segment_combo.findData("all"))
+        window.calculate_cd_lengths()
+        cd_rows = [row for row in window.last_measurements if row["kind"] == "cd_length"]
+        assert len(cd_rows) == 2
+        assert [round(row["cd_length_px"], 2) for row in cd_rows] == [40.0, 40.0]
+        assert len(window.canvas.cd_items) == 4
+
+        window.cd_segment_combo.setCurrentIndex(window.cd_segment_combo.findData("odd"))
+        window.calculate_cd_lengths()
+        cd_rows = [row for row in window.last_measurements if row["kind"] == "cd_length"]
+        assert len(cd_rows) == 1
+        assert "_1_" in cd_rows[0]["measurement"]
+
+        window.cd_segment_combo.setCurrentIndex(window.cd_segment_combo.findData("even"))
+        window.calculate_cd_lengths()
+        cd_rows = [row for row in window.last_measurements if row["kind"] == "cd_length"]
+        assert len(cd_rows) == 1
+        assert "_2_" in cd_rows[0]["measurement"]
+    finally:
+        window.close()

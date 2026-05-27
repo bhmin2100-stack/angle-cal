@@ -167,6 +167,7 @@ class AngleCanvas(QGraphicsView):
         self.pixmap_item: Optional[QGraphicsPixmapItem] = None
         self.line_items: dict[str, AnnotationLineItem | AnnotationCurveItem] = {}
         self.angle_items: list[QGraphicsPathItem | QGraphicsTextItem] = []
+        self.cd_items: list[QGraphicsItem] = []
         self.search_range_band_items: list[QGraphicsItem] = []
         self.search_range_label_items: list[QGraphicsItem] = []
         self.detection_preview_items: list[QGraphicsItem] = []
@@ -227,6 +228,7 @@ class AngleCanvas(QGraphicsView):
         self.scene.clear()
         self.line_items.clear()
         self.angle_items.clear()
+        self.cd_items.clear()
         self.search_range_band_items.clear()
         self.search_range_label_items.clear()
         self.detection_preview_items.clear()
@@ -381,6 +383,35 @@ class AngleCanvas(QGraphicsView):
         self.angle_items.clear()
         self.angle_groups.clear()
         self.angle_group_parents.clear()
+
+    def clear_cd_items(self) -> None:
+        for item in self.cd_items:
+            self.scene.removeItem(item)
+        self.cd_items.clear()
+
+    def add_cd_measurement(self, start: Point, end: Point, text: str, label_pos: Point) -> list[QGraphicsItem]:
+        items: list[QGraphicsItem] = []
+        line = QGraphicsLineItem(start[0], start[1], end[0], end[1])
+        line.setPen(QPen(QColor("#8ecae6"), 2.0))
+        line.setZValue(18)
+        line.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.scene.addItem(line)
+        self.cd_items.append(line)
+        items.append(line)
+
+        label = QGraphicsTextItem()
+        label.setHtml(
+            "<div style='background-color:rgba(3,37,65,185);"
+            "color:#d9f6ff;padding:2px 5px;border-radius:3px;'>"
+            f"{text}</div>"
+        )
+        label.setPos(label_pos[0], label_pos[1])
+        label.setZValue(31)
+        label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.scene.addItem(label)
+        self.cd_items.append(label)
+        items.append(label)
+        return items
 
     def add_angle_annotation(
         self,
@@ -858,6 +889,25 @@ def polyline_intersections(edge: LineRecord, guide_line: tuple[Point, Point]) ->
     return crosses
 
 
+def line_fraction(point: Point, line: tuple[Point, Point]) -> float:
+    start, end = line
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 0:
+        return 0.0
+    return ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_sq
+
+
+def cd_segment_allowed(index: int, mode: str) -> bool:
+    segment_number = index + 1
+    if mode == "odd":
+        return segment_number % 2 == 1
+    if mode == "even":
+        return segment_number % 2 == 0
+    return True
+
+
 class EdgeDetectionSettingsDialog(QDialog):
     def __init__(
         self,
@@ -973,6 +1023,7 @@ class MainWindow(QMainWindow):
             "edge": True,
             "guide": True,
             "angle": True,
+            "cd": True,
             "range": True,
             "range_label": True,
         }
@@ -1139,11 +1190,16 @@ class MainWindow(QMainWindow):
         self.guide_offset_spin.setRange(0, 100000)
         self.guide_offset_spin.setValue(0)
         self.guide_offset_spin.setSuffix(" px")
+        self.cd_segment_combo = QComboBox()
+        self.cd_segment_combo.addItem("CD 전체", "all")
+        self.cd_segment_combo.addItem("CD 홀수번째", "odd")
+        self.cd_segment_combo.addItem("CD 짝수번째", "even")
         guide_toolbar.addWidget(self.guide_orientation_combo)
         guide_toolbar.addWidget(self.guide_spacing_spin)
         guide_toolbar.addWidget(self.guide_spacing_unit)
         guide_toolbar.addWidget(QLabel("시작"))
         guide_toolbar.addWidget(self.guide_offset_spin)
+        guide_toolbar.addWidget(self.cd_segment_combo)
 
         add_guides_button = QPushButton("그리기")
         add_guides_button.clicked.connect(self.add_guides)
@@ -1153,10 +1209,13 @@ class MainWindow(QMainWindow):
         angle_button.clicked.connect(self.calculate_angles)
         angle_settings_button = QPushButton("각도 표시 편집")
         angle_settings_button.clicked.connect(self.edit_angle_display_for_selected_edges)
+        cd_button = QPushButton("CD 길이")
+        cd_button.clicked.connect(self.calculate_cd_lengths)
         guide_toolbar.addWidget(add_guides_button)
         guide_toolbar.addWidget(clear_guides_button)
         guide_toolbar.addWidget(angle_button)
         guide_toolbar.addWidget(angle_settings_button)
+        guide_toolbar.addWidget(cd_button)
 
     def _new_toolbar(self, title: str) -> QToolBar:
         toolbar = QToolBar(title)
@@ -1204,6 +1263,7 @@ class MainWindow(QMainWindow):
             ("edge", "경계/곡선"),
             ("guide", "가이드"),
             ("angle", "각도 숫자/호"),
+            ("cd", "CD 길이"),
             ("range", "인식 범위 영역"),
             ("range_label", "인식 범위 숫자"),
         ]:
@@ -1481,6 +1541,10 @@ class MainWindow(QMainWindow):
             int(edge_detection.get("curve_sensitivity", self.curve_sensitivity_spin.value()))
         )
         self.show_search_range_checkbox.setChecked(bool(edge_detection.get("show_search_range", True)))
+        cd_mode = payload.get("cd_segment_mode")
+        cd_index = self.cd_segment_combo.findData(cd_mode)
+        if cd_index >= 0:
+            self.cd_segment_combo.setCurrentIndex(cd_index)
         visibility = payload.get("visibility", {})
         for key, visible in visibility.items():
             if key in self.visibility:
@@ -1543,6 +1607,7 @@ class MainWindow(QMainWindow):
                 "show_search_range": self.show_search_range_checkbox.isChecked(),
             },
             "visibility": self.visibility,
+            "cd_segment_mode": self.cd_segment_combo.currentData(),
             "scale_presets": [asdict(preset) for preset in self.scale_presets],
             "counter": self._counter,
             "records": [asdict(record) for record in self.records.values()],
@@ -1566,7 +1631,10 @@ class MainWindow(QMainWindow):
     def export_csv(self) -> None:
         if self.image_bgr is None:
             return
-        self.calculate_angles()
+        if self.canvas.cd_items:
+            self.calculate_cd_lengths()
+        else:
+            self.calculate_angles()
         path, _ = QFileDialog.getSaveFileName(self, "CSV 내보내기", "", "CSV (*.csv)")
         if not path:
             return
@@ -1585,6 +1653,8 @@ class MainWindow(QMainWindow):
                     "angle_deg",
                     "edge_length_px",
                     "edge_length_nm",
+                    "cd_length_px",
+                    "cd_length_nm",
                     "nm_per_px",
                 ],
             )
@@ -1878,12 +1948,83 @@ class MainWindow(QMainWindow):
         for record_id in [rid for rid, record in self.records.items() if record.kind == "guide"]:
             del self.records[record_id]
         self.canvas.clear_angle_items()
+        self.canvas.clear_cd_items()
         if redraw:
             self.canvas.redraw_lines(list(self.records.values()))
             self._refresh_table()
             self._update_search_range_overlay()
             self._apply_visibility()
             self._set_status("가이드를 지웠습니다.")
+
+    def calculate_cd_lengths(self) -> None:
+        if self.image_bgr is None:
+            return
+        self._sync_records_from_canvas()
+        edges = [record for record in self.records.values() if record.kind == "edge"]
+        guides = [record for record in self.records.values() if record.kind == "guide"]
+        if len(edges) < 2 or not guides:
+            QMessageBox.information(self, "CD 길이", "CD 길이를 재려면 경계선 2개 이상과 가이드선이 필요합니다.")
+            return
+        self.calculate_angles()
+        self._sync_records_from_canvas()
+        edges = [record for record in self.records.values() if record.kind == "edge"]
+        guides = [record for record in self.records.values() if record.kind == "guide"]
+
+        mode = self.cd_segment_combo.currentData()
+        created = 0
+        for guide in guides:
+            guide_line = (guide.start, guide.end)
+            crosses: list[tuple[float, Point, str]] = []
+            for edge in edges:
+                for cross, _edge_angle in polyline_intersections(edge, guide_line):
+                    fraction = line_fraction(cross, guide_line)
+                    if -0.0001 <= fraction <= 1.0001:
+                        crosses.append((fraction, cross, edge.id))
+            crosses.sort(key=lambda item: item[0])
+            filtered: list[tuple[float, Point, str]] = []
+            for item in crosses:
+                if filtered and abs(item[0] - filtered[-1][0]) < 0.0005 and item[2] == filtered[-1][2]:
+                    continue
+                filtered.append(item)
+            for idx in range(len(filtered) - 1):
+                if not cd_segment_allowed(idx, str(mode)):
+                    continue
+                _fraction_a, point_a, edge_a = filtered[idx]
+                _fraction_b, point_b, edge_b = filtered[idx + 1]
+                if edge_a == edge_b:
+                    continue
+                length_px = line_length(point_a, point_b)
+                if length_px <= 0:
+                    continue
+                midpoint = ((point_a[0] + point_b[0]) / 2.0, (point_a[1] + point_b[1]) / 2.0)
+                nx, ny = normal_for_line(point_a, point_b)
+                label_pos = (midpoint[0] + nx * 16.0, midpoint[1] + ny * 16.0)
+                if self.nm_per_px:
+                    text = f"CD {length_px * self.nm_per_px:.3g} nm"
+                    cd_length_nm = length_px * self.nm_per_px
+                else:
+                    text = f"CD {length_px:.2f} px"
+                    cd_length_nm = ""
+                self.canvas.add_cd_measurement(point_a, point_b, text, label_pos)
+                self.last_measurements.append(
+                    {
+                        "measurement": f"CD_{guide.id}_{idx + 1}_{edge_a}_{edge_b}",
+                        "edge_id": f"{edge_a}|{edge_b}",
+                        "guide_id": guide.id,
+                        "kind": "cd_length",
+                        "x_px": midpoint[0],
+                        "y_px": midpoint[1],
+                        "angle_deg": "",
+                        "edge_length_px": "",
+                        "edge_length_nm": "",
+                        "cd_length_px": length_px,
+                        "cd_length_nm": cd_length_nm,
+                        "nm_per_px": self.nm_per_px if self.nm_per_px else "",
+                    }
+                )
+                created += 1
+        self._apply_visibility()
+        self._set_status(f"CD 길이 {created}개를 표시했습니다.")
 
     def edit_angle_display_for_selected_edges(self) -> None:
         self._sync_records_from_canvas()
@@ -1923,6 +2064,7 @@ class MainWindow(QMainWindow):
             return
         self._sync_records_from_canvas()
         self.canvas.clear_angle_items()
+        self.canvas.clear_cd_items()
         self.last_measurements = []
 
         reference = self._reference_record()
@@ -2227,6 +2369,8 @@ class MainWindow(QMainWindow):
                 item.setVisible(self.visibility.get(record.kind, True))
         for item in self.canvas.angle_items:
             item.setVisible(self.visibility.get("angle", True))
+        for item in self.canvas.cd_items:
+            item.setVisible(self.visibility.get("cd", True))
         for item in self.canvas.search_range_band_items:
             item.setVisible(self.visibility.get("range", True))
         for item in self.canvas.search_range_label_items:
