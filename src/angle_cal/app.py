@@ -1530,6 +1530,7 @@ class MainWindow(QMainWindow):
         align_button.clicked.connect(self.align_to_reference)
         reference_toolbar.addWidget(align_button)
 
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
         detect_toolbar = self._new_toolbar("인식")
 
         self.edge_mode_combo = QComboBox()
@@ -1568,6 +1569,7 @@ class MainWindow(QMainWindow):
         recognize_button.clicked.connect(self.recognize_edges)
         detect_toolbar.addWidget(recognize_button)
 
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
         guide_toolbar = self._new_toolbar("가이드")
 
         self.guide_orientation_combo = QComboBox()
@@ -1630,10 +1632,13 @@ class MainWindow(QMainWindow):
     def _new_toolbar(self, title: str) -> QToolBar:
         toolbar = QToolBar(title)
         toolbar.setMovable(True)
-        toolbar.setFloatable(False)
+        toolbar.setFloatable(True)
+        toolbar.setAllowedAreas(Qt.ToolBarArea.AllToolBarAreas)
         toolbar.setStyleSheet(
             "QToolBar { spacing: 4px; padding: 2px; } "
-            "QToolBar::handle { width: 5px; background: #5a5a5a; margin: 4px 1px; }"
+            "QToolBar::handle { background: #5a5a5a; } "
+            "QToolBar::handle:horizontal { width: 8px; margin: 4px 2px; } "
+            "QToolBar::handle:vertical { height: 8px; margin: 2px 4px; }"
         )
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
         return toolbar
