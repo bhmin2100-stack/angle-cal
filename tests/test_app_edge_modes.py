@@ -611,6 +611,57 @@ def test_ctrl_pan_restore_returns_to_edge_cursor():
         window.close()
 
 
+def test_grouped_objects_select_and_move_together():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 20.0), (20.0, 80.0))
+        window._create_edge_line((60.0, 20.0), (60.0, 80.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.redraw_lines(list(window.records.values()))
+        for edge in edges:
+            window.canvas.line_items[edge.id].setSelected(True)
+
+        window.group_selected_objects()
+
+        assert edges[0].object_group
+        assert edges[0].object_group == edges[1].object_group
+
+        window.canvas.scene.clearSelection()
+        window.canvas.line_items[edges[0].id].setSelected(True)
+
+        assert set(window.canvas.selected_line_ids()) == {edges[0].id, edges[1].id}
+
+        assert window.canvas._nudge_selected_items(Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+        window._sync_records_from_canvas()
+
+        assert window.records[edges[0].id].start == (30.0, 20.0)
+        assert window.records[edges[1].id].start == (70.0, 20.0)
+    finally:
+        window.close()
+
+
+def test_ungroup_selected_objects_stops_group_selection():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 20.0), (20.0, 80.0))
+        window._create_edge_line((60.0, 20.0), (60.0, 80.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.redraw_lines(list(window.records.values()))
+        for edge in edges:
+            window.canvas.line_items[edge.id].setSelected(True)
+        window.group_selected_objects()
+
+        window.ungroup_selected_objects()
+        assert not any(edge.object_group for edge in edges)
+
+        window.canvas.scene.clearSelection()
+        window.canvas.line_items[edges[0].id].setSelected(True)
+
+        assert window.canvas.selected_line_ids() == [edges[0].id]
+    finally:
+        window.close()
+
+
 def test_arrow_keys_nudge_selected_edge_and_ctrl_uses_one_pixel():
     window = _window_with_edge_image()
     try:

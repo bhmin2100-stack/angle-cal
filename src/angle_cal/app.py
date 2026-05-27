@@ -81,6 +81,7 @@ class LineRecord:
     angle_label_side: str = "outside"
     angle_label_gap: float = 14.0
     edge_segmented: bool = False
+    object_group: Optional[str] = None
     show_line: bool = True
     show_angle: bool = True
     show_range: bool = True
@@ -1286,6 +1287,7 @@ def clone_record(record: LineRecord) -> LineRecord:
         angle_label_side=record.angle_label_side,
         angle_label_gap=record.angle_label_gap,
         edge_segmented=record.edge_segmented,
+        object_group=record.object_group,
         show_line=record.show_line,
         show_angle=record.show_angle,
         show_range=record.show_range,
@@ -1318,6 +1320,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         angle_label_side=item.get("angle_label_side", "outside"),
         angle_label_gap=float(item.get("angle_label_gap", 14.0)),
         edge_segmented=bool(item.get("edge_segmented", bool(raw_points and len(raw_points) > 6))),
+        object_group=item.get("object_group"),
         show_line=bool(item.get("show_line", True)),
         show_angle=bool(item.get("show_angle", True)),
         show_range=bool(item.get("show_range", True)),
@@ -1529,6 +1532,7 @@ class MainWindow(QMainWindow):
         self.undo_stack: list[dict] = []
         self._restoring_undo = False
         self._updating_object_visibility_controls = False
+        self._expanding_object_group_selection = False
         self.force_edge_visible = False
         self.visibility: dict[str, bool] = {
             "scale": True,
@@ -1560,6 +1564,7 @@ class MainWindow(QMainWindow):
         self._build_visibility_dock()
         self._build_scale_preset_dock()
         self._build_thumbnail_dock()
+        self.canvas.scene.selectionChanged.connect(self._expand_object_group_selection)
         self.canvas.scene.selectionChanged.connect(self._update_object_visibility_controls)
         self.setStatusBar(QStatusBar())
         self._set_status("이미지를 불러오면 시작할 수 있습니다.")
@@ -1605,6 +1610,14 @@ class MainWindow(QMainWindow):
         self.paste_structure_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
         self.paste_structure_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.paste_structure_action.triggered.connect(self.paste_selected_structure_template)
+        self.group_action = QAction("그룹화", self)
+        self.group_action.setShortcut(QKeySequence("Ctrl+G"))
+        self.group_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.group_action.triggered.connect(self.group_selected_objects)
+        self.ungroup_action = QAction("그룹 해제", self)
+        self.ungroup_action.setShortcut(QKeySequence("Ctrl+Shift+G"))
+        self.ungroup_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.ungroup_action.triggered.connect(self.ungroup_selected_objects)
         self.previous_image_action = QAction("이전 이미지", self)
         self.previous_image_action.setShortcut(QKeySequence(Qt.Key.Key_PageUp))
         self.previous_image_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -1620,6 +1633,8 @@ class MainWindow(QMainWindow):
         self.addAction(self.paste_action)
         self.addAction(self.save_structure_action)
         self.addAction(self.paste_structure_action)
+        self.addAction(self.group_action)
+        self.addAction(self.ungroup_action)
         self.addAction(self.previous_image_action)
         self.addAction(self.next_image_action)
         self.scale_preset_actions: list[QAction] = []
@@ -3202,6 +3217,82 @@ class MainWindow(QMainWindow):
         deleted_count = len(selected) + len(selected_angle_items) + len(selected_edge_length_items)
         self._set_status(f"{deleted_count}개 개체를 삭제했습니다.")
 
+    def group_selected_objects(self) -> None:
+        self._sync_records_from_canvas()
+        selected_ids = [
+            record_id
+            for record_id in self.canvas.selected_line_ids()
+            if record_id in self.records and self.records[record_id].kind in {"edge", "scale", "guide"}
+        ]
+        selected_ids = list(dict.fromkeys(selected_ids))
+        if len(selected_ids) < 2:
+            self._set_status("그룹화하려면 개체를 2개 이상 선택하세요.")
+            return
+        self.save_undo_snapshot()
+        group_id = self._next_object_group_id()
+        for record_id in selected_ids:
+            self.records[record_id].object_group = group_id
+        self._select_record_ids(set(selected_ids))
+        self._set_status(f"{len(selected_ids)}개 개체를 그룹화했습니다.")
+
+    def ungroup_selected_objects(self) -> None:
+        self._sync_records_from_canvas()
+        selected_ids = [
+            record_id
+            for record_id in self.canvas.selected_line_ids()
+            if record_id in self.records and self.records[record_id].object_group
+        ]
+        if not selected_ids:
+            self._set_status("그룹 해제할 개체를 선택하세요.")
+            return
+        group_ids = {self.records[record_id].object_group for record_id in selected_ids}
+        self.save_undo_snapshot()
+        changed = 0
+        for record in self.records.values():
+            if record.object_group in group_ids:
+                record.object_group = None
+                changed += 1
+        self._set_status(f"{changed}개 개체의 그룹을 해제했습니다.")
+
+    def _next_object_group_id(self, reserved: Optional[set[str]] = None) -> str:
+        used = {record.object_group for record in self.records.values() if record.object_group}
+        if reserved:
+            used.update(reserved)
+        idx = 1
+        while f"OG{idx}" in used:
+            idx += 1
+        return f"OG{idx}"
+
+    def _expand_object_group_selection(self) -> None:
+        if self._expanding_object_group_selection:
+            return
+        if getattr(self.canvas, "_selection_filter", None) is not None:
+            return
+        selected_ids = self.canvas.selected_line_ids()
+        group_ids = {
+            self.records[record_id].object_group
+            for record_id in selected_ids
+            if record_id in self.records and self.records[record_id].object_group
+        }
+        if not group_ids:
+            return
+        target_ids = {
+            record.id
+            for record in self.records.values()
+            if record.object_group in group_ids
+        }
+        if target_ids.issubset(set(selected_ids)):
+            return
+        self._select_record_ids(target_ids)
+
+    def _select_record_ids(self, record_ids: set[str]) -> None:
+        self._expanding_object_group_selection = True
+        try:
+            for item in self.canvas.line_items.values():
+                item.setSelected(item.record_id in record_ids)
+        finally:
+            self._expanding_object_group_selection = False
+
     def copy_selected_parent_objects(self) -> None:
         self._sync_records_from_canvas()
         selected_ids = self.canvas.selected_line_ids()
@@ -3229,10 +3320,15 @@ class MainWindow(QMainWindow):
         self._paste_offset_steps += 1
         offset = 14.0 * self._paste_offset_steps
         new_ids: list[str] = []
+        group_map: dict[str, str] = {}
         for source in self.record_clipboard:
             record = clone_record(source)
             prefix = "S" if record.kind == "scale" else "E"
             record.id = self._next_id(prefix)
+            if record.object_group:
+                if record.object_group not in group_map:
+                    group_map[record.object_group] = self._next_object_group_id(set(group_map.values()))
+                record.object_group = group_map[record.object_group]
             record.start = offset_point(record.start, offset, offset)
             record.end = offset_point(record.end, offset, offset)
             if record.points:
