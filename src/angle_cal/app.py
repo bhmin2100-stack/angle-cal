@@ -910,6 +910,10 @@ def record_angle(record: LineRecord) -> float:
     return line_angle_degrees(points[0], points[-1])
 
 
+def has_segmented_edge_angle(record: LineRecord) -> bool:
+    return record.kind == "edge" and bool(record.points and len(record.points) > 2)
+
+
 def scale_point(point: Point, center: Point, factor: float) -> Point:
     return (
         center[0] + (point[0] - center[0]) * factor,
@@ -2381,6 +2385,8 @@ class MainWindow(QMainWindow):
         edges = [record for record in self.records.values() if record.kind == "edge"]
         guides = [record for record in self.records.values() if record.kind == "guide"]
         for edge in edges:
+            if has_segmented_edge_angle(edge):
+                continue
             edge_angle = record_angle(edge)
             angle = acute_angle_difference(edge_angle, reference_angle)
             midpoint = ((edge.start[0] + edge.end[0]) / 2.0, (edge.start[1] + edge.end[1]) / 2.0)

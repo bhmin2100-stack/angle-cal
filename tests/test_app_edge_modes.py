@@ -56,6 +56,38 @@ def test_recognize_converts_curve_mode_to_points():
         window.close()
 
 
+def test_curve_edge_does_not_show_single_reference_angle_after_recognition():
+    window = _window_with_edge_image()
+    try:
+        window._create_reference_line((10.0, 10.0), (100.0, 10.0))
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("curve"))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
+        window.recognize_edges()
+
+        window.calculate_angles()
+
+        assert window.canvas.angle_items == []
+        assert not [row for row in window.last_measurements if row["kind"] == "edge_to_reference"]
+    finally:
+        window.close()
+
+
+def test_straight_edge_still_shows_single_reference_angle():
+    window = _window_with_edge_image()
+    try:
+        window._create_reference_line((10.0, 10.0), (100.0, 10.0))
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.calculate_angles()
+
+        assert len(window.canvas.angle_items) == 1
+        assert len([row for row in window.last_measurements if row["kind"] == "edge_to_reference"]) == 1
+    finally:
+        window.close()
+
+
 def test_search_range_band_and_label_visibility_are_independent():
     window = _window_with_edge_image()
     try:
