@@ -762,6 +762,10 @@ class AngleCanvas(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
+            if self._nudge_selected_items(event.key(), event.modifiers()):
+                event.accept()
+                return
         if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W, Qt.Key.Key_E):
             self._selection_filter = {
                 Qt.Key.Key_Q: "edge",
@@ -824,8 +828,31 @@ class AngleCanvas(QGraphicsView):
     def _clear_curve_preview(self) -> None:
         if self._temp_curve is not None:
             self.scene.removeItem(self._temp_curve)
-            self._temp_curve = None
+        self._temp_curve = None
         self._curve_points = []
+
+    def _nudge_selected_items(self, key: int, modifiers: Qt.KeyboardModifier) -> bool:
+        selected = self.scene.selectedItems()
+        if not selected:
+            return False
+        step = 1.0 if modifiers & Qt.KeyboardModifier.ControlModifier else 10.0
+        dx = 0.0
+        dy = 0.0
+        if key == Qt.Key.Key_Left:
+            dx = -step
+        elif key == Qt.Key.Key_Right:
+            dx = step
+        elif key == Qt.Key.Key_Up:
+            dy = -step
+        elif key == Qt.Key.Key_Down:
+            dy = step
+        else:
+            return False
+        for item in selected:
+            if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsMovable:
+                item.moveBy(dx, dy)
+        self.scene_changed.emit()
+        return True
 
     def _start_pan(self, pos: QPoint) -> None:
         self._panning = True

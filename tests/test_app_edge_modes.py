@@ -320,3 +320,24 @@ def test_ctrl_pan_restore_returns_to_edge_cursor():
         assert window.canvas.current_tool == "edge"
     finally:
         window.close()
+
+
+def test_arrow_keys_nudge_selected_edge_and_ctrl_uses_one_pixel():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.line_items[edge.id].setSelected(True)
+
+        assert window.canvas._nudge_selected_items(Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+        window._sync_records_from_canvas()
+        assert window.records[edge.id].start == (30.0, 60.0)
+        assert window.records[edge.id].end == (130.0, 60.0)
+
+        assert window.canvas._nudge_selected_items(Qt.Key.Key_Up, Qt.KeyboardModifier.ControlModifier)
+        window._sync_records_from_canvas()
+        assert window.records[edge.id].start == (30.0, 59.0)
+        assert window.records[edge.id].end == (130.0, 59.0)
+    finally:
+        window.close()
