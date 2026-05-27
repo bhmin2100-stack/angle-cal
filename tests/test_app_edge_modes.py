@@ -49,14 +49,17 @@ def test_recognize_converts_curve_mode_to_points():
 
         edge = next(record for record in window.records.values() if record.kind == "edge")
         assert edge.edge_mode == "curve"
+        assert edge.edge_segmented is True
         assert edge.points is not None
         assert len(edge.points) > 2
         assert 80 <= (edge.start[0] + edge.end[0]) / 2 <= 83
+        item = window.canvas.line_items[edge.id]
+        assert item.path().elementCount() == len(edge.points)
     finally:
         window.close()
 
 
-def test_curve_edge_does_not_show_single_reference_angle_after_recognition():
+def test_segmented_edge_shows_segment_reference_angles_after_recognition():
     window = _window_with_edge_image()
     try:
         window._create_reference_line((10.0, 10.0), (100.0, 10.0))
@@ -66,8 +69,10 @@ def test_curve_edge_does_not_show_single_reference_angle_after_recognition():
 
         window.calculate_angles()
 
-        assert window.canvas.angle_items == []
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        assert len(window.canvas.angle_items) == len(edge.points) - 1
         assert not [row for row in window.last_measurements if row["kind"] == "edge_to_reference"]
+        assert [row for row in window.last_measurements if row["kind"] == "edge_segment_to_reference"]
     finally:
         window.close()
 

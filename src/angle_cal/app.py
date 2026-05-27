@@ -78,6 +78,7 @@ class LineRecord:
     angle_arc_radius: float = 28.0
     angle_label_side: str = "outside"
     angle_label_gap: float = 14.0
+    edge_segmented: bool = False
 
 
 @dataclass
@@ -111,7 +112,7 @@ class AnnotationLineItem(QGraphicsLineItem):
 
 class AnnotationCurveItem(QGraphicsPathItem):
     def __init__(self, record: LineRecord, pen: QPen):
-        super().__init__(path_from_points(record.points or [record.start, record.end]))
+        super().__init__(path_from_points(record.points or [record.start, record.end], smooth=not record.edge_segmented))
         self.record_id = record.id
         self.kind = record.kind
         self.anchor_points = list(record.points or [record.start, record.end])
@@ -121,13 +122,14 @@ class AnnotationCurveItem(QGraphicsPathItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
 
 
-def path_from_points(points: list[Point]) -> QPainterPath:
+def path_from_points(points: list[Point], smooth: bool = True) -> QPainterPath:
     path = QPainterPath()
     if not points:
         return path
     path.moveTo(points[0][0], points[0][1])
-    if len(points) == 2:
-        path.lineTo(points[1][0], points[1][1])
+    if len(points) == 2 or not smooth:
+        for point in points[1:]:
+            path.lineTo(point[0], point[1])
         return path
     for idx in range(len(points) - 1):
         p0 = points[max(0, idx - 1)]
@@ -940,6 +942,7 @@ def clone_record(record: LineRecord) -> LineRecord:
         angle_arc_radius=record.angle_arc_radius,
         angle_label_side=record.angle_label_side,
         angle_label_gap=record.angle_label_gap,
+        edge_segmented=record.edge_segmented,
     )
 
 
@@ -962,6 +965,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         angle_arc_radius=float(item.get("angle_arc_radius", 28.0)),
         angle_label_side=item.get("angle_label_side", "outside"),
         angle_label_gap=float(item.get("angle_label_gap", 14.0)),
+        edge_segmented=bool(item.get("edge_segmented", bool(raw_points and len(raw_points) > 6))),
     )
 
 
@@ -1298,7 +1302,7 @@ class MainWindow(QMainWindow):
 
         self.edge_mode_combo = QComboBox()
         self.edge_mode_combo.addItem("직선", "line")
-        self.edge_mode_combo.addItem("곡선", "curve")
+        self.edge_mode_combo.addItem("세그먼트", "curve")
         self.edge_mode_combo.currentIndexChanged.connect(self._edge_mode_changed)
         detect_toolbar.addWidget(QLabel("경계 형태"))
         detect_toolbar.addWidget(self.edge_mode_combo)
@@ -1434,7 +1438,7 @@ class MainWindow(QMainWindow):
         for key, label in [
             ("scale", "스케일바"),
             ("reference", "기준선"),
-            ("edge", "경계/곡선"),
+            ("edge", "경계/세그먼트"),
             ("guide", "가이드"),
             ("angle", "각도 숫자/호"),
             ("cd", "CD 길이"),
@@ -1998,7 +2002,7 @@ class MainWindow(QMainWindow):
             edge_mode=edge_mode,
         )
         self.records[record.id] = record
-        self._set_status(f"{'곡선' if edge_mode == 'curve' else '직선'} 경계선을 추가했습니다.")
+        self._set_status(f"{'세그먼트' if edge_mode == 'curve' else '직선'} 경계선을 추가했습니다.")
 
     def align_to_reference(self) -> None:
         if self.image_bgr is None:
@@ -2060,6 +2064,7 @@ class MainWindow(QMainWindow):
                     record.start = result.start
                     record.end = result.end
                     record.points = result.points
+                    record.edge_segmented = True
                     moved += 1
             else:
                 result = snap_line_to_gradient(gray, record.start, record.end, radius)
@@ -2067,6 +2072,7 @@ class MainWindow(QMainWindow):
                     record.start = result.start
                     record.end = result.end
                     record.points = None
+                    record.edge_segmented = False
                     moved += 1
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles()
@@ -2386,6 +2392,35 @@ class MainWindow(QMainWindow):
         guides = [record for record in self.records.values() if record.kind == "guide"]
         for edge in edges:
             if has_segmented_edge_angle(edge):
+                length_px = record_length(edge)
+                for segment_idx, (segment_start, segment_end) in enumerate(
+                    zip(record_points(edge), record_points(edge)[1:]),
+                    start=1,
+                ):
+                    if line_length(segment_start, segment_end) < 1:
+                        continue
+                    segment_angle = line_angle_degrees(segment_start, segment_end)
+                    angle = acute_angle_difference(segment_angle, reference_angle)
+                    midpoint = (
+                        (segment_start[0] + segment_end[0]) / 2.0,
+                        (segment_start[1] + segment_end[1]) / 2.0,
+                    )
+                    label_pos = self._label_position(midpoint, segment_angle, reference_angle, 22.0)
+                    self.canvas.add_angle_annotation(f"{angle:.2f}°", label_pos, parent_record_id=edge.id)
+                    self.last_measurements.append(
+                        {
+                            "measurement": f"{edge.id}_seg{segment_idx}_to_{reference_name}",
+                            "edge_id": edge.id,
+                            "guide_id": "",
+                            "kind": "edge_segment_to_reference",
+                            "x_px": midpoint[0],
+                            "y_px": midpoint[1],
+                            "angle_deg": angle,
+                            "edge_length_px": length_px,
+                            "edge_length_nm": length_px * self.nm_per_px if self.nm_per_px else "",
+                            "nm_per_px": self.nm_per_px if self.nm_per_px else "",
+                        }
+                    )
                 continue
             edge_angle = record_angle(edge)
             angle = acute_angle_difference(edge_angle, reference_angle)
@@ -2550,6 +2585,7 @@ class MainWindow(QMainWindow):
                 record.edge_mode = mode
                 if mode == "line":
                     record.points = None
+                    record.edge_segmented = False
                 changed += 1
             if changed:
                 self.canvas.redraw_lines(list(self.records.values()))
@@ -2560,11 +2596,11 @@ class MainWindow(QMainWindow):
                 self.calculate_angles()
                 self._update_search_range_overlay()
                 self._apply_visibility()
-        mode_label = "곡선" if mode == "curve" else "직선"
+        mode_label = "세그먼트" if mode == "curve" else "직선"
         if changed:
             self._set_status(f"선택한 경계선 {changed}개를 {mode_label} 모드로 바꿨습니다.")
         elif mode == "curve":
-            self._set_status("경계 형태: 곡선. 경계선 도구에서 점을 찍고 더블클릭 또는 Enter로 확정합니다.")
+            self._set_status("경계 형태: 세그먼트. 경계선 도구에서 점을 찍고 더블클릭 또는 Enter로 확정합니다.")
         else:
             self._set_status("경계 형태: 직선. 경계선 도구에서 드래그로 선분을 긋습니다.")
 
