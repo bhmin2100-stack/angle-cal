@@ -454,3 +454,23 @@ def test_point_handles_edit_line_endpoints_and_delete_polyline_points():
         assert len(window.records[poly_edge.id].points) == 2
     finally:
         window.close()
+
+
+def test_deleting_line_clears_point_handles():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.canvas.refresh_point_handles()
+
+        assert len(window.canvas.point_handle_items) == 2
+
+        window.delete_selected()
+
+        assert edge.id not in window.records
+        assert len(window.canvas.point_handle_items) == 0
+        assert not [item for item in window.canvas.scene.items() if item.__class__.__name__ == "PointHandleItem"]
+    finally:
+        window.close()

@@ -130,14 +130,14 @@ class AnnotationCurveItem(QGraphicsPathItem):
 
 class PointHandleItem(QGraphicsEllipseItem):
     def __init__(self, owner: AnnotationLineItem | AnnotationCurveItem, point_index: int, pos: Point, canvas: "AngleCanvas"):
-        radius = 4.5
+        radius = 3.0
         super().__init__(-radius, -radius, radius * 2, radius * 2)
         self.owner = owner
         self.point_index = point_index
         self.canvas = canvas
         self.setPos(pos[0], pos[1])
         self.setBrush(QBrush(QColor("#ffffff")))
-        self.setPen(QPen(QColor("#ffb703"), 1.6))
+        self.setPen(QPen(QColor("#ffb703"), 1.2))
         self.setZValue(55)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -312,7 +312,9 @@ class AngleCanvas(QGraphicsView):
         self.refresh_point_handles()
 
     def clear_point_handles(self) -> None:
-        for item in list(self.point_handle_items):
+        handle_items = list(self.point_handle_items)
+        handle_items.extend(item for item in self.scene.items() if isinstance(item, PointHandleItem) and item not in handle_items)
+        for item in handle_items:
             self.scene.removeItem(item)
         self.point_handle_items.clear()
 
@@ -2868,6 +2870,8 @@ class MainWindow(QMainWindow):
         if not selected and not selected_angle_items:
             return
         self.hidden_angle_measurements.update(self.canvas.selected_angle_measurement_ids())
+        if selected:
+            self.canvas.clear_point_handles()
         for record_id in selected:
             self.records.pop(record_id, None)
         if selected:
