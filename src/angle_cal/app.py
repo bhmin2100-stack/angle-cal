@@ -162,13 +162,16 @@ class AngleCanvas(QGraphicsView):
         self.pixmap_item: Optional[QGraphicsPixmapItem] = None
         self.line_items: dict[str, AnnotationLineItem | AnnotationCurveItem] = {}
         self.angle_items: list[QGraphicsPathItem | QGraphicsTextItem] = []
-        self.search_range_items: list[QGraphicsItem] = []
+        self.search_range_band_items: list[QGraphicsItem] = []
+        self.search_range_label_items: list[QGraphicsItem] = []
         self.detection_preview_items: list[QGraphicsItem] = []
         self.angle_groups: dict[str, list[QGraphicsItem]] = {}
         self.angle_group_parents: dict[str, str] = {}
         self._angle_counter = 1
         self.search_range_radius_px = 35
         self.show_search_range = True
+        self.show_search_range_band = True
+        self.show_search_range_label = True
         self.current_tool = "select"
         self._drawing_start: Optional[QPointF] = None
         self._temp_line: Optional[QGraphicsLineItem] = None
@@ -219,7 +222,8 @@ class AngleCanvas(QGraphicsView):
         self.scene.clear()
         self.line_items.clear()
         self.angle_items.clear()
-        self.search_range_items.clear()
+        self.search_range_band_items.clear()
+        self.search_range_label_items.clear()
         self.detection_preview_items.clear()
         self.angle_groups.clear()
         self.angle_group_parents.clear()
@@ -245,11 +249,15 @@ class AngleCanvas(QGraphicsView):
         self,
         radius_px: int,
         visible: bool,
+        band_visible: bool,
+        label_visible: bool,
         records: list[LineRecord],
         range_label: str,
     ) -> None:
         self.search_range_radius_px = radius_px
         self.show_search_range = visible
+        self.show_search_range_band = band_visible
+        self.show_search_range_label = label_visible
         self.update_search_range_overlay(records, range_label)
 
     def show_detection_preview(self, radius_px: int, segment_value: int, range_label: str) -> None:
@@ -325,9 +333,10 @@ class AngleCanvas(QGraphicsView):
         self.detection_preview_items.clear()
 
     def update_search_range_overlay(self, records: list[LineRecord], range_label: str) -> None:
-        for item in self.search_range_items:
+        for item in self.search_range_band_items + self.search_range_label_items:
             self.scene.removeItem(item)
-        self.search_range_items.clear()
+        self.search_range_band_items.clear()
+        self.search_range_label_items.clear()
         if not self.show_search_range or self.pixmap_item is None:
             return
         radius = float(self.search_range_radius_px)
@@ -337,15 +346,16 @@ class AngleCanvas(QGraphicsView):
             if record.kind != "edge":
                 continue
             polygons = self._search_range_polygons(record, radius)
-            for polygon in polygons:
-                item = QGraphicsPolygonItem(polygon)
-                item.setPen(QPen(QColor(0, 220, 110, 220), 1.2, Qt.PenStyle.DashLine))
-                item.setBrush(QBrush(QColor(0, 220, 110, 46)))
-                item.setZValue(3)
-                item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
-                self.scene.addItem(item)
-                self.search_range_items.append(item)
-            if polygons:
+            if self.show_search_range_band:
+                for polygon in polygons:
+                    item = QGraphicsPolygonItem(polygon)
+                    item.setPen(QPen(QColor(0, 220, 110, 220), 1.2, Qt.PenStyle.DashLine))
+                    item.setBrush(QBrush(QColor(0, 220, 110, 46)))
+                    item.setZValue(3)
+                    item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+                    self.scene.addItem(item)
+                    self.search_range_band_items.append(item)
+            if polygons and self.show_search_range_label:
                 label = QGraphicsTextItem(range_label)
                 label.setDefaultTextColor(QColor("#b8ffd0"))
                 label.setHtml(
@@ -358,7 +368,7 @@ class AngleCanvas(QGraphicsView):
                 label.setZValue(6)
                 label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
                 self.scene.addItem(label)
-                self.search_range_items.append(label)
+                self.search_range_label_items.append(label)
 
     def clear_angle_items(self) -> None:
         for item in self.angle_items:
@@ -844,6 +854,7 @@ class MainWindow(QMainWindow):
             "guide": True,
             "angle": True,
             "range": True,
+            "range_label": True,
         }
 
         self.canvas = AngleCanvas()
@@ -1060,7 +1071,8 @@ class MainWindow(QMainWindow):
             ("edge", "경계/곡선"),
             ("guide", "가이드"),
             ("angle", "각도 숫자/호"),
-            ("range", "인식 범위"),
+            ("range", "인식 범위 영역"),
+            ("range_label", "인식 범위 숫자"),
         ]:
             checkbox = QCheckBox(label)
             checkbox.setChecked(self.visibility[key])
@@ -1965,7 +1977,10 @@ class MainWindow(QMainWindow):
         self._sync_records_from_canvas()
         self.canvas.set_search_range(
             self.search_radius_spin.value(),
-            self.show_search_range_checkbox.isChecked() and self.visibility.get("range", True),
+            self.show_search_range_checkbox.isChecked()
+            and (self.visibility.get("range", True) or self.visibility.get("range_label", True)),
+            self.visibility.get("range", True),
+            self.visibility.get("range_label", True),
             list(self.records.values()),
             self._search_range_label(),
         )
@@ -1973,7 +1988,7 @@ class MainWindow(QMainWindow):
 
     def set_visibility(self, key: str, visible: bool) -> None:
         self.visibility[key] = visible
-        if key == "range":
+        if key in {"range", "range_label"}:
             self._update_search_range_overlay()
         else:
             self._apply_visibility()
@@ -1985,8 +2000,10 @@ class MainWindow(QMainWindow):
                 item.setVisible(self.visibility.get(record.kind, True))
         for item in self.canvas.angle_items:
             item.setVisible(self.visibility.get("angle", True))
-        for item in self.canvas.search_range_items:
+        for item in self.canvas.search_range_band_items:
             item.setVisible(self.visibility.get("range", True))
+        for item in self.canvas.search_range_label_items:
+            item.setVisible(self.visibility.get("range_label", True))
 
     def _search_range_label(self) -> str:
         radius = self.search_radius_spin.value()

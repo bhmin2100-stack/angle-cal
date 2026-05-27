@@ -53,3 +53,22 @@ def test_recognize_converts_curve_mode_to_points():
         assert 80 <= (edge.start[0] + edge.end[0]) / 2 <= 83
     finally:
         window.close()
+
+
+def test_search_range_band_and_label_visibility_are_independent():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.set_visibility("range", False)
+        window.set_visibility("range_label", True)
+        assert len(window.canvas.search_range_band_items) == 0
+        assert len(window.canvas.search_range_label_items) == 1
+
+        window.set_visibility("range", True)
+        window.set_visibility("range_label", False)
+        assert len(window.canvas.search_range_band_items) == 1
+        assert len(window.canvas.search_range_label_items) == 0
+    finally:
+        window.close()
