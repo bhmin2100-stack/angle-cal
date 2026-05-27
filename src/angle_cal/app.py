@@ -645,6 +645,7 @@ class MainWindow(QMainWindow):
         self.browser_image_paths: list[str] = []
         self.current_browser_index = -1
         self.thumbnail_buttons: dict[str, QPushButton] = {}
+        self.thumbnail_columns = 2
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -841,17 +842,30 @@ class MainWindow(QMainWindow):
     def _build_thumbnail_dock(self) -> None:
         dock = QDockWidget("썸네일", self)
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("열"))
+        self.thumbnail_columns_combo = QComboBox()
+        self.thumbnail_columns_combo.addItem("1열", 1)
+        self.thumbnail_columns_combo.addItem("2열", 2)
+        self.thumbnail_columns_combo.setCurrentIndex(1)
+        self.thumbnail_columns_combo.currentIndexChanged.connect(self._thumbnail_columns_changed)
+        controls.addWidget(self.thumbnail_columns_combo)
+        controls.addStretch(1)
+        container_layout.addLayout(controls)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         self.thumbnail_container = QWidget()
         self.thumbnail_layout = QGridLayout(self.thumbnail_container)
-        self.thumbnail_layout.setContentsMargins(8, 8, 8, 8)
-        self.thumbnail_layout.setHorizontalSpacing(8)
+        self.thumbnail_layout.setContentsMargins(6, 6, 6, 6)
+        self.thumbnail_layout.setHorizontalSpacing(6)
         self.thumbnail_layout.setVerticalSpacing(8)
         self.thumbnail_empty_label = QLabel("폴더를 열면 이미지가 표시됩니다.")
-        self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, 2)
+        self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, self.thumbnail_columns)
         scroll.setWidget(self.thumbnail_container)
-        dock.setWidget(scroll)
+        container_layout.addWidget(scroll)
+        dock.setWidget(container)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
     def open_image(self) -> None:
@@ -934,7 +948,7 @@ class MainWindow(QMainWindow):
         self._clear_thumbnail_layout()
         self.thumbnail_buttons.clear()
         if not self.browser_image_paths:
-            self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, 2)
+            self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, self.thumbnail_columns)
             self.thumbnail_empty_label.show()
             return
 
@@ -942,6 +956,7 @@ class MainWindow(QMainWindow):
         row = 0
         current_folder: Optional[Path] = None
         col = 0
+        thumb_width, thumb_height, icon_width, icon_height = self._thumbnail_dimensions()
         for image_path in self.browser_image_paths:
             path = Path(image_path)
             folder = path.parent
@@ -952,29 +967,39 @@ class MainWindow(QMainWindow):
                 header_text = self._thumbnail_folder_label(folder)
                 header = QLabel(header_text)
                 header.setStyleSheet(
-                    "font-weight:600; padding:6px 4px; "
-                    "border-top:1px solid #555; color:#e8e8e8;"
+                    "font-weight:700; font-size:13px; padding:8px 8px; "
+                    "margin-top:8px; background:#203040; color:#ffffff; "
+                    "border-left:4px solid #4cc9f0; border-radius:2px;"
                 )
-                self.thumbnail_layout.addWidget(header, row, 0, 1, 2)
+                self.thumbnail_layout.addWidget(header, row, 0, 1, self.thumbnail_columns)
                 row += 1
                 current_folder = folder
                 col = 0
 
-            button = QPushButton(path.name)
+            button = QPushButton()
             button.setCheckable(True)
             button.setIcon(self._thumbnail_icon(path))
-            button.setIconSize(QSize(132, 96))
-            button.setFixedSize(160, 138)
+            button.setIconSize(QSize(icon_width, icon_height))
+            button.setFixedSize(thumb_width, thumb_height)
             button.setToolTip(str(path))
             button.clicked.connect(lambda checked=False, selected_path=str(path): self.load_browser_image(selected_path))
             self.thumbnail_layout.addWidget(button, row, col)
             self.thumbnail_buttons[str(path)] = button
             col += 1
-            if col >= 2:
+            if col >= self.thumbnail_columns:
                 row += 1
                 col = 0
         self.thumbnail_layout.setRowStretch(row + 1, 1)
         self._select_thumbnail(self.image_path)
+
+    def _thumbnail_columns_changed(self) -> None:
+        self.thumbnail_columns = int(self.thumbnail_columns_combo.currentData())
+        self._populate_thumbnails()
+
+    def _thumbnail_dimensions(self) -> tuple[int, int, int, int]:
+        if self.thumbnail_columns == 1:
+            return (188, 136, 176, 124)
+        return (92, 78, 84, 66)
 
     def _clear_thumbnail_layout(self) -> None:
         while self.thumbnail_layout.count():
@@ -997,15 +1022,17 @@ class MainWindow(QMainWindow):
     def _thumbnail_icon(self, path: Path) -> QIcon:
         image = read_image(path)
         if image is None:
-            pixmap = QPixmap(132, 96)
+            _, _, icon_width, icon_height = self._thumbnail_dimensions()
+            pixmap = QPixmap(icon_width, icon_height)
             pixmap.fill(QColor("#333333"))
             return QIcon(pixmap)
         rgb = bgr_to_rgb8_for_display(image)
         h, w = rgb.shape[:2]
         qimage = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
+        _, _, icon_width, icon_height = self._thumbnail_dimensions()
         pixmap = QPixmap.fromImage(qimage).scaled(
-            132,
-            96,
+            icon_width,
+            icon_height,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
