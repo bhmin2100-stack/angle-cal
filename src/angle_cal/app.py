@@ -81,7 +81,7 @@ class LineRecord:
     segment_size_px: Optional[int] = None
     angle_sector: int = 0
     angle_arc_radius: float = 28.0
-    angle_label_side: str = "outside"
+    angle_label_side: str = "top_right"
     angle_label_gap: float = 14.0
     edge_segmented: bool = False
     object_group: Optional[str] = None
@@ -1410,6 +1410,21 @@ def offset_point(point: Point, dx: float, dy: float) -> Point:
     return (point[0] + dx, point[1] + dy)
 
 
+def normalize_angle_label_side(value: str) -> str:
+    if value in {"top_right", "top_left", "bottom_right", "bottom_left"}:
+        return value
+    legacy_map = {
+        "outside": "top_right",
+        "on_arc": "top_right",
+        "inside": "bottom_right",
+        "right": "top_right",
+        "left": "top_left",
+        "up": "top_right",
+        "down": "bottom_right",
+    }
+    return legacy_map.get(value, "top_right")
+
+
 def clone_record(record: LineRecord) -> LineRecord:
     return LineRecord(
         id=record.id,
@@ -1426,7 +1441,7 @@ def clone_record(record: LineRecord) -> LineRecord:
         segment_size_px=record.segment_size_px,
         angle_sector=record.angle_sector,
         angle_arc_radius=record.angle_arc_radius,
-        angle_label_side=record.angle_label_side,
+        angle_label_side=normalize_angle_label_side(record.angle_label_side),
         angle_label_gap=record.angle_label_gap,
         edge_segmented=record.edge_segmented,
         object_group=record.object_group,
@@ -1468,7 +1483,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         segment_size_px=int(item["segment_size_px"]) if item.get("segment_size_px") is not None else None,
         angle_sector=int(item.get("angle_sector", 0)),
         angle_arc_radius=float(item.get("angle_arc_radius", 28.0)),
-        angle_label_side=item.get("angle_label_side", "outside"),
+        angle_label_side=normalize_angle_label_side(str(item.get("angle_label_side", "top_right"))),
         angle_label_gap=float(item.get("angle_label_gap", 14.0)),
         edge_segmented=bool(item.get("edge_segmented", bool(raw_points and len(raw_points) > 6))),
         object_group=item.get("object_group"),
@@ -1535,14 +1550,11 @@ def angle_label_position_for_sector(
     side: str,
     gap: float,
 ) -> Point:
-    if side == "inside":
-        distance = max(6.0, radius - gap)
-    elif side == "on_arc":
-        distance = radius
-    else:
-        distance = radius + gap
-    angle = math.radians(start_angle + span / 2.0)
-    return (center[0] + math.cos(angle) * distance, center[1] + math.sin(angle) * distance)
+    side = normalize_angle_label_side(side)
+    distance = radius + gap
+    dx = distance if side.endswith("right") else -distance
+    dy = -distance if side.startswith("top") else distance
+    return (center[0] + dx, center[1] + dy)
 
 
 def polyline_intersections(edge: LineRecord, guide_line: tuple[Point, Point]) -> list[tuple[Point, float]]:
@@ -1637,12 +1649,13 @@ class AngleDisplaySettingsDialog(QDialog):
 
         self.label_side_combo = QComboBox()
         for label, value in [
-            ("호 바깥쪽", "outside"),
-            ("호 위", "on_arc"),
-            ("호 안쪽", "inside"),
+            ("호 오른쪽위", "top_right"),
+            ("호 왼쪽위", "top_left"),
+            ("호 오른쪽아래", "bottom_right"),
+            ("호 왼쪽아래", "bottom_left"),
         ]:
             self.label_side_combo.addItem(label, value)
-        side_index = self.label_side_combo.findData(label_side)
+        side_index = self.label_side_combo.findData(normalize_angle_label_side(label_side))
         self.label_side_combo.setCurrentIndex(side_index if side_index >= 0 else 0)
 
         self.label_gap_spin = QDoubleSpinBox()
@@ -1688,7 +1701,7 @@ class MainWindow(QMainWindow):
         self._paste_offset_steps = 0
         self.default_angle_sector = 0
         self.default_angle_arc_radius = 28.0
-        self.default_angle_label_side = "outside"
+        self.default_angle_label_side = "top_right"
         self.default_angle_label_gap = 14.0
         self.default_stroke_color = "#ff6b6b"
         self.default_stroke_width = 2.2
@@ -3361,7 +3374,7 @@ class MainWindow(QMainWindow):
         self.save_undo_snapshot()
         sector = int(dialog.sector_combo.currentData())
         arc_radius = float(dialog.arc_radius_spin.value())
-        label_side = str(dialog.label_side_combo.currentData())
+        label_side = normalize_angle_label_side(str(dialog.label_side_combo.currentData()))
         label_gap = float(dialog.label_gap_spin.value())
         if editing_all:
             self.default_angle_sector = sector

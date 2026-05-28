@@ -360,7 +360,7 @@ def test_selected_edge_angle_display_sector_controls_measurement_angle():
         edge = next(record for record in window.records.values() if record.kind == "edge")
         edge.angle_sector = 1
         edge.angle_arc_radius = 44.0
-        edge.angle_label_side = "inside"
+        edge.angle_label_side = "bottom_right"
         edge.angle_label_gap = 8.0
         window.records["G99"] = LineRecord(
             id="G99",
@@ -381,6 +381,14 @@ def test_selected_edge_angle_display_sector_controls_measurement_angle():
         window.close()
 
 
+def test_angle_label_quadrant_positions():
+    center = (100.0, 100.0)
+    assert app_module.angle_label_position_for_sector(center, 0.0, 90.0, 20.0, "top_right", 5.0) == (125.0, 75.0)
+    assert app_module.angle_label_position_for_sector(center, 0.0, 90.0, 20.0, "top_left", 5.0) == (75.0, 75.0)
+    assert app_module.angle_label_position_for_sector(center, 0.0, 90.0, 20.0, "bottom_right", 5.0) == (125.0, 125.0)
+    assert app_module.angle_label_position_for_sector(center, 0.0, 90.0, 20.0, "bottom_left", 5.0) == (75.0, 125.0)
+
+
 def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(monkeypatch):
     class _Value:
         def __init__(self, value):
@@ -396,7 +404,7 @@ def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(m
         def __init__(self, *args, **kwargs):
             self.sector_combo = _Value(2)
             self.arc_radius_spin = _Value(55.0)
-            self.label_side_combo = _Value("inside")
+            self.label_side_combo = _Value("bottom_left")
             self.label_gap_spin = _Value(9.0)
 
         def exec(self):
@@ -414,7 +422,7 @@ def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(m
         edges = [record for record in window.records.values() if record.kind == "edge"]
         assert all(edge.angle_sector == 2 for edge in edges)
         assert all(edge.angle_arc_radius == 55.0 for edge in edges)
-        assert all(edge.angle_label_side == "inside" for edge in edges)
+        assert all(edge.angle_label_side == "bottom_left" for edge in edges)
         assert all(edge.angle_label_gap == 9.0 for edge in edges)
         assert window.default_angle_sector == 2
 
@@ -422,7 +430,7 @@ def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(m
         newest = list(window.records.values())[-1]
         assert newest.angle_sector == 2
         assert newest.angle_arc_radius == 55.0
-        assert newest.angle_label_side == "inside"
+        assert newest.angle_label_side == "bottom_left"
         assert newest.angle_label_gap == 9.0
     finally:
         window.close()
