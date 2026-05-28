@@ -729,24 +729,24 @@ def test_selected_object_visibility_can_be_mixed_and_applied():
         window._create_edge_line((40.0, 20.0), (40.0, 100.0))
         window._create_edge_line((80.0, 20.0), (80.0, 100.0))
         edges = [record for record in window.records.values() if record.kind == "edge"]
-        edges[0].show_angle = True
-        edges[1].show_angle = False
+        edges[0].show_line_angle = True
+        edges[1].show_line_angle = False
         window.canvas.redraw_lines(list(window.records.values()))
         for edge in edges:
             window.canvas.line_items[edge.id].setSelected(True)
 
         window._update_object_visibility_controls()
 
-        checkbox = window.object_visibility_checkboxes["show_angle"]
+        checkbox = window.object_visibility_checkboxes["show_line_angle"]
         assert checkbox.checkState() == Qt.CheckState.PartiallyChecked
 
         checkbox.setCheckState(Qt.CheckState.Checked)
-        assert all(edge.show_angle for edge in edges)
+        assert all(edge.show_line_angle for edge in edges)
         window.calculate_angles(reset_hidden=True)
         assert len(window.canvas.angle_items) == 2
 
         checkbox.setCheckState(Qt.CheckState.Unchecked)
-        assert not any(edge.show_angle for edge in edges)
+        assert not any(edge.show_line_angle for edge in edges)
         window.calculate_angles(reset_hidden=True)
         assert len(window.canvas.angle_items) == 0
         assert len([row for row in window.last_measurements if row["kind"] == "edge_to_reference"]) == 2
@@ -768,6 +768,68 @@ def test_selected_object_visibility_can_hide_selected_edge_line():
 
         assert edge.show_line is False
         assert item.isVisible() is False
+    finally:
+        window.close()
+
+
+def test_angle_visibility_splits_line_intersection_and_arc():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_guide_line((10.0, 60.0), (120.0, 60.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.calculate_angles(reset_hidden=True)
+
+        line_labels = [
+            item
+            for item in window.canvas.angle_items
+            if isinstance(item, QGraphicsTextItem) and item.data(app_module.ANGLE_TYPE_KEY) == "line"
+        ]
+        intersection_labels = [
+            item
+            for item in window.canvas.angle_items
+            if isinstance(item, QGraphicsTextItem) and item.data(app_module.ANGLE_TYPE_KEY) == "intersection"
+        ]
+        arcs = [item for item in window.canvas.angle_items if isinstance(item, QGraphicsPathItem)]
+        assert len(line_labels) == 1
+        assert len(intersection_labels) == 1
+        assert len(arcs) == 1
+
+        window.set_visibility("line_angle", False)
+        assert not line_labels[0].isVisible()
+        assert intersection_labels[0].isVisible()
+        assert arcs[0].isVisible()
+
+        window.set_visibility("intersection_angle", False)
+        assert not intersection_labels[0].isVisible()
+        assert arcs[0].isVisible()
+
+        window.set_visibility("angle_arc", False)
+        assert not arcs[0].isVisible()
+    finally:
+        window.close()
+
+
+def test_selected_object_visibility_can_hide_angle_arc_only():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_guide_line((10.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.line_items[edge.id].setSelected(True)
+
+        checkbox = window.object_visibility_checkboxes["show_angle_arc"]
+        checkbox.setCheckState(Qt.CheckState.Unchecked)
+        window.calculate_angles(reset_hidden=True)
+
+        assert edge.show_angle_arc is False
+        assert not [item for item in window.canvas.angle_items if isinstance(item, QGraphicsPathItem)]
+        assert [
+            item
+            for item in window.canvas.angle_items
+            if isinstance(item, QGraphicsTextItem) and item.data(app_module.ANGLE_TYPE_KEY) == "intersection"
+        ]
     finally:
         window.close()
 

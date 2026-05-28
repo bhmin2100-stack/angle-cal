@@ -87,6 +87,9 @@ class LineRecord:
     object_group: Optional[str] = None
     show_line: bool = True
     show_angle: bool = True
+    show_line_angle: bool = True
+    show_intersection_angle: bool = True
+    show_angle_arc: bool = True
     show_range: bool = True
     show_range_label: bool = True
     show_edge_length: bool = True
@@ -116,6 +119,7 @@ ANGLE_GROUP_KEY = 1
 ANGLE_MEASUREMENT_KEY = 2
 LENGTH_GROUP_KEY = 3
 LENGTH_PARENT_KEY = 4
+ANGLE_TYPE_KEY = 5
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 
@@ -674,14 +678,20 @@ class AngleCanvas(QGraphicsView):
         radius: float = 28.0,
         parent_record_id: Optional[str] = None,
         measurement_id: Optional[str] = None,
+        angle_type: str = "line",
+        show_label: bool = True,
+        show_arc: bool = True,
     ) -> list[QGraphicsItem]:
         group_id = f"A{self._angle_counter}"
         self._angle_counter += 1
         measurement_id = measurement_id or group_id
         items: list[QGraphicsItem] = []
-        if center is not None and angle_a is not None and angle_b is not None:
-            items.append(self._create_angle_arc(center, angle_a, angle_b, radius, group_id, measurement_id))
-        items.append(self._create_angle_label(text, label_pos, group_id, measurement_id))
+        if show_arc and center is not None and angle_a is not None and angle_b is not None:
+            items.append(self._create_angle_arc(center, angle_a, angle_b, radius, group_id, measurement_id, angle_type))
+        if show_label:
+            items.append(self._create_angle_label(text, label_pos, group_id, measurement_id, angle_type))
+        if not items:
+            return []
         self.angle_groups[group_id] = items
         self.angle_group_measurements[group_id] = measurement_id
         if parent_record_id is not None:
@@ -696,6 +706,7 @@ class AngleCanvas(QGraphicsView):
         radius: float,
         group_id: str,
         measurement_id: str,
+        angle_type: str,
     ) -> QGraphicsPathItem:
         path = self._arc_path(center, angle_start, angle_end, radius)
         item = QGraphicsPathItem(path)
@@ -705,11 +716,12 @@ class AngleCanvas(QGraphicsView):
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         item.setData(ANGLE_GROUP_KEY, group_id)
         item.setData(ANGLE_MEASUREMENT_KEY, measurement_id)
+        item.setData(ANGLE_TYPE_KEY, angle_type)
         self.scene.addItem(item)
         self.angle_items.append(item)
         return item
 
-    def _create_angle_label(self, text: str, pos: Point, group_id: str, measurement_id: str) -> QGraphicsTextItem:
+    def _create_angle_label(self, text: str, pos: Point, group_id: str, measurement_id: str, angle_type: str) -> QGraphicsTextItem:
         item = QGraphicsTextItem()
         item.setHtml(
             "<div style='background-color:rgba(24,24,24,185);"
@@ -723,6 +735,7 @@ class AngleCanvas(QGraphicsView):
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         item.setData(ANGLE_GROUP_KEY, group_id)
         item.setData(ANGLE_MEASUREMENT_KEY, measurement_id)
+        item.setData(ANGLE_TYPE_KEY, angle_type)
         self.scene.addItem(item)
         self.angle_items.append(item)
         return item
@@ -1378,6 +1391,9 @@ def clone_record(record: LineRecord) -> LineRecord:
         object_group=record.object_group,
         show_line=record.show_line,
         show_angle=record.show_angle,
+        show_line_angle=record.show_line_angle,
+        show_intersection_angle=record.show_intersection_angle,
+        show_angle_arc=record.show_angle_arc,
         show_range=record.show_range,
         show_range_label=record.show_range_label,
         show_edge_length=record.show_edge_length,
@@ -1395,6 +1411,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         record_edge_mode = "polyline"
     if record_edge_mode not in {"line", "polyline"}:
         record_edge_mode = "polyline" if raw_points else "line"
+    legacy_show_angle = bool(item.get("show_angle", True))
     return LineRecord(
         id=item["id"],
         kind=item["kind"],
@@ -1415,7 +1432,10 @@ def line_record_from_dict(item: dict) -> LineRecord:
         edge_segmented=bool(item.get("edge_segmented", bool(raw_points and len(raw_points) > 6))),
         object_group=item.get("object_group"),
         show_line=bool(item.get("show_line", True)),
-        show_angle=bool(item.get("show_angle", True)),
+        show_angle=legacy_show_angle,
+        show_line_angle=bool(item.get("show_line_angle", legacy_show_angle)),
+        show_intersection_angle=bool(item.get("show_intersection_angle", legacy_show_angle)),
+        show_angle_arc=bool(item.get("show_angle_arc", legacy_show_angle)),
         show_range=bool(item.get("show_range", True)),
         show_range_label=bool(item.get("show_range_label", True)),
         show_edge_length=bool(item.get("show_edge_length", True)),
@@ -1642,7 +1662,9 @@ class MainWindow(QMainWindow):
             "reference": True,
             "edge": True,
             "guide": True,
-            "angle": True,
+            "line_angle": True,
+            "intersection_angle": True,
+            "angle_arc": True,
             "cd": True,
             "edge_length": True,
             "range": True,
@@ -2071,7 +2093,9 @@ class MainWindow(QMainWindow):
             ("reference", "기준선"),
             ("edge", "경계/이어진 직선"),
             ("guide", "가이드"),
-            ("angle", "각도 숫자/호"),
+            ("line_angle", "선 각도"),
+            ("intersection_angle", "교점 각도"),
+            ("angle_arc", "각도 호"),
             ("cd", "CD 길이"),
             ("edge_length", "경계 길이"),
             ("range", "인식 범위 영역"),
@@ -2085,8 +2109,10 @@ class MainWindow(QMainWindow):
 
         self.object_visibility_checkboxes: dict[str, QCheckBox] = {}
         for key, label in [
-            ("show_line", "경계선"),
-            ("show_angle", "각도 숫자/호"),
+            ("show_line", "선/개체"),
+            ("show_line_angle", "선 각도"),
+            ("show_intersection_angle", "교점 각도"),
+            ("show_angle_arc", "각도 호"),
             ("show_edge_length", "경계 길이"),
             ("show_range", "인식 범위 영역"),
         ]:
@@ -2416,6 +2442,11 @@ class MainWindow(QMainWindow):
         if cd_index >= 0:
             self.cd_segment_combo.setCurrentIndex(cd_index)
         visibility = payload.get("visibility", {})
+        if "angle" in visibility:
+            legacy_angle_visible = bool(visibility["angle"])
+            visibility.setdefault("line_angle", legacy_angle_visible)
+            visibility.setdefault("intersection_angle", legacy_angle_visible)
+            visibility.setdefault("angle_arc", legacy_angle_visible)
         for key, visible in visibility.items():
             if key in self.visibility:
                 self.visibility[key] = bool(visible)
@@ -3334,7 +3365,7 @@ class MainWindow(QMainWindow):
             midpoint = ((edge.start[0] + edge.end[0]) / 2.0, (edge.start[1] + edge.end[1]) / 2.0)
             label_pos = self._label_position(midpoint, edge_angle, reference_angle, 34.0)
             measurement_id = f"{edge.id}_to_{reference_name}"
-            should_draw_angle = edge.show_angle and measurement_id not in self.hidden_angle_measurements
+            should_draw_angle = edge.show_line_angle and measurement_id not in self.hidden_angle_measurements
             if visible_measurement_ids is not None:
                 should_draw_angle = should_draw_angle and measurement_id in visible_measurement_ids
             if should_draw_angle:
@@ -3343,6 +3374,7 @@ class MainWindow(QMainWindow):
                     label_pos,
                     parent_record_id=edge.id,
                     measurement_id=measurement_id,
+                    angle_type="line",
                 )
             length_px = record_length(edge)
             self.last_measurements.append(
@@ -3378,10 +3410,12 @@ class MainWindow(QMainWindow):
                     length_px = record_length(edge)
                     suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
                     measurement_id = f"{edge.id}_x_{guide.id}{suffix}"
-                    should_draw_angle = edge.show_angle and measurement_id not in self.hidden_angle_measurements
+                    should_draw_label = edge.show_intersection_angle and measurement_id not in self.hidden_angle_measurements
+                    should_draw_arc = edge.show_angle_arc and measurement_id not in self.hidden_angle_measurements
                     if visible_measurement_ids is not None:
-                        should_draw_angle = should_draw_angle and measurement_id in visible_measurement_ids
-                    if should_draw_angle:
+                        should_draw_label = should_draw_label and measurement_id in visible_measurement_ids
+                        should_draw_arc = should_draw_arc and measurement_id in visible_measurement_ids
+                    if should_draw_label or should_draw_arc:
                         self.canvas.add_angle_annotation(
                             f"{angle:.2f}°",
                             label_pos,
@@ -3391,6 +3425,9 @@ class MainWindow(QMainWindow):
                             radius=edge.angle_arc_radius,
                             parent_record_id=edge.id,
                             measurement_id=measurement_id,
+                            angle_type="intersection",
+                            show_label=should_draw_label,
+                            show_arc=should_draw_arc,
                         )
                     self.last_measurements.append(
                         {
@@ -3806,6 +3843,19 @@ class MainWindow(QMainWindow):
         else:
             self._apply_visibility()
 
+    def _angle_item_visible(self, item: QGraphicsPathItem | QGraphicsTextItem) -> bool:
+        group_id = item.data(ANGLE_GROUP_KEY)
+        parent_id = self.canvas.angle_group_parents.get(str(group_id)) if group_id else None
+        parent = self.records.get(parent_id) if parent_id else None
+        angle_type = str(item.data(ANGLE_TYPE_KEY) or "line")
+        if isinstance(item, QGraphicsPathItem):
+            return self.visibility.get("angle_arc", True) and (parent.show_angle_arc if parent else True)
+        if angle_type == "intersection":
+            return self.visibility.get("intersection_angle", True) and (
+                parent.show_intersection_angle if parent else True
+            )
+        return self.visibility.get("line_angle", True) and (parent.show_line_angle if parent else True)
+
     def set_temporary_edge_tool(self, active: bool) -> None:
         if active:
             self.current_tool = "edge"
@@ -3823,19 +3873,35 @@ class MainWindow(QMainWindow):
             if record_id in self.records and self.records[record_id].kind == "edge"
         ]
 
+    def _selected_visibility_records(self) -> list[LineRecord]:
+        return [
+            self.records[record_id]
+            for record_id in self.canvas.selected_line_ids()
+            if record_id in self.records
+        ]
+
+    def _records_for_visibility_key(self, key: str, records: list[LineRecord]) -> list[LineRecord]:
+        if key == "show_line":
+            return records
+        if key in {"show_line_angle", "show_intersection_angle", "show_angle_arc", "show_edge_length", "show_range"}:
+            return [record for record in records if record.kind == "edge"]
+        return []
+
     def _update_object_visibility_controls(self) -> None:
         if not hasattr(self, "object_visibility_checkboxes"):
             return
         selected_edges = self._selected_edge_records()
+        selected_records = self._selected_visibility_records()
         self._update_detection_controls_from_selection(selected_edges)
         self._updating_object_visibility_controls = True
         try:
             for key, checkbox in self.object_visibility_checkboxes.items():
-                checkbox.setEnabled(bool(selected_edges))
-                if not selected_edges:
+                target_records = self._records_for_visibility_key(key, selected_records)
+                checkbox.setEnabled(bool(target_records))
+                if not target_records:
                     checkbox.setCheckState(Qt.CheckState.Unchecked)
                     continue
-                values = [bool(getattr(record, key)) for record in selected_edges]
+                values = [bool(getattr(record, key)) for record in target_records]
                 if all(values):
                     checkbox.setCheckState(Qt.CheckState.Checked)
                 elif not any(values):
@@ -3851,14 +3917,15 @@ class MainWindow(QMainWindow):
         check_state = Qt.CheckState(state)
         if check_state == Qt.CheckState.PartiallyChecked:
             return
-        selected_edges = self._selected_edge_records()
-        if not selected_edges:
+        selected_records = self._selected_visibility_records()
+        target_records = self._records_for_visibility_key(key, selected_records)
+        if not target_records:
             self._update_object_visibility_controls()
             return
         visible = check_state == Qt.CheckState.Checked
-        for record in selected_edges:
+        for record in target_records:
             setattr(record, key, visible)
-        if key == "show_angle":
+        if key in {"show_line_angle", "show_intersection_angle", "show_angle_arc"}:
             self.calculate_angles(reset_hidden=False)
         elif key == "show_edge_length":
             self._update_edge_length_overlay()
@@ -3869,7 +3936,7 @@ class MainWindow(QMainWindow):
         elif key == "show_line":
             self._apply_visibility()
         self._update_object_visibility_controls()
-        self._set_status(f"선택 경계선 {len(selected_edges)}개의 표시 기준을 바꿨습니다.")
+        self._set_status(f"선택 개체 {len(target_records)}개의 표시 기준을 바꿨습니다.")
 
     def _update_detection_controls_from_selection(self, selected_edges: Optional[list[LineRecord]] = None) -> None:
         if not hasattr(self, "search_radius_spin") or self._updating_detection_controls:
@@ -3903,7 +3970,7 @@ class MainWindow(QMainWindow):
                 item.setVisible(visible)
         self.canvas.update_group_boxes(list(self.records.values()))
         for item in self.canvas.angle_items:
-            item.setVisible(self.visibility.get("angle", True))
+            item.setVisible(self._angle_item_visible(item))
         for item in self.canvas.cd_items:
             item.setVisible(self.visibility.get("cd", True))
         for item in self.canvas.edge_length_items:
