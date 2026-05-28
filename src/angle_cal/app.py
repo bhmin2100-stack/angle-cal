@@ -211,6 +211,7 @@ class AngleCanvas(QGraphicsView):
     segment_split_requested = Signal(str, int)
     scene_changed = Signal()
     scale_requested = Signal(float)
+    search_range_wheel_requested = Signal(int)
     edit_started = Signal()
     temporary_edge_tool_changed = Signal(bool)
 
@@ -885,6 +886,11 @@ class AngleCanvas(QGraphicsView):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
             self.scale(factor, factor)
+            event.accept()
+            return
+        steps = int(event.angleDelta().y() / 120)
+        if steps:
+            self.search_range_wheel_requested.emit(steps)
             event.accept()
             return
         super().wheelEvent(event)
@@ -1648,6 +1654,7 @@ class MainWindow(QMainWindow):
         self.canvas.segment_split_requested.connect(self.split_edge_segment_for_selection)
         self.canvas.scene_changed.connect(self._handle_scene_changed)
         self.canvas.scale_requested.connect(self.scale_selected_objects)
+        self.canvas.search_range_wheel_requested.connect(self.adjust_search_range_by_wheel)
         self.canvas.edit_started.connect(self.save_undo_snapshot)
         self.canvas.temporary_edge_tool_changed.connect(self.set_temporary_edge_tool)
         self.detection_preview_timer = QTimer(self)
@@ -3710,6 +3717,15 @@ class MainWindow(QMainWindow):
             self._set_status(f"{target_text} 경계인식 범위: 양쪽 {radius}px, 세그먼트 크기 {segment_size_px}px")
         else:
             self._set_status(f"{target_text} 경계인식 범위: 양쪽 {radius}px, 세그먼트 크기 {segment_size_px}px, 표시 꺼짐")
+
+    def adjust_search_range_by_wheel(self, steps: int) -> None:
+        if not hasattr(self, "search_radius_spin") or steps == 0:
+            return
+        delta = 1 if steps > 0 else -1
+        new_value = self.search_radius_spin.value() + delta * abs(steps)
+        new_value = max(self.search_radius_spin.minimum(), min(self.search_radius_spin.maximum(), new_value))
+        if new_value != self.search_radius_spin.value():
+            self.search_radius_spin.setValue(new_value)
 
     def _update_search_range_overlay(self) -> None:
         self._sync_records_from_canvas()

@@ -3,8 +3,8 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QKeyEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem
 
 import angle_cal.app as app_module
@@ -148,6 +148,34 @@ def test_selected_edge_detection_controls_apply_per_edge():
         assert window.records[edges[0].id].segment_size_px == 7
         assert window.records[edges[1].id].search_radius_px == 35
         assert window.records[edges[1].id].segment_size_px == 9
+    finally:
+        window.close()
+
+
+def test_mouse_wheel_adjusts_search_range_for_selected_edge():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((45.0, 20.0), (45.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.line_items[edges[0].id].setSelected(True)
+        assert window.records[edges[0].id].search_radius_px == 35
+
+        event = QWheelEvent(
+            QPointF(10.0, 10.0),
+            QPointF(10.0, 10.0),
+            QPoint(0, 0),
+            QPoint(0, 120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        window.canvas.wheelEvent(event)
+
+        assert window.records[edges[0].id].search_radius_px == 36
+        assert window.records[edges[1].id].search_radius_px == 35
     finally:
         window.close()
 
