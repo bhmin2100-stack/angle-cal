@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QGraphicsPathItem,
     QGraphicsPixmapItem,
     QGraphicsPolygonItem,
+    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsTextItem,
     QGraphicsView,
@@ -226,6 +227,7 @@ class AngleCanvas(QGraphicsView):
         self.angle_items: list[QGraphicsPathItem | QGraphicsTextItem] = []
         self.cd_items: list[QGraphicsItem] = []
         self.edge_length_items: list[QGraphicsItem] = []
+        self.group_box_items: list[QGraphicsItem] = []
         self.search_range_band_items: list[QGraphicsItem] = []
         self.search_range_label_items: list[QGraphicsItem] = []
         self.detection_preview_items: list[QGraphicsItem] = []
@@ -301,6 +303,7 @@ class AngleCanvas(QGraphicsView):
         self.angle_items.clear()
         self.cd_items.clear()
         self.edge_length_items.clear()
+        self.group_box_items.clear()
         self.search_range_band_items.clear()
         self.search_range_label_items.clear()
         self.detection_preview_items.clear()
@@ -328,7 +331,40 @@ class AngleCanvas(QGraphicsView):
                 item = AnnotationLineItem(record, self._pen_for_record(record))
             self.scene.addItem(item)
             self.line_items[record.id] = item
+        self.update_group_boxes(records)
         self.refresh_point_handles()
+
+    def clear_group_boxes(self) -> None:
+        for item in self.group_box_items:
+            self.scene.removeItem(item)
+        self.group_box_items.clear()
+
+    def update_group_boxes(self, records: list[LineRecord]) -> None:
+        self.clear_group_boxes()
+        grouped: dict[str, list[LineRecord]] = {}
+        for record in records:
+            if record.object_group and record.id in self.line_items:
+                grouped.setdefault(record.object_group, []).append(record)
+        for group_records in grouped.values():
+            if len(group_records) < 2:
+                continue
+            rect: Optional[QRectF] = None
+            for record in group_records:
+                item = self.line_items.get(record.id)
+                if item is None or not item.isVisible():
+                    continue
+                item_rect = item.sceneBoundingRect()
+                rect = item_rect if rect is None else rect.united(item_rect)
+            if rect is None:
+                continue
+            rect = rect.adjusted(-3.0, -3.0, 3.0, 3.0)
+            box = QGraphicsRectItem(rect)
+            box.setPen(QPen(QColor(255, 214, 102, 175), 0.8, Qt.PenStyle.DashLine))
+            box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            box.setZValue(9)
+            box.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            self.scene.addItem(box)
+            self.group_box_items.append(box)
 
     def clear_point_handles(self) -> None:
         handle_items = list(self.point_handle_items)
@@ -3257,6 +3293,7 @@ class MainWindow(QMainWindow):
         group_id = self._next_object_group_id()
         for record_id in selected_ids:
             self.records[record_id].object_group = group_id
+        self.canvas.update_group_boxes(list(self.records.values()))
         self._select_record_ids(set(selected_ids))
         self._set_status(f"{len(selected_ids)}개 개체를 그룹화했습니다.")
 
@@ -3277,6 +3314,7 @@ class MainWindow(QMainWindow):
             if record.object_group in group_ids:
                 record.object_group = None
                 changed += 1
+        self.canvas.update_group_boxes(list(self.records.values()))
         self._set_status(f"{changed}개 개체의 그룹을 해제했습니다.")
 
     def _next_object_group_id(self, reserved: Optional[set[str]] = None) -> str:
@@ -3654,6 +3692,7 @@ class MainWindow(QMainWindow):
             if record is not None:
                 visible = self.visibility.get(record.kind, True) and getattr(record, "show_line", True)
                 item.setVisible(visible)
+        self.canvas.update_group_boxes(list(self.records.values()))
         for item in self.canvas.angle_items:
             item.setVisible(self.visibility.get("angle", True))
         for item in self.canvas.cd_items:
@@ -3682,6 +3721,7 @@ class MainWindow(QMainWindow):
     def _handle_scene_changed(self) -> None:
         self._refresh_table()
         self._update_search_range_overlay()
+        self.canvas.update_group_boxes(list(self.records.values()))
         self._update_object_visibility_controls()
         self.canvas.refresh_point_handles()
 

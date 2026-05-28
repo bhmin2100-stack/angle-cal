@@ -745,6 +745,8 @@ def test_grouped_objects_select_and_move_together():
 
         assert edges[0].object_group
         assert edges[0].object_group == edges[1].object_group
+        assert len(window.canvas.group_box_items) == 1
+        original_box = window.canvas.group_box_items[0].rect()
 
         window.canvas.scene.clearSelection()
         window.canvas.line_items[edges[0].id].setSelected(True)
@@ -756,6 +758,8 @@ def test_grouped_objects_select_and_move_together():
 
         assert window.records[edges[0].id].start == (30.0, 20.0)
         assert window.records[edges[1].id].start == (70.0, 20.0)
+        moved_box = window.canvas.group_box_items[0].rect()
+        assert moved_box.left() > original_box.left()
     finally:
         window.close()
 
@@ -773,6 +777,7 @@ def test_ungroup_selected_objects_stops_group_selection():
 
         window.ungroup_selected_objects()
         assert not any(edge.object_group for edge in edges)
+        assert len(window.canvas.group_box_items) == 0
 
         window.canvas.scene.clearSelection()
         window.canvas.line_items[edges[0].id].setSelected(True)
