@@ -608,6 +608,28 @@ def test_edge_length_label_is_deletable_child_object():
         window.close()
 
 
+def test_edge_length_label_position_can_be_moved_and_persists():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window._update_edge_length_overlay()
+
+        label = window.canvas.edge_length_items[0]
+        label.setPos(42.0, 37.0)
+        window._sync_records_from_canvas()
+
+        assert window.records[edge.id].edge_length_label_pos == (42.0, 37.0)
+
+        window._update_edge_length_overlay()
+
+        assert len(window.canvas.edge_length_items) == 1
+        assert window.canvas.edge_length_items[0].pos() == QPointF(42.0, 37.0)
+    finally:
+        window.close()
+
+
 def test_edge_length_overlay_skips_polyline_edges():
     window = _window_with_edge_image()
     try:
@@ -872,6 +894,26 @@ def test_delete_prefers_parent_line_over_selected_point_handle():
         window.delete_selected()
 
         assert edge.id not in window.records
+        assert len(window.canvas.point_handle_items) == 0
+    finally:
+        window.close()
+
+
+def test_delete_multiple_parents_even_when_point_handles_are_selected():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 20.0), (20.0, 80.0))
+        window._create_edge_line((60.0, 20.0), (60.0, 80.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.redraw_lines(list(window.records.values()))
+        for edge in edges:
+            window.canvas.line_items[edge.id].setSelected(True)
+        window.canvas.refresh_point_handles()
+        window.canvas.point_handle_items[0].setSelected(True)
+
+        window.delete_selected()
+
+        assert not [record for record in window.records.values() if record.kind == "edge"]
         assert len(window.canvas.point_handle_items) == 0
     finally:
         window.close()

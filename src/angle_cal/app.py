@@ -89,6 +89,7 @@ class LineRecord:
     show_range: bool = True
     show_range_label: bool = True
     show_edge_length: bool = True
+    edge_length_label_pos: Optional[Point] = None
 
 
 @dataclass
@@ -584,7 +585,10 @@ class AngleCanvas(QGraphicsView):
                 f"{text}</div>"
             )
             label_rect = label.boundingRect()
-            label.setPos(midpoint[0] - label_rect.width() / 2.0, midpoint[1] - label_rect.height() / 2.0)
+            if record.edge_length_label_pos is not None:
+                label.setPos(record.edge_length_label_pos[0], record.edge_length_label_pos[1])
+            else:
+                label.setPos(midpoint[0] - label_rect.width() / 2.0, midpoint[1] - label_rect.height() / 2.0)
             label.setZValue(28)
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -991,7 +995,7 @@ class AngleCanvas(QGraphicsView):
             event.accept()
             return
         if event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
-            if self.delete_selected_point_handles():
+            if not self.selected_line_ids() and self.delete_selected_point_handles():
                 event.accept()
                 return
         if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
@@ -1292,6 +1296,7 @@ def clone_record(record: LineRecord) -> LineRecord:
         show_range=record.show_range,
         show_range_label=record.show_range_label,
         show_edge_length=record.show_edge_length,
+        edge_length_label_pos=tuple(record.edge_length_label_pos) if record.edge_length_label_pos else None,
     )
 
 
@@ -1327,6 +1332,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         show_range=bool(item.get("show_range", True)),
         show_range_label=bool(item.get("show_range_label", True)),
         show_edge_length=bool(item.get("show_edge_length", True)),
+        edge_length_label_pos=tuple(item["edge_length_label_pos"]) if item.get("edge_length_label_pos") is not None else None,
     )
 
 
@@ -3680,6 +3686,11 @@ class MainWindow(QMainWindow):
         self.canvas.refresh_point_handles()
 
     def _sync_records_from_canvas(self) -> None:
+        for item in self.canvas.edge_length_items:
+            parent_id = item.data(LENGTH_PARENT_KEY)
+            if parent_id and str(parent_id) in self.records:
+                pos = item.pos()
+                self.records[str(parent_id)].edge_length_label_pos = (float(pos.x()), float(pos.y()))
         for record_id, item in self.canvas.line_items.items():
             if record_id not in self.records:
                 continue
