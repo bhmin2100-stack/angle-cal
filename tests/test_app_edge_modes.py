@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QWheelEvent
@@ -689,6 +690,34 @@ def test_scale_preset_apply_restores_scale_bar():
         assert scales[0].label == "100 nm"
         assert round(scales[0].end[0] - scales[0].start[0], 3) == 50.0
         assert window.nm_per_px == 2.0
+    finally:
+        window.close()
+
+
+def test_switching_images_restores_per_image_annotations(tmp_path):
+    path_a = tmp_path / "a.png"
+    path_b = tmp_path / "b.png"
+    cv2.imwrite(str(path_a), np.zeros((80, 120, 3), dtype=np.uint8))
+    cv2.imwrite(str(path_b), np.full((80, 120, 3), 255, dtype=np.uint8))
+
+    window = MainWindow()
+    try:
+        window.browser_image_paths = [str(path_a), str(path_b)]
+        window.current_browser_index = 0
+        window._load_image_path(str(path_a), preserve_calibration=False)
+        window._create_edge_line((20.0, 20.0), (90.0, 20.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+
+        window._load_image_path(str(path_b), preserve_calibration=True)
+        window.scale_presets = [ScalePreset("100 nm", nm_per_px=2.0, bar_px=50.0, bar_nm=100.0)]
+        window.apply_scale_preset(0)
+        assert [record for record in window.records.values() if record.kind == "scale"]
+
+        window._load_image_path(str(path_a), preserve_calibration=True)
+
+        assert edge.id in window.records
+        assert window.records[edge.id].start == (20.0, 20.0)
+        assert not [record for record in window.records.values() if record.kind == "scale"]
     finally:
         window.close()
 

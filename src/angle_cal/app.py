@@ -1612,6 +1612,7 @@ class MainWindow(QMainWindow):
         self.project_path: Optional[str] = None
         self.nm_per_px: Optional[float] = None
         self.records: dict[str, LineRecord] = {}
+        self.image_states: dict[str, dict] = {}
         self._counter = 1
         self.last_measurements: list[dict[str, str | float]] = []
         self.browser_root: Optional[Path] = None
@@ -2168,6 +2169,9 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        self._save_current_image_state()
+        self.image_states.clear()
+        self.image_path = None
         self.browser_root = None
         self.browser_image_paths = [path]
         self.current_browser_index = 0
@@ -2183,6 +2187,9 @@ class MainWindow(QMainWindow):
         if not image_paths:
             QMessageBox.information(self, "폴더 열기", "폴더 안에서 지원되는 이미지 파일을 찾지 못했습니다.")
             return
+        self._save_current_image_state()
+        self.image_states.clear()
+        self.image_path = None
         self.browser_root = root
         self.browser_image_paths = [str(path) for path in image_paths]
         self.current_browser_index = 0
@@ -2191,19 +2198,26 @@ class MainWindow(QMainWindow):
         self._set_status(f"폴더 로드: {root.name}, 이미지 {len(self.browser_image_paths)}개")
 
     def _load_image_path(self, path: str, preserve_calibration: bool = False) -> None:
+        if self.image_path and self.image_path != path:
+            self._save_current_image_state()
         image = read_image(path)
         if image is None:
             QMessageBox.warning(self, "열기 실패", "이미지를 읽을 수 없습니다.")
             return
         previous_nm_per_px = self.nm_per_px
+        state = self.image_states.get(path)
         self.image_bgr = image
         self.image_path = path
         self.project_path = None
-        self.nm_per_px = previous_nm_per_px if preserve_calibration else None
-        self.records.clear()
+        if state is not None:
+            self._restore_image_state(state)
+        else:
+            self.nm_per_px = previous_nm_per_px if preserve_calibration else None
+            self.records.clear()
+            self._counter = 1
         self.undo_stack.clear()
-        self.hidden_angle_measurements.clear()
-        self._counter = 1
+        if state is None:
+            self.hidden_angle_measurements.clear()
         self._show_image()
         self._refresh_table()
         self._update_search_range_overlay()
@@ -2211,6 +2225,23 @@ class MainWindow(QMainWindow):
         self._select_thumbnail(path)
         calibration_text = f", calibration 유지: {self.nm_per_px:.6g} nm/px" if self.nm_per_px else ""
         self._set_status(f"이미지 로드: {Path(path).name} ({image.shape[1]} x {image.shape[0]} px){calibration_text}")
+
+    def _save_current_image_state(self) -> None:
+        if not self.image_path:
+            return
+        self._sync_records_from_canvas()
+        self.image_states[self.image_path] = {
+            "records": [asdict(record) for record in self.records.values()],
+            "counter": self._counter,
+            "nm_per_px": self.nm_per_px,
+            "hidden_angle_measurements": list(self.hidden_angle_measurements),
+        }
+
+    def _restore_image_state(self, state: dict) -> None:
+        self.records = {item["id"]: line_record_from_dict(item) for item in state.get("records", [])}
+        self._counter = int(state.get("counter", len(self.records) + 1))
+        self.nm_per_px = state.get("nm_per_px")
+        self.hidden_angle_measurements = set(state.get("hidden_angle_measurements", []))
 
     def load_browser_image(self, path: str) -> None:
         if path not in self.browser_image_paths:
