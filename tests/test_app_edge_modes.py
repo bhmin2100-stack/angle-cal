@@ -1000,6 +1000,28 @@ def test_arrow_keys_nudge_selected_edge_and_ctrl_uses_one_pixel():
         window.close()
 
 
+def test_nudging_selected_line_keeps_all_point_handles_attached():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        line_item = window.canvas.line_items[edge.id]
+        line_item.setSelected(True)
+        window.canvas.refresh_point_handles()
+        window.canvas.point_handle_items[0].setSelected(True)
+
+        assert window.canvas._nudge_selected_items(Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+        window._sync_records_from_canvas()
+
+        handle_positions = [(handle.pos().x(), handle.pos().y()) for handle in window.canvas.point_handle_items]
+        assert window.records[edge.id].start == (30.0, 60.0)
+        assert window.records[edge.id].end == (130.0, 60.0)
+        assert handle_positions == [(30.0, 60.0), (130.0, 60.0)]
+    finally:
+        window.close()
+
+
 def test_split_polyline_segment_selects_independent_edge_for_detection_settings():
     window = _window_with_edge_image()
     try:

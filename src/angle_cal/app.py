@@ -438,6 +438,22 @@ class AngleCanvas(QGraphicsView):
         finally:
             self._updating_from_point_handle = False
 
+    def sync_point_handles_to_owners(self) -> None:
+        if not self.point_handle_items:
+            return
+        self._updating_from_point_handle = True
+        try:
+            for handle in self.point_handle_items:
+                owner = handle.owner
+                if owner.scene() is None:
+                    continue
+                points = points_from_path_item(owner)
+                if 0 <= handle.point_index < len(points):
+                    point = points[handle.point_index]
+                    handle.setPos(point[0], point[1])
+        finally:
+            self._updating_from_point_handle = False
+
     def selected_point_handles(self) -> list[PointHandleItem]:
         return [item for item in self.scene.selectedItems() if isinstance(item, PointHandleItem)]
 
@@ -1165,6 +1181,11 @@ class AngleCanvas(QGraphicsView):
         selected = self.scene.selectedItems()
         if not selected:
             return False
+        selected_line_items = {
+            item
+            for item in selected
+            if isinstance(item, (AnnotationLineItem, AnnotationCurveItem))
+        }
         step = 1.0 if modifiers & Qt.KeyboardModifier.ControlModifier else 10.0
         dx = 0.0
         dy = 0.0
@@ -1180,8 +1201,11 @@ class AngleCanvas(QGraphicsView):
             return False
         self.edit_started.emit()
         for item in selected:
+            if isinstance(item, PointHandleItem) and item.owner in selected_line_items:
+                continue
             if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsMovable:
                 item.moveBy(dx, dy)
+        self.sync_point_handles_to_owners()
         self.scene_changed.emit()
         return True
 
