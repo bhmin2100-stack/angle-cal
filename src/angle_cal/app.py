@@ -205,7 +205,7 @@ class AngleCanvas(QGraphicsView):
     scene_changed = Signal()
     scale_requested = Signal(float)
     edit_started = Signal()
-    edge_peek_changed = Signal(bool)
+    temporary_edge_tool_changed = Signal(bool)
 
     def __init__(self):
         super().__init__()
@@ -252,6 +252,7 @@ class AngleCanvas(QGraphicsView):
         self._expanding_angle_selection = False
         self._refreshing_point_handles = False
         self._updating_from_point_handle = False
+        self._space_edge_previous_tool: Optional[str] = None
         self.scene.selectionChanged.connect(self._expand_angle_group_selection)
         self.scene.selectionChanged.connect(self.refresh_point_handles)
 
@@ -976,7 +977,12 @@ class AngleCanvas(QGraphicsView):
 
     def keyPressEvent(self, event):  # noqa: N802
         if not event.isAutoRepeat() and event.key() == Qt.Key.Key_Space:
-            self.edge_peek_changed.emit(True)
+            if self.current_tool != "edge":
+                self._space_edge_previous_tool = self.current_tool
+                self.set_tool("edge")
+            else:
+                self._space_edge_previous_tool = None
+            self.temporary_edge_tool_changed.emit(True)
             event.accept()
             return
         if event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
@@ -1009,7 +1015,11 @@ class AngleCanvas(QGraphicsView):
 
     def keyReleaseEvent(self, event):  # noqa: N802
         if not event.isAutoRepeat() and event.key() == Qt.Key.Key_Space:
-            self.edge_peek_changed.emit(False)
+            previous_tool = self._space_edge_previous_tool
+            self._space_edge_previous_tool = None
+            if previous_tool is not None:
+                self.set_tool(previous_tool)
+            self.temporary_edge_tool_changed.emit(False)
             event.accept()
             return
         if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W, Qt.Key.Key_E):
@@ -1519,7 +1529,6 @@ class MainWindow(QMainWindow):
         self._restoring_undo = False
         self._updating_object_visibility_controls = False
         self._expanding_object_group_selection = False
-        self.force_edge_visible = False
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -1538,7 +1547,7 @@ class MainWindow(QMainWindow):
         self.canvas.scene_changed.connect(self._handle_scene_changed)
         self.canvas.scale_requested.connect(self.scale_selected_objects)
         self.canvas.edit_started.connect(self.save_undo_snapshot)
-        self.canvas.edge_peek_changed.connect(self.set_edge_peek)
+        self.canvas.temporary_edge_tool_changed.connect(self.set_temporary_edge_tool)
         self.detection_preview_timer = QTimer(self)
         self.detection_preview_timer.setSingleShot(True)
         self.detection_preview_timer.timeout.connect(self.canvas.clear_detection_preview)
@@ -3514,9 +3523,15 @@ class MainWindow(QMainWindow):
         else:
             self._apply_visibility()
 
-    def set_edge_peek(self, visible: bool) -> None:
-        self.force_edge_visible = visible
-        self._apply_visibility()
+    def set_temporary_edge_tool(self, active: bool) -> None:
+        if active:
+            self.current_tool = "edge"
+            if hasattr(self, "tool_buttons") and "edge" in self.tool_buttons:
+                self.tool_buttons["edge"].setChecked(True)
+            return
+        self.current_tool = self.canvas.current_tool
+        if hasattr(self, "tool_buttons") and self.current_tool in self.tool_buttons:
+            self.tool_buttons[self.current_tool].setChecked(True)
 
     def _selected_edge_records(self) -> list[LineRecord]:
         return [
@@ -3577,8 +3592,6 @@ class MainWindow(QMainWindow):
             record = self.records.get(record_id)
             if record is not None:
                 visible = self.visibility.get(record.kind, True) and getattr(record, "show_line", True)
-                if record.kind == "edge" and self.force_edge_visible:
-                    visible = True
                 item.setVisible(visible)
         for item in self.canvas.angle_items:
             item.setVisible(self.visibility.get("angle", True))

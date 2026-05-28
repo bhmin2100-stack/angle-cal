@@ -3,7 +3,8 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem
 
 import angle_cal.app as app_module
@@ -229,22 +230,22 @@ def test_search_range_visibility_only_draws_band_without_number_label():
         window.close()
 
 
-def test_space_temporarily_shows_hidden_edges():
+def test_space_temporarily_switches_to_edge_tool():
     window = _window_with_edge_image()
     try:
-        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
-        window.canvas.redraw_lines(list(window.records.values()))
-        edge = next(record for record in window.records.values() if record.kind == "edge")
-        item = window.canvas.line_items[edge.id]
+        window.set_current_tool("select")
 
-        window.set_visibility("edge", False)
-        assert not item.isVisible()
+        press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
+        window.canvas.keyPressEvent(press)
 
-        window.set_edge_peek(True)
-        assert item.isVisible()
+        assert window.canvas.current_tool == "edge"
+        assert window.current_tool == "edge"
 
-        window.set_edge_peek(False)
-        assert not item.isVisible()
+        release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
+        window.canvas.keyReleaseEvent(release)
+
+        assert window.canvas.current_tool == "select"
+        assert window.current_tool == "select"
     finally:
         window.close()
 
