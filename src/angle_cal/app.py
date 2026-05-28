@@ -661,7 +661,7 @@ class AngleCanvas(QGraphicsView):
             self.edge_length_groups[group_id] = [label]
             self.edge_length_group_parents[group_id] = record.id
 
-    def add_cd_measurement(self, start: Point, end: Point, text: str, label_pos: Point) -> list[QGraphicsItem]:
+    def add_cd_measurement(self, start: Point, end: Point, text: str, label_center: Point) -> list[QGraphicsItem]:
         items: list[QGraphicsItem] = []
         line = QGraphicsLineItem(start[0], start[1], end[0], end[1])
         line.setPen(QPen(QColor("#8ecae6"), 2.0))
@@ -677,7 +677,8 @@ class AngleCanvas(QGraphicsView):
             "color:#d9f6ff;padding:2px 5px;border-radius:3px;'>"
             f"{text}</div>"
         )
-        label.setPos(label_pos[0], label_pos[1])
+        label_rect = label.boundingRect()
+        label.setPos(label_center[0] - label_rect.width() / 2.0, label_center[1] - label_rect.height() / 2.0)
         label.setZValue(31)
         label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
         self.scene.addItem(label)
@@ -1586,6 +1587,18 @@ def cd_segment_allowed(index: int, mode: str) -> bool:
     return True
 
 
+def cd_label_center(start: Point, end: Point, side: str, gap: float) -> Point:
+    midpoint = ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
+    nx, ny = normal_for_line(start, end)
+    if abs(ny) < 0.0001:
+        nx, ny = 0.0, -1.0
+    if side == "above" and ny > 0:
+        nx, ny = -nx, -ny
+    elif side == "below" and ny < 0:
+        nx, ny = -nx, -ny
+    return (midpoint[0] + nx * gap, midpoint[1] + ny * gap)
+
+
 class EdgeDetectionSettingsDialog(QDialog):
     def __init__(
         self,
@@ -1676,6 +1689,39 @@ class AngleDisplaySettingsDialog(QDialog):
         layout.addWidget(buttons)
 
 
+class CdDisplaySettingsDialog(QDialog):
+    def __init__(
+        self,
+        label_side: str,
+        label_gap: float,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("CD 표시 편집")
+        self.setModal(True)
+
+        self.label_side_combo = QComboBox()
+        self.label_side_combo.addItem("선분 위", "above")
+        self.label_side_combo.addItem("선분 아래", "below")
+        side_index = self.label_side_combo.findData(label_side)
+        self.label_side_combo.setCurrentIndex(side_index if side_index >= 0 else 0)
+
+        self.label_gap_spin = QDoubleSpinBox()
+        self.label_gap_spin.setRange(0.0, 300.0)
+        self.label_gap_spin.setValue(float(label_gap))
+        self.label_gap_spin.setSuffix(" px")
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.addRow("숫자 위치", self.label_side_combo)
+        form.addRow("숫자 거리", self.label_gap_spin)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1703,6 +1749,8 @@ class MainWindow(QMainWindow):
         self.default_angle_arc_radius = 28.0
         self.default_angle_label_side = "top_right"
         self.default_angle_label_gap = 14.0
+        self.cd_label_side = "above"
+        self.cd_label_gap = 14.0
         self.default_stroke_color = "#ff6b6b"
         self.default_stroke_width = 2.2
         self.hidden_angle_measurements: set[str] = set()
@@ -1970,11 +2018,14 @@ class MainWindow(QMainWindow):
         angle_settings_button.clicked.connect(self.edit_angle_display_for_selected_edges)
         cd_button = QPushButton("CD 길이")
         cd_button.clicked.connect(self.calculate_cd_lengths)
+        cd_settings_button = QPushButton("CD 표시 편집")
+        cd_settings_button.clicked.connect(self.edit_cd_display)
         guide_toolbar.addWidget(add_guides_button)
         guide_toolbar.addWidget(clear_guides_button)
         guide_toolbar.addWidget(angle_button)
         guide_toolbar.addWidget(angle_settings_button)
         guide_toolbar.addWidget(cd_button)
+        guide_toolbar.addWidget(cd_settings_button)
 
         structure_toolbar = self._new_toolbar("구조")
         self.structure_combo = QComboBox()
@@ -2495,6 +2546,11 @@ class MainWindow(QMainWindow):
         cd_index = self.cd_segment_combo.findData(cd_mode)
         if cd_index >= 0:
             self.cd_segment_combo.setCurrentIndex(cd_index)
+        cd_display = payload.get("cd_display", {})
+        self.cd_label_side = str(cd_display.get("label_side", self.cd_label_side))
+        if self.cd_label_side not in {"above", "below"}:
+            self.cd_label_side = "above"
+        self.cd_label_gap = float(cd_display.get("label_gap", self.cd_label_gap))
         visibility = payload.get("visibility", {})
         if "angle" in visibility:
             legacy_angle_visible = bool(visibility["angle"])
@@ -2560,6 +2616,10 @@ class MainWindow(QMainWindow):
             },
             "visibility": self.visibility,
             "cd_segment_mode": self.cd_segment_combo.currentData(),
+            "cd_display": {
+                "label_side": self.cd_label_side,
+                "label_gap": self.cd_label_gap,
+            },
             "scale_presets": [asdict(preset) for preset in self.scale_presets],
             "structure_templates": [structure_template_to_dict(template) for template in self.structure_templates],
             "counter": self._counter,
@@ -3190,13 +3250,12 @@ class MainWindow(QMainWindow):
                 if length_px <= 0:
                     continue
                 midpoint = ((point_a[0] + point_b[0]) / 2.0, (point_a[1] + point_b[1]) / 2.0)
-                nx, ny = normal_for_line(point_a, point_b)
-                label_pos = (midpoint[0] + nx * 16.0, midpoint[1] + ny * 16.0)
+                label_pos = cd_label_center(point_a, point_b, self.cd_label_side, self.cd_label_gap)
                 if self.nm_per_px:
-                    text = f"CD {length_px * self.nm_per_px:.3g} nm"
+                    text = f"{length_px * self.nm_per_px:.3g} nm"
                     cd_length_nm = length_px * self.nm_per_px
                 else:
-                    text = f"CD {length_px:.2f} px"
+                    text = f"{length_px:.2f} px"
                     cd_length_nm = ""
                 self.canvas.add_cd_measurement(point_a, point_b, text, label_pos)
                 self.last_measurements.append(
@@ -3218,6 +3277,18 @@ class MainWindow(QMainWindow):
                 created += 1
         self._apply_visibility()
         self._set_status(f"CD 길이 {created}개를 표시했습니다.")
+
+    def edit_cd_display(self) -> None:
+        dialog = CdDisplaySettingsDialog(self.cd_label_side, self.cd_label_gap, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.cd_label_side = str(dialog.label_side_combo.currentData())
+        if self.cd_label_side not in {"above", "below"}:
+            self.cd_label_side = "above"
+        self.cd_label_gap = float(dialog.label_gap_spin.value())
+        if self.canvas.cd_items:
+            self.calculate_cd_lengths()
+        self._set_status("CD 표시 설정을 바꿨습니다.")
 
     def save_current_structure_template(self) -> None:
         self._sync_records_from_canvas()

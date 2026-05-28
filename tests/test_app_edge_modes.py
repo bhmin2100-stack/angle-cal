@@ -473,6 +473,56 @@ def test_cd_length_modes_measure_adjacent_edge_intersections():
         window.close()
 
 
+def test_cd_label_text_and_position_can_be_edited(monkeypatch):
+    class _Value:
+        def __init__(self, value):
+            self._value = value
+
+        def value(self):
+            return self._value
+
+        def currentData(self):
+            return self._value
+
+    class _Dialog:
+        def __init__(self, *args, **kwargs):
+            self.label_side_combo = _Value("below")
+            self.label_gap_spin = _Value(22.0)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(app_module, "CdDisplaySettingsDialog", _Dialog)
+    window = _window_with_edge_image()
+    try:
+        for x in (40.0, 80.0):
+            window._create_edge_line((x, 10.0), (x, 110.0))
+        window.records["G99"] = LineRecord(
+            id="G99",
+            kind="guide",
+            start=(0.0, 60.0),
+            end=(150.0, 60.0),
+            label="guide",
+            axis="horizontal",
+        )
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.calculate_cd_lengths()
+        label = next(item for item in window.canvas.cd_items if isinstance(item, QGraphicsTextItem))
+        assert "CD" not in label.toPlainText()
+        assert abs(label.sceneBoundingRect().center().x() - 60.0) < 0.001
+        assert label.sceneBoundingRect().center().y() < 60.0
+
+        window.edit_cd_display()
+        label = next(item for item in window.canvas.cd_items if isinstance(item, QGraphicsTextItem))
+        assert window.cd_label_side == "below"
+        assert window.cd_label_gap == 22.0
+        assert abs(label.sceneBoundingRect().center().x() - 60.0) < 0.001
+        assert label.sceneBoundingRect().center().y() > 60.0
+    finally:
+        window.close()
+
+
 def test_structure_template_paste_skips_guides_when_current_image_has_guides():
     window = _window_with_edge_image()
     try:
