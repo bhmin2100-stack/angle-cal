@@ -772,6 +772,48 @@ def test_selected_object_visibility_can_hide_selected_edge_line():
         window.close()
 
 
+def test_delete_line_does_not_create_new_angle_annotations():
+    window = _window_with_edge_image()
+    try:
+        window._create_reference_line((10.0, 10.0), (120.0, 10.0))
+        window._create_edge_line((40.0, 20.0), (40.0, 100.0))
+        window._create_edge_line((80.0, 20.0), (80.0, 100.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.line_items[edges[0].id].setSelected(True)
+
+        window.delete_selected()
+
+        assert edges[0].id not in window.records
+        assert edges[1].id in window.records
+        assert len(window.canvas.angle_items) == 0
+        assert len([row for row in window.last_measurements if row["kind"] == "edge_to_reference"]) == 1
+    finally:
+        window.close()
+
+
+def test_delete_line_preserves_only_already_visible_angle_annotations():
+    window = _window_with_edge_image()
+    try:
+        window._create_reference_line((10.0, 10.0), (120.0, 10.0))
+        window._create_edge_line((40.0, 20.0), (40.0, 100.0))
+        window._create_edge_line((80.0, 20.0), (80.0, 100.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.calculate_angles(reset_hidden=True)
+        assert len(window.canvas.angle_items) == 2
+
+        window.canvas.line_items[edges[0].id].setSelected(True)
+        window.delete_selected()
+
+        remaining_measurement_ids = {
+            str(item.data(app_module.ANGLE_MEASUREMENT_KEY)) for item in window.canvas.angle_items
+        }
+        assert remaining_measurement_ids == {f"{edges[1].id}_to_{window._reference_record().id}"}
+    finally:
+        window.close()
+
+
 def test_style_toolbar_applies_to_selected_line_objects_and_new_defaults():
     window = _window_with_edge_image()
     try:

@@ -2014,6 +2014,14 @@ class MainWindow(QMainWindow):
             item.setPos(float(state.get("x", 0.0)), float(state.get("y", 0.0)))
             item.setScale(float(state.get("scale", 1.0)))
 
+    def _visible_angle_measurement_ids(self) -> set[str]:
+        measurement_ids: set[str] = set()
+        for item in self.canvas.angle_items:
+            measurement_id = item.data(ANGLE_MEASUREMENT_KEY)
+            if measurement_id:
+                measurement_ids.add(str(measurement_id))
+        return measurement_ids
+
     def _build_measurements_dock(self) -> None:
         dock = QDockWidget("측정값", self)
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
@@ -3297,7 +3305,7 @@ class MainWindow(QMainWindow):
         target_text = "전체 경계선" if editing_all else "선택한 경계선"
         self._set_status(f"{target_text} {len(edges)}개의 각도 표시 설정을 바꿨습니다.")
 
-    def calculate_angles(self, reset_hidden: bool = True) -> None:
+    def calculate_angles(self, reset_hidden: bool = True, visible_measurement_ids: Optional[set[str]] = None) -> None:
         if self.image_bgr is None:
             return
         if reset_hidden:
@@ -3326,7 +3334,10 @@ class MainWindow(QMainWindow):
             midpoint = ((edge.start[0] + edge.end[0]) / 2.0, (edge.start[1] + edge.end[1]) / 2.0)
             label_pos = self._label_position(midpoint, edge_angle, reference_angle, 34.0)
             measurement_id = f"{edge.id}_to_{reference_name}"
-            if edge.show_angle and measurement_id not in self.hidden_angle_measurements:
+            should_draw_angle = edge.show_angle and measurement_id not in self.hidden_angle_measurements
+            if visible_measurement_ids is not None:
+                should_draw_angle = should_draw_angle and measurement_id in visible_measurement_ids
+            if should_draw_angle:
                 self.canvas.add_angle_annotation(
                     f"{angle:.2f}°",
                     label_pos,
@@ -3367,7 +3378,10 @@ class MainWindow(QMainWindow):
                     length_px = record_length(edge)
                     suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
                     measurement_id = f"{edge.id}_x_{guide.id}{suffix}"
-                    if edge.show_angle and measurement_id not in self.hidden_angle_measurements:
+                    should_draw_angle = edge.show_angle and measurement_id not in self.hidden_angle_measurements
+                    if visible_measurement_ids is not None:
+                        should_draw_angle = should_draw_angle and measurement_id in visible_measurement_ids
+                    if should_draw_angle:
                         self.canvas.add_angle_annotation(
                             f"{angle:.2f}°",
                             label_pos,
@@ -3404,14 +3418,16 @@ class MainWindow(QMainWindow):
         if not selected and not selected_angle_items and not selected_edge_length_items and not selected_point_handles:
             return
         if not selected and not selected_angle_items and not selected_edge_length_items and selected_point_handles:
+            visible_angle_ids = self._visible_angle_measurement_ids()
             self.save_undo_snapshot()
             if self.canvas.delete_selected_point_handles():
                 self._sync_records_from_canvas()
-                self.calculate_angles(reset_hidden=False)
+                self.calculate_angles(reset_hidden=False, visible_measurement_ids=visible_angle_ids)
                 self._update_search_range_overlay()
                 self._apply_visibility()
             self._set_status("선택한 편집점을 삭제했습니다.")
             return
+        visible_angle_ids = self._visible_angle_measurement_ids()
         self.save_undo_snapshot()
         self.hidden_angle_measurements.update(self.canvas.selected_angle_measurement_ids())
         for parent_id in self.canvas.selected_edge_length_parent_ids():
@@ -3424,7 +3440,7 @@ class MainWindow(QMainWindow):
             self.records.pop(record_id, None)
         if selected:
             self.canvas.redraw_lines(list(self.records.values()))
-            self.calculate_angles(reset_hidden=False)
+            self.calculate_angles(reset_hidden=False, visible_measurement_ids=visible_angle_ids)
             self._update_search_range_overlay()
             self._apply_visibility()
         if selected_angle_items and not selected:
