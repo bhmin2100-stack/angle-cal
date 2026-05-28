@@ -206,6 +206,7 @@ def points_from_path_item(item: QGraphicsPathItem | QGraphicsLineItem) -> list[P
 
 class AngleCanvas(QGraphicsView):
     line_created = Signal(str, tuple, tuple, object)
+    segment_split_requested = Signal(str, int)
     scene_changed = Signal()
     scale_requested = Signal(float)
     edit_started = Signal()
@@ -895,6 +896,17 @@ class AngleCanvas(QGraphicsView):
 
         if (
             event.button() == Qt.MouseButton.LeftButton
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            and self.current_tool == "select"
+        ):
+            segment = self._segment_at(event.pos())
+            if segment is not None:
+                self.segment_split_requested.emit(segment[0], segment[1])
+                event.accept()
+                return
+
+        if (
+            event.button() == Qt.MouseButton.LeftButton
             and (self.current_tool == "pan" or event.modifiers() & Qt.KeyboardModifier.ControlModifier)
         ):
             self._start_pan(event.pos())
@@ -1006,6 +1018,23 @@ class AngleCanvas(QGraphicsView):
         super().mouseReleaseEvent(event)
         self._apply_selection_filter()
         self.scene_changed.emit()
+
+    def _segment_at(self, view_pos: QPoint) -> Optional[tuple[str, int]]:
+        scene_pos = self.mapToScene(view_pos)
+        click = (float(scene_pos.x()), float(scene_pos.y()))
+        tolerance = max(6.0, 7.0 / max(0.2, self.transform().m11()))
+        best: Optional[tuple[float, str, int]] = None
+        for item in self.items(view_pos):
+            if not isinstance(item, AnnotationCurveItem) or item.kind != "edge":
+                continue
+            points = points_from_path_item(item)
+            for idx, (start, end) in enumerate(zip(points, points[1:])):
+                distance = point_to_segment_distance(click, start, end)
+                if distance <= tolerance and (best is None or distance < best[0]):
+                    best = (distance, item.record_id, idx)
+        if best is None:
+            return None
+        return (best[1], best[2])
 
     def mouseDoubleClickEvent(self, event):  # noqa: N802
         if (
@@ -1233,6 +1262,18 @@ def uniform_translation_delta(old_points: list[Point], new_points: list[Point], 
     if abs(dx) <= tolerance and abs(dy) <= tolerance:
         return (0.0, 0.0)
     return (dx, dy)
+
+
+def point_to_segment_distance(point: Point, start: Point, end: Point) -> float:
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 0:
+        return line_length(point, start)
+    t = ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_sq
+    t = max(0.0, min(1.0, t))
+    projection = (start[0] + t * dx, start[1] + t * dy)
+    return line_length(point, projection)
 
 
 def record_length(record: LineRecord) -> float:
@@ -1596,6 +1637,7 @@ class MainWindow(QMainWindow):
         self.canvas = AngleCanvas()
         self.setCentralWidget(self.canvas)
         self.canvas.line_created.connect(self._handle_line_created)
+        self.canvas.segment_split_requested.connect(self.split_edge_segment_for_selection)
         self.canvas.scene_changed.connect(self._handle_scene_changed)
         self.canvas.scale_requested.connect(self.scale_selected_objects)
         self.canvas.edit_started.connect(self.save_undo_snapshot)
@@ -2661,6 +2703,51 @@ class MainWindow(QMainWindow):
         )
         self.records[record.id] = record
         self._set_status(f"{'이어진 직선' if edge_mode == 'polyline' else '직선'} 경계선을 추가했습니다.")
+
+    def split_edge_segment_for_selection(self, record_id: str, segment_index: int) -> None:
+        self._sync_records_from_canvas()
+        record = self.records.get(record_id)
+        if record is None or record.kind != "edge":
+            return
+        points = record_points(record)
+        if len(points) < 3 or not (0 <= segment_index < len(points) - 1):
+            return
+        self.save_undo_snapshot()
+        original_group = record.object_group
+        parts: list[tuple[list[Point], bool]] = []
+        before = points[: segment_index + 1]
+        selected = points[segment_index : segment_index + 2]
+        after = points[segment_index + 1 :]
+        if len(before) >= 2:
+            parts.append((before, False))
+        parts.append((selected, True))
+        if len(after) >= 2:
+            parts.append((after, False))
+
+        del self.records[record_id]
+        selected_id = ""
+        for part_points, is_selected in parts:
+            new_record = clone_record(record)
+            new_record.id = self._next_id("E")
+            new_record.start = part_points[0]
+            new_record.end = part_points[-1]
+            new_record.points = part_points if len(part_points) > 2 else None
+            new_record.recognition_points = part_points
+            new_record.edge_mode = "polyline" if len(part_points) > 2 else "line"
+            new_record.edge_segmented = len(part_points) > 2
+            new_record.object_group = None if is_selected else original_group
+            new_record.edge_length_label_pos = None
+            self.records[new_record.id] = new_record
+            if is_selected:
+                selected_id = new_record.id
+
+        self.canvas.redraw_lines(list(self.records.values()))
+        if selected_id:
+            self._select_record_ids({selected_id})
+        self.calculate_angles(reset_hidden=False)
+        self._update_search_range_overlay()
+        self._apply_visibility()
+        self._set_status("선택한 세그먼트를 별도 경계선으로 잘라 선택했습니다.")
 
     def _create_guide_line(self, start: Point, end: Point) -> None:
         axis = "horizontal" if abs(end[0] - start[0]) >= abs(end[1] - start[1]) else "vertical"

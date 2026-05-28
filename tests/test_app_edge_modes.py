@@ -8,7 +8,7 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem
 
 import angle_cal.app as app_module
-from angle_cal.app import LineRecord, MainWindow, ScalePreset, StructureTemplate, structure_template_from_dict, structure_template_to_dict
+from angle_cal.app import LineRecord, MainWindow, ScalePreset, StructureTemplate, record_points, structure_template_from_dict, structure_template_to_dict
 
 
 def _app():
@@ -804,6 +804,37 @@ def test_arrow_keys_nudge_selected_edge_and_ctrl_uses_one_pixel():
         window._sync_records_from_canvas()
         assert window.records[edge.id].start == (30.0, 59.0)
         assert window.records[edge.id].end == (130.0, 59.0)
+    finally:
+        window.close()
+
+
+def test_split_polyline_segment_selects_independent_edge_for_detection_settings():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
+        window._create_edge_line(
+            (20.0, 20.0),
+            (80.0, 60.0),
+            [(20.0, 20.0), (40.0, 40.0), (60.0, 40.0), (80.0, 60.0)],
+        )
+        original = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.split_edge_segment_for_selection(original.id, 1)
+
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        selected_ids = window.canvas.selected_line_ids()
+        assert len(edges) == 3
+        assert len(selected_ids) == 1
+        selected = window.records[selected_ids[0]]
+        assert record_points(selected) == [(40.0, 40.0), (60.0, 40.0)]
+
+        window.search_radius_spin.setValue(18)
+        window.curve_sensitivity_spin.setValue(5)
+
+        assert selected.search_radius_px == 18
+        assert selected.segment_size_px == 5
+        assert all(edge.search_radius_px != 18 for edge in edges if edge.id != selected.id)
     finally:
         window.close()
 
