@@ -91,6 +91,8 @@ class LineRecord:
     show_range_label: bool = True
     show_edge_length: bool = True
     edge_length_label_pos: Optional[Point] = None
+    stroke_color: Optional[str] = None
+    stroke_width: Optional[float] = None
 
 
 @dataclass
@@ -1201,9 +1203,9 @@ class AngleCanvas(QGraphicsView):
             "edge": "#ff6b6b",
             "guide": "#f7fff7",
         }
-        width = 1.2 if record.kind == "guide" else 2.2
-        color = QColor(colors.get(record.kind, "#ffffff"))
-        if record.kind == "reference":
+        width = float(record.stroke_width) if record.stroke_width is not None else (1.2 if record.kind == "guide" else 2.2)
+        color = QColor(record.stroke_color or colors.get(record.kind, "#ffffff"))
+        if record.kind == "reference" and record.stroke_color is None:
             color.setAlpha(128)
         pen = QPen(color, width)
         if record.kind == "guide":
@@ -1374,6 +1376,8 @@ def clone_record(record: LineRecord) -> LineRecord:
         show_range_label=record.show_range_label,
         show_edge_length=record.show_edge_length,
         edge_length_label_pos=tuple(record.edge_length_label_pos) if record.edge_length_label_pos else None,
+        stroke_color=record.stroke_color,
+        stroke_width=record.stroke_width,
     )
 
 
@@ -1410,6 +1414,8 @@ def line_record_from_dict(item: dict) -> LineRecord:
         show_range_label=bool(item.get("show_range_label", True)),
         show_edge_length=bool(item.get("show_edge_length", True)),
         edge_length_label_pos=tuple(item["edge_length_label_pos"]) if item.get("edge_length_label_pos") is not None else None,
+        stroke_color=item.get("stroke_color"),
+        stroke_width=float(item["stroke_width"]) if item.get("stroke_width") is not None else None,
     )
 
 
@@ -1616,6 +1622,8 @@ class MainWindow(QMainWindow):
         self.default_angle_arc_radius = 28.0
         self.default_angle_label_side = "outside"
         self.default_angle_label_gap = 14.0
+        self.default_stroke_color = "#ff6b6b"
+        self.default_stroke_width = 2.2
         self.hidden_angle_measurements: set[str] = set()
         self.undo_stack: list[dict] = []
         self._restoring_undo = False
@@ -1817,6 +1825,29 @@ class MainWindow(QMainWindow):
         recognize_button = QPushButton("인식")
         recognize_button.clicked.connect(self.recognize_edges)
         detect_toolbar.addWidget(recognize_button)
+
+        style_toolbar = self._new_toolbar("양식")
+        self.stroke_color_combo = QComboBox()
+        for label, color in [
+            ("빨강", "#ff6b6b"),
+            ("노랑", "#ffd166"),
+            ("초록", "#06d6a0"),
+            ("파랑", "#4cc9f0"),
+            ("흰색", "#f7fff7"),
+            ("검정", "#111111"),
+        ]:
+            self.stroke_color_combo.addItem(label, color)
+        self.stroke_color_combo.currentIndexChanged.connect(self.apply_selected_style)
+        self.stroke_width_spin = QDoubleSpinBox()
+        self.stroke_width_spin.setRange(0.4, 12.0)
+        self.stroke_width_spin.setSingleStep(0.2)
+        self.stroke_width_spin.setValue(self.default_stroke_width)
+        self.stroke_width_spin.setSuffix(" px")
+        self.stroke_width_spin.valueChanged.connect(self.apply_selected_style)
+        style_toolbar.addWidget(QLabel("선 색"))
+        style_toolbar.addWidget(self.stroke_color_combo)
+        style_toolbar.addWidget(QLabel("선 두께"))
+        style_toolbar.addWidget(self.stroke_width_spin)
 
         self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
         guide_toolbar = self._new_toolbar("가이드")
@@ -2700,6 +2731,8 @@ class MainWindow(QMainWindow):
             angle_arc_radius=self.default_angle_arc_radius,
             angle_label_side=self.default_angle_label_side,
             angle_label_gap=self.default_angle_label_gap,
+            stroke_color=self.default_stroke_color,
+            stroke_width=self.default_stroke_width,
         )
         self.records[record.id] = record
         self._set_status(f"{'이어진 직선' if edge_mode == 'polyline' else '직선'} 경계선을 추가했습니다.")
@@ -3556,6 +3589,32 @@ class MainWindow(QMainWindow):
             self._set_status("경계 형태: 이어진 직선. 경계선 도구에서 점을 찍고 더블클릭 또는 Enter로 확정합니다.")
         else:
             self._set_status("경계 형태: 직선. 경계선 도구에서 드래그로 선분을 긋습니다.")
+
+    def apply_selected_style(self) -> None:
+        if not hasattr(self, "stroke_color_combo"):
+            return
+        color = str(self.stroke_color_combo.currentData())
+        width = float(self.stroke_width_spin.value())
+        selected_ids = [
+            record_id
+            for record_id in self.canvas.selected_line_ids()
+            if record_id in self.records and self.records[record_id].kind in {"scale", "reference", "edge", "guide"}
+        ]
+        if not selected_ids:
+            self.default_stroke_color = color
+            self.default_stroke_width = width
+            self._set_status(f"기본 선 양식: 색 {color}, 두께 {width:.1f}px")
+            return
+        self._sync_records_from_canvas()
+        for record_id in selected_ids:
+            record = self.records[record_id]
+            record.stroke_color = color
+            record.stroke_width = width
+            item = self.canvas.line_items.get(record_id)
+            if item is not None:
+                item.setPen(self.canvas._pen_for_record(record))
+        self.canvas.update_group_boxes(list(self.records.values()))
+        self._set_status(f"선택 개체 {len(selected_ids)}개의 선 양식을 바꿨습니다.")
 
     def _axis_changed(self) -> None:
         if self.current_tool != "reference":

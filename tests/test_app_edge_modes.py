@@ -715,6 +715,37 @@ def test_selected_object_visibility_can_hide_selected_edge_line():
         window.close()
 
 
+def test_style_toolbar_applies_to_selected_line_objects_and_new_defaults():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((40.0, 20.0), (40.0, 100.0))
+        window._create_guide_line((10.0, 60.0), (120.0, 60.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        guide = next(record for record in window.records.values() if record.kind == "guide")
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.canvas.line_items[guide.id].setSelected(True)
+
+        window.stroke_color_combo.setCurrentIndex(window.stroke_color_combo.findData("#ffd166"))
+        window.stroke_width_spin.setValue(4.0)
+
+        assert window.records[edge.id].stroke_color == "#ffd166"
+        assert window.records[guide.id].stroke_color == "#ffd166"
+        assert window.records[edge.id].stroke_width == 4.0
+        assert window.canvas.line_items[guide.id].pen().widthF() == 4.0
+
+        window.canvas.scene.clearSelection()
+        window.stroke_color_combo.setCurrentIndex(window.stroke_color_combo.findData("#4cc9f0"))
+        window.stroke_width_spin.setValue(3.0)
+        window._create_edge_line((80.0, 20.0), (80.0, 100.0))
+        new_edge = max((record for record in window.records.values() if record.kind == "edge"), key=lambda record: record.id)
+
+        assert new_edge.stroke_color == "#4cc9f0"
+        assert new_edge.stroke_width == 3.0
+    finally:
+        window.close()
+
+
 def test_ctrl_pan_restore_returns_to_edge_cursor():
     window = _window_with_edge_image()
     try:
