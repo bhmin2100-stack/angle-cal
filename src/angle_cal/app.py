@@ -76,6 +76,8 @@ class LineRecord:
     points: Optional[list[Point]] = None
     recognition_points: Optional[list[Point]] = None
     edge_mode: str = "line"
+    search_radius_px: Optional[int] = None
+    segment_size_px: Optional[int] = None
     angle_sector: int = 0
     angle_arc_radius: float = 28.0
     angle_label_side: str = "outside"
@@ -515,6 +517,9 @@ class AngleCanvas(QGraphicsView):
             return
         for record in records:
             if record.kind != "edge":
+                continue
+            radius = float(record.search_radius_px or self.search_range_radius_px)
+            if radius <= 0:
                 continue
             polygons = self._search_range_polygons(record, radius)
             if self.show_search_range_band and record.show_range:
@@ -1274,6 +1279,8 @@ def clone_record(record: LineRecord) -> LineRecord:
         points=[tuple(point) for point in record.points] if record.points else None,
         recognition_points=[tuple(point) for point in record.recognition_points] if record.recognition_points else None,
         edge_mode=record.edge_mode,
+        search_radius_px=record.search_radius_px,
+        segment_size_px=record.segment_size_px,
         angle_sector=record.angle_sector,
         angle_arc_radius=record.angle_arc_radius,
         angle_label_side=record.angle_label_side,
@@ -1307,6 +1314,8 @@ def line_record_from_dict(item: dict) -> LineRecord:
         points=[tuple(point) for point in raw_points] or None,
         recognition_points=[tuple(point) for point in raw_recognition_points] or None,
         edge_mode=record_edge_mode,
+        search_radius_px=int(item["search_radius_px"]) if item.get("search_radius_px") is not None else None,
+        segment_size_px=int(item["segment_size_px"]) if item.get("segment_size_px") is not None else None,
         angle_sector=int(item.get("angle_sector", 0)),
         angle_arc_radius=float(item.get("angle_arc_radius", 28.0)),
         angle_label_side=item.get("angle_label_side", "outside"),
@@ -1528,6 +1537,7 @@ class MainWindow(QMainWindow):
         self.undo_stack: list[dict] = []
         self._restoring_undo = False
         self._updating_object_visibility_controls = False
+        self._updating_detection_controls = False
         self._expanding_object_group_selection = False
         self.visibility: dict[str, bool] = {
             "scale": True,
@@ -2599,6 +2609,8 @@ class MainWindow(QMainWindow):
             points=points,
             recognition_points=list(points or [start, end]),
             edge_mode=edge_mode,
+            search_radius_px=self.search_radius_spin.value() if hasattr(self, "search_radius_spin") else None,
+            segment_size_px=self.curve_sensitivity_spin.value() if hasattr(self, "curve_sensitivity_spin") else None,
             edge_segmented=edge_mode == "polyline",
             angle_sector=self.default_angle_sector,
             angle_arc_radius=self.default_angle_arc_radius,
@@ -2674,29 +2686,34 @@ class MainWindow(QMainWindow):
             return
         self._sync_records_from_canvas()
         selected_ids = set(self.canvas.selected_line_ids())
-        edge_records = [record for record in self.records.values() if record.kind == "edge"]
-        if selected_ids:
-            edge_records = [record for record in edge_records if record.id in selected_ids]
+        edge_records = [record for record in self.records.values() if record.kind == "edge" and record.id in selected_ids]
         if not edge_records:
-            QMessageBox.information(self, "인식", "인식할 경계선이 없습니다.")
+            QMessageBox.information(self, "인식", "인식할 경계선을 먼저 선택하세요.")
             return
         self.save_undo_snapshot()
         gray = to_gray(self.image_bgr)
-        radius = self.search_radius_spin.value()
-        segment_size_px = self.curve_sensitivity_spin.value()
         moved = 0
         for chain in self._connected_edge_chains(edge_records):
             source_points = self._chain_points(chain)
+            radius = self._edge_search_radius(chain[0][0])
+            segment_size_px = self._edge_segment_size(chain[0][0])
             result = snap_polyline_to_gradient(gray, source_points, radius, segment_size_px)
             if result is None:
                 continue
             self._apply_snapped_chain(chain, source_points, result.points)
             moved += len(chain)
         self.canvas.redraw_lines(list(self.records.values()))
+        self._select_record_ids({record.id for record in edge_records})
         self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status(f"{moved}/{len(edge_records)}개 경계선을 선택한 형태로 명도 변화 최대 위치에 맞췄습니다.")
+
+    def _edge_search_radius(self, record: LineRecord) -> int:
+        return int(record.search_radius_px or self.search_radius_spin.value())
+
+    def _edge_segment_size(self, record: LineRecord) -> int:
+        return int(record.segment_size_px or self.curve_sensitivity_spin.value())
 
     def _connected_edge_chains(self, records: list[LineRecord]) -> list[list[tuple[LineRecord, bool]]]:
         remaining = list(records)
@@ -3371,6 +3388,9 @@ class MainWindow(QMainWindow):
 
     def _edge_mode_changed(self) -> None:
         mode = self.edge_mode_combo.currentData()
+        if self._updating_detection_controls:
+            self.canvas.set_edge_draw_mode(mode)
+            return
         self.canvas.set_edge_draw_mode(mode)
         selected_ids = set(self.canvas.selected_line_ids())
         changed = 0
@@ -3481,15 +3501,25 @@ class MainWindow(QMainWindow):
         self._edge_detection_settings_changed()
 
     def _edge_detection_settings_changed(self) -> None:
+        if self._updating_detection_controls:
+            return
+        selected_edges = self._selected_edge_records()
+        if selected_edges:
+            radius = self.search_radius_spin.value()
+            segment_size_px = self.curve_sensitivity_spin.value()
+            for edge in selected_edges:
+                edge.search_radius_px = radius
+                edge.segment_size_px = segment_size_px
         self._update_search_range_overlay()
         if self.sender() in {self.curve_sensitivity_spin, None}:
             self._show_detection_preview()
         radius = self.search_radius_spin.value()
         segment_size_px = self.curve_sensitivity_spin.value()
+        target_text = f"선택 경계선 {len(selected_edges)}개" if selected_edges else "기본값"
         if self.show_search_range_checkbox.isChecked():
-            self._set_status(f"경계인식 범위: 경계선 양쪽 {radius}px, 세그먼트 크기 {segment_size_px}px")
+            self._set_status(f"{target_text} 경계인식 범위: 양쪽 {radius}px, 세그먼트 크기 {segment_size_px}px")
         else:
-            self._set_status(f"경계인식 범위: 경계선 양쪽 {radius}px, 세그먼트 크기 {segment_size_px}px, 표시 꺼짐")
+            self._set_status(f"{target_text} 경계인식 범위: 양쪽 {radius}px, 세그먼트 크기 {segment_size_px}px, 표시 꺼짐")
 
     def _update_search_range_overlay(self) -> None:
         self._sync_records_from_canvas()
@@ -3544,6 +3574,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "object_visibility_checkboxes"):
             return
         selected_edges = self._selected_edge_records()
+        self._update_detection_controls_from_selection(selected_edges)
         self._updating_object_visibility_controls = True
         try:
             for key, checkbox in self.object_visibility_checkboxes.items():
@@ -3586,6 +3617,30 @@ class MainWindow(QMainWindow):
             self._apply_visibility()
         self._update_object_visibility_controls()
         self._set_status(f"선택 경계선 {len(selected_edges)}개의 표시 기준을 바꿨습니다.")
+
+    def _update_detection_controls_from_selection(self, selected_edges: Optional[list[LineRecord]] = None) -> None:
+        if not hasattr(self, "search_radius_spin") or self._updating_detection_controls:
+            return
+        selected_edges = selected_edges if selected_edges is not None else self._selected_edge_records()
+        if not selected_edges:
+            return
+        radius_values = [self._edge_search_radius(edge) for edge in selected_edges]
+        segment_values = [self._edge_segment_size(edge) for edge in selected_edges]
+        first_radius = radius_values[0]
+        first_segment = segment_values[0]
+        self._updating_detection_controls = True
+        try:
+            if all(value == first_radius for value in radius_values):
+                self.search_radius_spin.setValue(first_radius)
+            if all(value == first_segment for value in segment_values):
+                self.curve_sensitivity_spin.setValue(first_segment)
+            mode_values = [edge.edge_mode for edge in selected_edges]
+            if all(value == mode_values[0] for value in mode_values):
+                mode_index = self.edge_mode_combo.findData(mode_values[0])
+                if mode_index >= 0:
+                    self.edge_mode_combo.setCurrentIndex(mode_index)
+        finally:
+            self._updating_detection_controls = False
 
     def _apply_visibility(self) -> None:
         for record_id, item in self.canvas.line_items.items():

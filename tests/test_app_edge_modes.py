@@ -25,12 +25,21 @@ def _window_with_edge_image():
     return window
 
 
+def _select_edges(window: MainWindow) -> list[LineRecord]:
+    window.canvas.redraw_lines(list(window.records.values()))
+    edges = [record for record in window.records.values() if record.kind == "edge"]
+    for edge in edges:
+        window.canvas.line_items[edge.id].setSelected(True)
+    return edges
+
+
 def test_recognize_segments_line_mode_by_segment_size():
     window = _window_with_edge_image()
     try:
         window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window.curve_sensitivity_spin.setValue(10)
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        _select_edges(window)
 
         window.recognize_edges()
 
@@ -50,6 +59,7 @@ def test_repeated_recognition_uses_stable_original_edge_path():
         window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window.curve_sensitivity_spin.setValue(10)
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        _select_edges(window)
 
         window.recognize_edges()
         edge = next(record for record in window.records.values() if record.kind == "edge")
@@ -70,6 +80,7 @@ def test_moving_segmented_edge_shifts_recognition_path():
         window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window.curve_sensitivity_spin.setValue(10)
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        _select_edges(window)
         window.recognize_edges()
         edge = next(record for record in window.records.values() if record.kind == "edge")
         assert edge.edge_segmented is True
@@ -90,7 +101,7 @@ def test_connected_line_edges_recognize_as_joined_chain():
         window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window._create_edge_line((70.0, 20.0), (70.0, 60.0))
         window._create_edge_line((70.0, 60.0), (70.0, 100.0))
-        window.canvas.redraw_lines(list(window.records.values()))
+        _select_edges(window)
 
         window.recognize_edges()
 
@@ -103,11 +114,50 @@ def test_connected_line_edges_recognize_as_joined_chain():
         window.close()
 
 
+def test_recognize_only_selected_edges():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((45.0, 20.0), (45.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.line_items[edges[0].id].setSelected(True)
+
+        window.recognize_edges()
+
+        assert 80 <= window.records[edges[0].id].start[0] <= 83
+        assert window.records[edges[1].id].start == (45.0, 20.0)
+    finally:
+        window.close()
+
+
+def test_selected_edge_detection_controls_apply_per_edge():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((45.0, 20.0), (45.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.line_items[edges[0].id].setSelected(True)
+
+        window.search_radius_spin.setValue(22)
+        window.curve_sensitivity_spin.setValue(7)
+
+        assert window.records[edges[0].id].search_radius_px == 22
+        assert window.records[edges[0].id].segment_size_px == 7
+        assert window.records[edges[1].id].search_radius_px == 35
+        assert window.records[edges[1].id].segment_size_px == 9
+    finally:
+        window.close()
+
+
 def test_recognize_converts_polyline_mode_to_connected_segments():
     window = _window_with_edge_image()
     try:
         window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
+        _select_edges(window)
 
         window.recognize_edges()
 
@@ -129,6 +179,7 @@ def test_segmented_edge_does_not_show_reference_angles_after_recognition():
         window._create_reference_line((10.0, 10.0), (100.0, 10.0))
         window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
+        _select_edges(window)
         window.recognize_edges()
 
         window.calculate_angles()
