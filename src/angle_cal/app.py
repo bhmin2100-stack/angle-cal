@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import csv
+from html import escape as xml_escape
 import json
 import math
 from pathlib import Path
 import sys
 from typing import Optional
+import zipfile
 
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
@@ -115,6 +117,13 @@ class StructureTemplate:
     name: str
     records: list[LineRecord]
     cd_segment_mode: str = "all"
+
+
+@dataclass
+class DataExportOptions:
+    scope: str
+    selected_items: set[str]
+    order_priority: str
 
 
 ANGLE_GROUP_KEY = 1
@@ -1590,6 +1599,12 @@ def line_fraction(point: Point, line: tuple[Point, Point]) -> float:
     return ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_sq
 
 
+def position_key(point: Point, priority: str) -> tuple[float, float]:
+    if priority == "x":
+        return (point[0], point[1])
+    return (point[1], point[0])
+
+
 def cd_segment_allowed(index: int, mode: str) -> bool:
     segment_number = index + 1
     if mode == "odd":
@@ -1609,6 +1624,128 @@ def cd_label_center(start: Point, end: Point, side: str, gap: float) -> Point:
     elif side == "below" and ny < 0:
         nx, ny = -nx, -ny
     return (midpoint[0] + nx * gap, midpoint[1] + ny * gap)
+
+
+def record_center(record: LineRecord) -> Point:
+    points = record_points(record)
+    if not points:
+        return (0.0, 0.0)
+    return (
+        sum(point[0] for point in points) / len(points),
+        sum(point[1] for point in points) / len(points),
+    )
+
+
+def group_bounds_center(records: list[LineRecord]) -> Point:
+    points: list[Point] = []
+    for record in records:
+        points.extend(record_points(record))
+    if not points:
+        return (0.0, 0.0)
+    min_x = min(point[0] for point in points)
+    max_x = max(point[0] for point in points)
+    min_y = min(point[1] for point in points)
+    max_y = max(point[1] for point in points)
+    return ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+
+
+EXPORT_COLUMNS = ["이미지", "그룹", "그룹번호", "순서", "항목", "측정ID", "경계ID", "가이드ID", "x_px", "y_px", "각도_deg", "길이_px", "길이_nm"]
+
+
+def xlsx_col_name(index: int) -> str:
+    name = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def xlsx_cell_xml(row_idx: int, col_idx: int, value: object) -> str:
+    ref = f"{xlsx_col_name(col_idx)}{row_idx}"
+    if value is None or value == "":
+        return f'<c r="{ref}"/>'
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f'<c r="{ref}"><v>{value}</v></c>'
+    return f'<c r="{ref}" t="inlineStr"><is><t>{xml_escape(str(value))}</t></is></c>'
+
+
+def xlsx_sheet_xml(rows: list[dict[str, object]]) -> str:
+    all_rows = [dict(zip(EXPORT_COLUMNS, EXPORT_COLUMNS))]
+    all_rows.extend(rows)
+    row_xml: list[str] = []
+    for row_idx, row in enumerate(all_rows, start=1):
+        cells = "".join(xlsx_cell_xml(row_idx, col_idx, row.get(column, "")) for col_idx, column in enumerate(EXPORT_COLUMNS, start=1))
+        row_xml.append(f'<row r="{row_idx}">{cells}</row>')
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'
+        '<sheetFormatPr defaultRowHeight="15"/>'
+        f'<sheetData>{"".join(row_xml)}</sheetData>'
+        '</worksheet>'
+    )
+
+
+def write_xlsx(path: str, sheets: dict[str, list[dict[str, object]]]) -> None:
+    sheet_items = list(sheets.items())
+    workbook_sheets = "".join(
+        f'<sheet name="{xml_escape(name[:31])}" sheetId="{idx}" r:id="rId{idx}"/>'
+        for idx, (name, _rows) in enumerate(sheet_items, start=1)
+    )
+    workbook_rels = "".join(
+        f'<Relationship Id="rId{idx}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{idx}.xml"/>'
+        for idx, _item in enumerate(sheet_items, start=1)
+    )
+    workbook_rels += '<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+    content_types = "".join(
+        f'<Override PartName="/xl/worksheets/sheet{idx}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for idx, _item in enumerate(sheet_items, start=1)
+    )
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            f"{content_types}</Types>",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '</Relationships>',
+        )
+        archive.writestr(
+            "xl/workbook.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            f'<sheets>{workbook_sheets}</sheets></workbook>',
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f"{workbook_rels}</Relationships>",
+        )
+        archive.writestr(
+            "xl/styles.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
+            '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+            '<borders count="1"><border/></borders>'
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+            '<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>'
+            '</styleSheet>',
+        )
+        for idx, (_name, rows) in enumerate(sheet_items, start=1):
+            archive.writestr(f"xl/worksheets/sheet{idx}.xml", xlsx_sheet_xml(rows))
 
 
 class EdgeDetectionSettingsDialog(QDialog):
@@ -1734,6 +1871,52 @@ class CdDisplaySettingsDialog(QDialog):
         layout.addWidget(buttons)
 
 
+class DataExportDialog(QDialog):
+    def __init__(self, has_multiple_images: bool, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Data Export")
+        self.setModal(True)
+
+        self.scope_combo = QComboBox()
+        self.scope_combo.addItem("현재 보이는 이미지만", "current")
+        self.scope_combo.addItem("현재 작업 프로젝트 전부", "project")
+
+        self.item_checkboxes: dict[str, QCheckBox] = {}
+        for key, label in [
+            ("line_angle", "선각도"),
+            ("intersection_angle", "교점각도"),
+            ("cd_length", "CD 길이"),
+            ("edge_length", "경계길이"),
+        ]:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(True)
+            self.item_checkboxes[key] = checkbox
+
+        self.order_combo = QComboBox()
+        self.order_combo.addItem("위쪽에서 아래 우선", "y")
+        self.order_combo.addItem("왼쪽에서 오른쪽 우선", "x")
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.addRow("내보낼 범위", self.scope_combo)
+        form.addRow("정렬 우선순위", self.order_combo)
+        layout.addLayout(form)
+        layout.addWidget(QLabel("내보낼 항목"))
+        for checkbox in self.item_checkboxes.values():
+            layout.addWidget(checkbox)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def options(self) -> DataExportOptions:
+        return DataExportOptions(
+            scope=str(self.scope_combo.currentData()),
+            selected_items={key for key, checkbox in self.item_checkboxes.items() if checkbox.isChecked()},
+            order_priority=str(self.order_combo.currentData()),
+        )
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1823,6 +2006,8 @@ class MainWindow(QMainWindow):
         self.export_png_action.triggered.connect(self.export_annotated_png)
         self.export_csv_action = QAction("CSV 내보내기", self)
         self.export_csv_action.triggered.connect(self.export_csv)
+        self.export_data_action = QAction("Data Export", self)
+        self.export_data_action.triggered.connect(self.export_data_xlsx)
         self.select_tool_action = QAction("선택 도구", self)
         self.select_tool_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.select_tool_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -1893,7 +2078,7 @@ class MainWindow(QMainWindow):
             file_toolbar.addWidget(self._button_for_action(action))
 
         export_toolbar = self._new_toolbar("내보내기")
-        for action in [self.export_png_action, self.export_csv_action]:
+        for action in [self.export_png_action, self.export_csv_action, self.export_data_action]:
             export_toolbar.addWidget(self._button_for_action(action))
 
         self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
@@ -2406,6 +2591,15 @@ class MainWindow(QMainWindow):
         self.nm_per_px = state.get("nm_per_px")
         self.hidden_angle_measurements = set(state.get("hidden_angle_measurements", []))
 
+    def _current_image_state_dict(self) -> dict:
+        self._sync_records_from_canvas()
+        return {
+            "records": [asdict(record) for record in self.records.values()],
+            "counter": self._counter,
+            "nm_per_px": self.nm_per_px,
+            "hidden_angle_measurements": list(self.hidden_angle_measurements),
+        }
+
     def load_browser_image(self, path: str) -> None:
         if path not in self.browser_image_paths:
             return
@@ -2710,6 +2904,229 @@ class MainWindow(QMainWindow):
             for row in self.last_measurements:
                 writer.writerow(row)
         self._set_status(f"CSV 저장: {Path(path).name}")
+
+    def export_data_xlsx(self) -> None:
+        if self.image_bgr is None:
+            return
+        self._save_current_image_state()
+        dialog = DataExportDialog(bool(self.image_states), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        options = dialog.options()
+        if not options.selected_items:
+            QMessageBox.information(self, "Data Export", "내보낼 항목을 하나 이상 선택하세요.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Data Export", "", "Excel Workbook (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        sheets = self._build_export_sheets(options)
+        if not any(rows for rows in sheets.values()):
+            QMessageBox.information(self, "Data Export", "내보낼 측정 데이터가 없습니다.")
+            return
+        write_xlsx(path, sheets)
+        self._set_status(f"Data Export 저장: {Path(path).name}")
+
+    def _export_image_states(self, scope: str) -> list[tuple[str, dict]]:
+        current_path = self.image_path or "current"
+        current_state = self._current_image_state_dict()
+        if scope == "current":
+            return [(current_path, current_state)]
+        states = dict(self.image_states)
+        states[current_path] = current_state
+        ordered_paths = self.browser_image_paths or list(states.keys())
+        result: list[tuple[str, dict]] = []
+        seen: set[str] = set()
+        for path in ordered_paths:
+            state = states.get(path)
+            if state is not None:
+                result.append((path, state))
+                seen.add(path)
+        for path, state in states.items():
+            if path not in seen:
+                result.append((path, state))
+        return result
+
+    def _build_export_sheets(self, options: DataExportOptions) -> dict[str, list[dict[str, object]]]:
+        sheets = {
+            "선각도": [],
+            "교점각도": [],
+            "CD길이": [],
+            "경계길이": [],
+        }
+        for image_index, (image_path, state) in enumerate(self._export_image_states(options.scope), start=1):
+            records = [line_record_from_dict(item) for item in state.get("records", [])]
+            nm_per_px = state.get("nm_per_px")
+            image_name = Path(image_path).name if image_path else f"image_{image_index}"
+            group_info = self._export_group_info(records, options.order_priority)
+            rows_by_item = self._export_rows_for_records(image_name, records, nm_per_px, group_info, options.order_priority)
+            for item_key, sheet_name in [
+                ("line_angle", "선각도"),
+                ("intersection_angle", "교점각도"),
+                ("cd_length", "CD길이"),
+                ("edge_length", "경계길이"),
+            ]:
+                if item_key in options.selected_items:
+                    sheets[sheet_name].extend(rows_by_item[item_key])
+        return {name: rows for name, rows in sheets.items() if rows or name in self._selected_sheet_names(options)}
+
+    def _selected_sheet_names(self, options: DataExportOptions) -> set[str]:
+        names = {
+            "line_angle": "선각도",
+            "intersection_angle": "교점각도",
+            "cd_length": "CD길이",
+            "edge_length": "경계길이",
+        }
+        return {names[key] for key in options.selected_items}
+
+    def _export_group_info(self, records: list[LineRecord], priority: str) -> dict[Optional[str], dict[str, object]]:
+        grouped: dict[str, list[LineRecord]] = {}
+        for record in records:
+            if record.object_group:
+                grouped.setdefault(record.object_group, []).append(record)
+        ordered_groups = sorted(
+            grouped.items(),
+            key=lambda item: position_key(group_bounds_center(item[1]), priority),
+        )
+        info: dict[Optional[str], dict[str, object]] = {
+            None: {"label": "미그룹", "number": 0, "source": ""}
+        }
+        for index, (group_id, group_records) in enumerate(ordered_groups, start=1):
+            info[group_id] = {"label": f"G{index}", "number": index, "source": group_id}
+        return info
+
+    def _export_base_row(
+        self,
+        image_name: str,
+        item_type: str,
+        records: list[LineRecord],
+        group_info: dict[Optional[str], dict[str, object]],
+    ) -> dict[str, object]:
+        group_id = next((record.object_group for record in records if record.object_group), None)
+        info = group_info.get(group_id, group_info[None])
+        return {
+            "이미지": image_name,
+            "그룹": info["label"],
+            "그룹번호": info["number"],
+            "항목": item_type,
+        }
+
+    def _export_rows_for_records(
+        self,
+        image_name: str,
+        records: list[LineRecord],
+        nm_per_px: Optional[float],
+        group_info: dict[Optional[str], dict[str, object]],
+        priority: str,
+    ) -> dict[str, list[dict[str, object]]]:
+        edges = [record for record in records if record.kind == "edge"]
+        guides = [record for record in records if record.kind == "guide"]
+        reference = next((record for record in records if record.kind == "reference"), None)
+        reference_angle = line_angle_degrees(reference.start, reference.end) if reference else 0.0
+        reference_id = reference.id if reference else "horizontal"
+        rows = {"line_angle": [], "intersection_angle": [], "cd_length": [], "edge_length": []}
+
+        for edge in edges:
+            center = record_center(edge)
+            length_px = record_length(edge)
+            if not has_segmented_edge_angle(edge):
+                angle = acute_angle_difference(record_angle(edge), reference_angle)
+                row = self._export_base_row(image_name, "선각도", [edge], group_info)
+                row.update(
+                    {
+                        "측정ID": f"{edge.id}_to_{reference_id}",
+                        "경계ID": edge.id,
+                        "가이드ID": "",
+                        "x_px": center[0],
+                        "y_px": center[1],
+                        "각도_deg": angle,
+                        "길이_px": "",
+                        "길이_nm": "",
+                    }
+                )
+                rows["line_angle"].append(row)
+            length_row = self._export_base_row(image_name, "경계길이", [edge], group_info)
+            length_row.update(
+                {
+                    "측정ID": f"{edge.id}_length",
+                    "경계ID": edge.id,
+                    "가이드ID": "",
+                    "x_px": center[0],
+                    "y_px": center[1],
+                    "각도_deg": "",
+                    "길이_px": length_px,
+                    "길이_nm": length_px * nm_per_px if nm_per_px else "",
+                }
+            )
+            rows["edge_length"].append(length_row)
+
+        for edge in edges:
+            for guide in guides:
+                crosses = polyline_intersections(edge, (guide.start, guide.end))
+                guide_angle = line_angle_degrees(guide.start, guide.end)
+                for cross_idx, (cross, edge_angle) in enumerate(crosses, start=1):
+                    _arc_start, _arc_end, angle = angle_sector_geometry(edge_angle, guide_angle, edge.angle_sector)
+                    suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
+                    row = self._export_base_row(image_name, "교점각도", [edge, guide], group_info)
+                    row.update(
+                        {
+                            "측정ID": f"{edge.id}_x_{guide.id}{suffix}",
+                            "경계ID": edge.id,
+                            "가이드ID": guide.id,
+                            "x_px": cross[0],
+                            "y_px": cross[1],
+                            "각도_deg": angle,
+                            "길이_px": "",
+                            "길이_nm": "",
+                        }
+                    )
+                    rows["intersection_angle"].append(row)
+
+        mode = str(self.cd_segment_combo.currentData())
+        for guide in guides:
+            crosses: list[tuple[float, Point, str, LineRecord]] = []
+            guide_line = (guide.start, guide.end)
+            for edge in edges:
+                for cross, _edge_angle in polyline_intersections(edge, guide_line):
+                    fraction = line_fraction(cross, guide_line)
+                    if -0.0001 <= fraction <= 1.0001:
+                        crosses.append((fraction, cross, edge.id, edge))
+            crosses.sort(key=lambda item: item[0])
+            filtered: list[tuple[float, Point, str, LineRecord]] = []
+            for item in crosses:
+                if filtered and abs(item[0] - filtered[-1][0]) < 0.0005 and item[2] == filtered[-1][2]:
+                    continue
+                filtered.append(item)
+            for idx in range(len(filtered) - 1):
+                if not cd_segment_allowed(idx, mode):
+                    continue
+                _fa, point_a, edge_a_id, edge_a = filtered[idx]
+                _fb, point_b, edge_b_id, edge_b = filtered[idx + 1]
+                if edge_a_id == edge_b_id:
+                    continue
+                length_px = line_length(point_a, point_b)
+                midpoint = ((point_a[0] + point_b[0]) / 2.0, (point_a[1] + point_b[1]) / 2.0)
+                row = self._export_base_row(image_name, "CD길이", [edge_a, edge_b, guide], group_info)
+                row.update(
+                    {
+                        "측정ID": f"CD_{guide.id}_{idx + 1}_{edge_a_id}_{edge_b_id}",
+                        "경계ID": f"{edge_a_id}|{edge_b_id}",
+                        "가이드ID": guide.id,
+                        "x_px": midpoint[0],
+                        "y_px": midpoint[1],
+                        "각도_deg": "",
+                        "길이_px": length_px,
+                        "길이_nm": length_px * nm_per_px if nm_per_px else "",
+                    }
+                )
+                rows["cd_length"].append(row)
+
+        for item_rows in rows.values():
+            item_rows.sort(key=lambda row: (int(row["그룹번호"]), *position_key((float(row["x_px"]), float(row["y_px"])), priority), str(row["측정ID"])))
+            for order, row in enumerate(item_rows, start=1):
+                row["순서"] = order
+        return rows
 
     def _handle_line_created(self, tool: str, start: Point, end: Point, points: Optional[list[Point]]) -> None:
         self.save_undo_snapshot()

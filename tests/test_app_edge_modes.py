@@ -1,4 +1,5 @@
 import os
+import zipfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9,7 +10,7 @@ from PySide6.QtGui import QKeyEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem
 
 import angle_cal.app as app_module
-from angle_cal.app import LineRecord, MainWindow, ScalePreset, StructureTemplate, record_points, structure_template_from_dict, structure_template_to_dict
+from angle_cal.app import DataExportOptions, LineRecord, MainWindow, ScalePreset, StructureTemplate, record_points, structure_template_from_dict, structure_template_to_dict
 
 
 def _app():
@@ -519,6 +520,68 @@ def test_cd_label_text_and_position_can_be_edited(monkeypatch):
         assert window.cd_label_gap == 22.0
         assert abs(label.sceneBoundingRect().center().x() - 60.0) < 0.001
         assert label.sceneBoundingRect().center().y() > 60.0
+    finally:
+        window.close()
+
+
+def test_data_export_sorts_by_group_item_and_position(tmp_path):
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((100.0, 10.0), (100.0, 110.0))
+        window._create_edge_line((40.0, 10.0), (40.0, 110.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        edges[0].object_group = "right_group"
+        edges[1].object_group = "left_group"
+        window.records["G99"] = LineRecord(
+            id="G99",
+            kind="guide",
+            start=(0.0, 60.0),
+            end=(150.0, 60.0),
+            axis="horizontal",
+        )
+        options = DataExportOptions(
+            scope="current",
+            selected_items={"line_angle", "intersection_angle", "cd_length", "edge_length"},
+            order_priority="x",
+        )
+
+        sheets = window._build_export_sheets(options)
+
+        assert list(sheets) == ["선각도", "교점각도", "CD길이", "경계길이"]
+        assert [row["그룹"] for row in sheets["선각도"]] == ["G1", "G2"]
+        assert [row["경계ID"] for row in sheets["선각도"]] == [edges[1].id, edges[0].id]
+        assert len(sheets["교점각도"]) == 2
+        assert len(sheets["CD길이"]) == 1
+        assert sheets["CD길이"][0]["길이_px"] == 60.0
+
+        export_path = tmp_path / "export.xlsx"
+        app_module.write_xlsx(str(export_path), sheets)
+        with zipfile.ZipFile(export_path) as archive:
+            names = set(archive.namelist())
+            assert "xl/workbook.xml" in names
+            assert "xl/worksheets/sheet1.xml" in names
+    finally:
+        window.close()
+
+
+def test_data_export_project_scope_includes_saved_image_states():
+    window = _window_with_edge_image()
+    try:
+        window.image_path = "/tmp/current.png"
+        window._create_edge_line((20.0, 10.0), (20.0, 110.0))
+        other = LineRecord("E_other", "edge", (80.0, 10.0), (80.0, 110.0))
+        window.image_states["/tmp/other.png"] = {
+            "records": [app_module.asdict(other)],
+            "counter": 2,
+            "nm_per_px": None,
+            "hidden_angle_measurements": [],
+        }
+        options = DataExportOptions(scope="project", selected_items={"edge_length"}, order_priority="y")
+
+        sheets = window._build_export_sheets(options)
+
+        image_names = {row["이미지"] for row in sheets["경계길이"]}
+        assert image_names == {"current.png", "other.png"}
     finally:
         window.close()
 
