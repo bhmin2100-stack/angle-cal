@@ -1209,6 +1209,68 @@ def test_deleting_line_clears_point_handles():
         window.close()
 
 
+def test_main_guide_generates_guides_from_selected_baseline():
+    window = _window_with_edge_image()
+    try:
+        window.records["G_main"] = LineRecord(
+            id="G_main",
+            kind="guide",
+            start=(0.0, 60.0),
+            end=(150.0, 60.0),
+            axis="horizontal",
+        )
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.set_main_guide("G_main")
+        window.guide_spacing_spin.setValue(20)
+        window.guide_spacing_unit.setCurrentIndex(window.guide_spacing_unit.findData("px"))
+        window.guide_direction_combo.setCurrentIndex(window.guide_direction_combo.findData("both"))
+        window.guide_count_spin.setValue(2)
+
+        window.add_guides()
+
+        guides = sorted(
+            [record for record in window.records.values() if record.kind == "guide"],
+            key=lambda record: record.start[1],
+        )
+        assert [round(guide.start[1], 2) for guide in guides] == [20.0, 40.0, 60.0, 80.0, 100.0]
+        assert sum(1 for guide in guides if guide.is_main_guide) == 1
+        assert next(guide for guide in guides if guide.is_main_guide).id == "G_main"
+    finally:
+        window.close()
+
+
+def test_moving_guide_refreshes_cd_and_respects_cd_visibility():
+    window = _window_with_edge_image()
+    try:
+        for x in (40.0, 80.0):
+            window._create_edge_line((x, 10.0), (x, 110.0))
+        window.records["G99"] = LineRecord(
+            id="G99",
+            kind="guide",
+            start=(0.0, 60.0),
+            end=(150.0, 60.0),
+            axis="horizontal",
+        )
+        window.canvas.redraw_lines(list(window.records.values()))
+        guide_item = window.canvas.line_items["G99"]
+        guide_item.setSelected(True)
+
+        guide_item.moveBy(0.0, 5.0)
+        window._handle_scene_changed()
+        cd_rows = [row for row in window.last_measurements if row["kind"] == "cd_length"]
+        assert len(cd_rows) == 1
+        assert len(window.canvas.cd_items) == 2
+
+        window.set_visibility("cd", False)
+        window.canvas.clear_cd_items()
+        guide_item.moveBy(0.0, 5.0)
+        window._handle_scene_changed()
+
+        assert not window.canvas.cd_items
+    finally:
+        window.close()
+
+
 def test_delete_prefers_parent_line_over_selected_point_handle():
     window = _window_with_edge_image()
     try:

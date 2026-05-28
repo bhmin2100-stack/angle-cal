@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QDoubleSpinBox,
     QPushButton,
@@ -96,6 +97,7 @@ class LineRecord:
     edge_length_label_pos: Optional[Point] = None
     stroke_color: Optional[str] = None
     stroke_width: Optional[float] = None
+    is_main_guide: bool = False
 
 
 @dataclass
@@ -218,6 +220,7 @@ class AngleCanvas(QGraphicsView):
     search_range_wheel_requested = Signal(int)
     edit_started = Signal()
     temporary_edge_tool_changed = Signal(bool)
+    guide_context_requested = Signal(str, QPoint)
 
     def __init__(self):
         super().__init__()
@@ -928,6 +931,12 @@ class AngleCanvas(QGraphicsView):
 
     def mousePressEvent(self, event):  # noqa: N802
         self.setFocus(Qt.FocusReason.MouseFocusReason)
+        if event.button() == Qt.MouseButton.RightButton:
+            item = self.itemAt(event.pos())
+            if isinstance(item, AnnotationLineItem) and item.kind == "guide":
+                self.guide_context_requested.emit(item.record_id, self.mapToGlobal(event.pos()))
+                event.accept()
+                return
         if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
             self._start_pan(event.pos())
             event.accept()
@@ -1262,9 +1271,10 @@ class AngleCanvas(QGraphicsView):
             "scale": "#4cc9f0",
             "reference": "#06d6a0",
             "edge": "#ff6b6b",
-            "guide": "#f7fff7",
+            "guide": "#ffd166" if record.is_main_guide else "#f7fff7",
         }
-        width = float(record.stroke_width) if record.stroke_width is not None else (1.2 if record.kind == "guide" else 2.2)
+        guide_width = 2.0 if record.is_main_guide else 1.2
+        width = float(record.stroke_width) if record.stroke_width is not None else (guide_width if record.kind == "guide" else 2.2)
         color = QColor(record.stroke_color or colors.get(record.kind, "#ffffff"))
         if record.kind == "reference" and record.stroke_color is None:
             color.setAlpha(128)
@@ -1457,6 +1467,7 @@ def clone_record(record: LineRecord) -> LineRecord:
         edge_length_label_pos=tuple(record.edge_length_label_pos) if record.edge_length_label_pos else None,
         stroke_color=record.stroke_color,
         stroke_width=record.stroke_width,
+        is_main_guide=record.is_main_guide,
     )
 
 
@@ -1499,6 +1510,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         edge_length_label_pos=tuple(item["edge_length_label_pos"]) if item.get("edge_length_label_pos") is not None else None,
         stroke_color=item.get("stroke_color"),
         stroke_width=float(item["stroke_width"]) if item.get("stroke_width") is not None else None,
+        is_main_guide=bool(item.get("is_main_guide", False)),
     )
 
 
@@ -1782,6 +1794,7 @@ class MainWindow(QMainWindow):
         self.canvas.search_range_wheel_requested.connect(self.adjust_search_range_by_wheel)
         self.canvas.edit_started.connect(self.save_undo_snapshot)
         self.canvas.temporary_edge_tool_changed.connect(self.set_temporary_edge_tool)
+        self.canvas.guide_context_requested.connect(self.open_guide_context_menu)
         self.detection_preview_timer = QTimer(self)
         self.detection_preview_timer.setSingleShot(True)
         self.detection_preview_timer.timeout.connect(self.canvas.clear_detection_preview)
@@ -1993,6 +2006,13 @@ class MainWindow(QMainWindow):
         self.guide_spacing_unit = QComboBox()
         self.guide_spacing_unit.addItem("px", "px")
         self.guide_spacing_unit.addItem("nm", "nm")
+        self.guide_direction_combo = QComboBox()
+        self.guide_direction_combo.addItem("아래/오른쪽", "positive")
+        self.guide_direction_combo.addItem("위/왼쪽", "negative")
+        self.guide_direction_combo.addItem("양쪽", "both")
+        self.guide_count_spin = QSpinBox()
+        self.guide_count_spin.setRange(1, 500)
+        self.guide_count_spin.setValue(3)
         self.guide_offset_spin = QSpinBox()
         self.guide_offset_spin.setRange(0, 100000)
         self.guide_offset_spin.setValue(0)
@@ -2004,6 +2024,10 @@ class MainWindow(QMainWindow):
         guide_toolbar.addWidget(self.guide_orientation_combo)
         guide_toolbar.addWidget(self.guide_spacing_spin)
         guide_toolbar.addWidget(self.guide_spacing_unit)
+        guide_toolbar.addWidget(QLabel("방향"))
+        guide_toolbar.addWidget(self.guide_direction_combo)
+        guide_toolbar.addWidget(QLabel("개수/쪽"))
+        guide_toolbar.addWidget(self.guide_count_spin)
         guide_toolbar.addWidget(QLabel("시작"))
         guide_toolbar.addWidget(self.guide_offset_spin)
         guide_toolbar.addWidget(self.cd_segment_combo)
@@ -2551,6 +2575,13 @@ class MainWindow(QMainWindow):
         if self.cd_label_side not in {"above", "below"}:
             self.cd_label_side = "above"
         self.cd_label_gap = float(cd_display.get("label_gap", self.cd_label_gap))
+        guide_generation = payload.get("guide_generation", {})
+        guide_direction = guide_generation.get("direction")
+        direction_index = self.guide_direction_combo.findData(guide_direction)
+        if direction_index >= 0:
+            self.guide_direction_combo.setCurrentIndex(direction_index)
+        if "count_per_side" in guide_generation:
+            self.guide_count_spin.setValue(int(guide_generation["count_per_side"]))
         visibility = payload.get("visibility", {})
         if "angle" in visibility:
             legacy_angle_visible = bool(visibility["angle"])
@@ -2619,6 +2650,10 @@ class MainWindow(QMainWindow):
             "cd_display": {
                 "label_side": self.cd_label_side,
                 "label_gap": self.cd_label_gap,
+            },
+            "guide_generation": {
+                "direction": self.guide_direction_combo.currentData(),
+                "count_per_side": self.guide_count_spin.value(),
             },
             "scale_presets": [asdict(preset) for preset in self.scale_presets],
             "structure_templates": [structure_template_to_dict(template) for template in self.structure_templates],
@@ -3151,7 +3186,8 @@ class MainWindow(QMainWindow):
             return
         self._sync_records_from_canvas()
         self.save_undo_snapshot()
-        orientation = self.guide_orientation_combo.currentData()
+        main_guide = self._main_guide_record()
+        orientation = main_guide.axis if main_guide is not None else self.guide_orientation_combo.currentData()
         spacing = float(self.guide_spacing_spin.value())
         if self.guide_spacing_unit.currentData() == "nm":
             if not self.nm_per_px:
@@ -3161,8 +3197,11 @@ class MainWindow(QMainWindow):
         if spacing < 1:
             QMessageBox.information(self, "가이드", "간격이 너무 작습니다.")
             return
-        self.clear_guides(redraw=False)
         height, width = self.image_bgr.shape[:2]
+        if main_guide is not None:
+            self._add_guides_from_main(main_guide, orientation, spacing, width, height)
+            return
+        self.clear_guides(redraw=False)
         offset = float(self.guide_offset_spin.value())
         count = int((height if orientation == "horizontal" else width) / spacing) + 2
         if count > 500:
@@ -3190,10 +3229,109 @@ class MainWindow(QMainWindow):
             self.records[record.id] = record
             created += 1
         self.canvas.redraw_lines(list(self.records.values()))
-        self.calculate_angles(reset_hidden=False)
+        self._refresh_guide_measurements()
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status(f"{orientation} 가이드 {created}개를 만들었습니다.")
+
+    def _main_guide_record(self) -> Optional[LineRecord]:
+        for record in self.records.values():
+            if record.kind == "guide" and record.is_main_guide:
+                return record
+        return None
+
+    def open_guide_context_menu(self, record_id: str, global_pos: QPoint) -> None:
+        record = self.records.get(record_id)
+        if record is None or record.kind != "guide":
+            return
+        menu = QMenu(self)
+        if record.is_main_guide:
+            action = menu.addAction("메인가이드 해제")
+            action.triggered.connect(lambda checked=False: self.set_main_guide(None))
+        else:
+            action = menu.addAction("메인가이드로 지정")
+            action.triggered.connect(lambda checked=False, guide_id=record_id: self.set_main_guide(guide_id))
+        menu.exec(global_pos)
+
+    def set_main_guide(self, record_id: Optional[str]) -> None:
+        self.save_undo_snapshot()
+        for guide_id, record in self.records.items():
+            if record.kind == "guide":
+                record.is_main_guide = guide_id == record_id
+        self.canvas.redraw_lines(list(self.records.values()))
+        self._refresh_guide_measurements()
+        self._apply_visibility()
+        if record_id is None:
+            self._set_status("메인가이드를 해제했습니다.")
+        else:
+            self._set_status("메인가이드로 지정했습니다.")
+
+    def _add_guides_from_main(self, main_guide: LineRecord, orientation: str, spacing: float, width: int, height: int) -> None:
+        direction = str(self.guide_direction_combo.currentData())
+        count_per_side = int(self.guide_count_spin.value())
+        if direction == "both":
+            offsets = [idx * spacing for idx in range(-count_per_side, count_per_side + 1)]
+        elif direction == "negative":
+            offsets = [-idx * spacing for idx in range(0, count_per_side + 1)]
+        else:
+            offsets = [idx * spacing for idx in range(0, count_per_side + 1)]
+        if len(offsets) > 501:
+            QMessageBox.information(self, "가이드", "가이드가 너무 많습니다. 개수를 줄여주세요.")
+            return
+        for record_id in [
+            rid
+            for rid, record in self.records.items()
+            if record.kind == "guide" and rid != main_guide.id
+        ]:
+            del self.records[record_id]
+        base_pos = (main_guide.start[1] + main_guide.end[1]) / 2.0 if orientation == "horizontal" else (main_guide.start[0] + main_guide.end[0]) / 2.0
+        main_guide.start, main_guide.end = self._guide_points(orientation, base_pos, width, height)
+        main_guide.axis = orientation
+        main_guide.is_main_guide = True
+        created = 1
+        for offset in offsets:
+            if abs(offset) < 0.0001:
+                continue
+            pos = base_pos + offset
+            if orientation == "horizontal" and not (0.0 <= pos <= float(height)):
+                continue
+            if orientation == "vertical" and not (0.0 <= pos <= float(width)):
+                continue
+            start, end = self._guide_points(orientation, pos, width, height)
+            record_id = self._next_id("G")
+            self.records[record_id] = LineRecord(
+                id=record_id,
+                kind="guide",
+                start=start,
+                end=end,
+                label=f"{orientation} guide",
+                axis=orientation,
+            )
+            created += 1
+        self.canvas.redraw_lines(list(self.records.values()))
+        self._refresh_guide_measurements()
+        self._update_search_range_overlay()
+        self._apply_visibility()
+        self._set_status(f"메인가이드 기준 {orientation} 가이드 {created}개를 만들었습니다.")
+
+    @staticmethod
+    def _guide_points(orientation: str, pos: float, width: int, height: int) -> tuple[Point, Point]:
+        if orientation == "horizontal":
+            return (0.0, pos), (float(width), pos)
+        return (pos, 0.0), (pos, float(height))
+
+    def _refresh_guide_measurements(self) -> None:
+        edges = [record for record in self.records.values() if record.kind == "edge"]
+        guides = [record for record in self.records.values() if record.kind == "guide"]
+        if not edges:
+            self.canvas.clear_angle_items()
+            self.canvas.clear_cd_items()
+            return
+        self.calculate_angles(reset_hidden=False, update_status=False)
+        if guides and self.visibility.get("cd", True):
+            self.calculate_cd_lengths(silent=True, update_angles=False, update_status=False)
+        elif not guides:
+            self.canvas.clear_cd_items()
 
     def clear_guides(self, redraw: bool = True) -> None:
         if redraw:
@@ -3209,16 +3347,21 @@ class MainWindow(QMainWindow):
             self._apply_visibility()
             self._set_status("가이드를 지웠습니다.")
 
-    def calculate_cd_lengths(self) -> None:
+    def calculate_cd_lengths(self, silent: bool = False, update_angles: bool = True, update_status: bool = True) -> None:
         if self.image_bgr is None:
             return
         self._sync_records_from_canvas()
         edges = [record for record in self.records.values() if record.kind == "edge"]
         guides = [record for record in self.records.values() if record.kind == "guide"]
         if len(edges) < 2 or not guides:
-            QMessageBox.information(self, "CD 길이", "CD 길이를 재려면 경계선 2개 이상과 가이드선이 필요합니다.")
+            self.canvas.clear_cd_items()
+            if not silent:
+                QMessageBox.information(self, "CD 길이", "CD 길이를 재려면 경계선 2개 이상과 가이드선이 필요합니다.")
             return
-        self.calculate_angles(reset_hidden=False)
+        if update_angles:
+            self.calculate_angles(reset_hidden=False, update_status=False)
+        else:
+            self.canvas.clear_cd_items()
         self._sync_records_from_canvas()
         edges = [record for record in self.records.values() if record.kind == "edge"]
         guides = [record for record in self.records.values() if record.kind == "guide"]
@@ -3276,7 +3419,8 @@ class MainWindow(QMainWindow):
                 )
                 created += 1
         self._apply_visibility()
-        self._set_status(f"CD 길이 {created}개를 표시했습니다.")
+        if update_status:
+            self._set_status(f"CD 길이 {created}개를 표시했습니다.")
 
     def edit_cd_display(self) -> None:
         dialog = CdDisplaySettingsDialog(self.cd_label_side, self.cd_label_gap, self)
@@ -3461,7 +3605,12 @@ class MainWindow(QMainWindow):
         target_text = "전체 경계선" if editing_all else "선택한 경계선"
         self._set_status(f"{target_text} {len(edges)}개의 각도 표시 설정을 바꿨습니다.")
 
-    def calculate_angles(self, reset_hidden: bool = True, visible_measurement_ids: Optional[set[str]] = None) -> None:
+    def calculate_angles(
+        self,
+        reset_hidden: bool = True,
+        visible_measurement_ids: Optional[set[str]] = None,
+        update_status: bool = True,
+    ) -> None:
         if self.image_bgr is None:
             return
         if reset_hidden:
@@ -3570,7 +3719,8 @@ class MainWindow(QMainWindow):
                     )
         self._refresh_table()
         self._apply_visibility()
-        self._set_status(f"각도 {len(self.last_measurements)}개를 계산했습니다. 숫자 라벨은 선택해서 옮길 수 있습니다.")
+        if update_status:
+            self._set_status(f"각도 {len(self.last_measurements)}개를 계산했습니다. 숫자 라벨은 선택해서 옮길 수 있습니다.")
 
     def delete_selected(self) -> None:
         selected = set(self.canvas.selected_line_ids())
@@ -4121,6 +4271,15 @@ class MainWindow(QMainWindow):
 
     def _handle_scene_changed(self) -> None:
         self._refresh_table()
+        moved_measurement_parent = any(
+            record_id in self.records and self.records[record_id].kind in {"edge", "guide"}
+            for record_id in self.canvas.selected_line_ids()
+        ) or any(
+            handle.owner.record_id in self.records and self.records[handle.owner.record_id].kind in {"edge", "guide"}
+            for handle in self.canvas.selected_point_handles()
+        )
+        if moved_measurement_parent:
+            self._refresh_guide_measurements()
         self._update_search_range_overlay()
         self.canvas.update_group_boxes(list(self.records.values()))
         self._update_object_visibility_controls()
