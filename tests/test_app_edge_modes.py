@@ -979,6 +979,27 @@ def test_ungroup_selected_objects_stops_group_selection():
         window.close()
 
 
+def test_ctrl_rubberband_restores_previous_selection_as_additive():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 20.0), (20.0, 80.0))
+        window._create_edge_line((60.0, 20.0), (60.0, 80.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.redraw_lines(list(window.records.values()))
+        first_item = window.canvas.line_items[edges[0].id]
+        second_item = window.canvas.line_items[edges[1].id]
+        first_item.setSelected(True)
+
+        window.canvas._additive_rubberband_items = {first_item}
+        window.canvas.scene.clearSelection()
+        second_item.setSelected(True)
+        window.canvas._restore_additive_rubberband_selection()
+
+        assert set(window.canvas.selected_line_ids()) == {edges[0].id, edges[1].id}
+    finally:
+        window.close()
+
+
 def test_arrow_keys_nudge_selected_edge_and_ctrl_uses_one_pixel():
     window = _window_with_edge_image()
     try:

@@ -266,6 +266,7 @@ class AngleCanvas(QGraphicsView):
         self._refreshing_point_handles = False
         self._updating_from_point_handle = False
         self._space_edge_previous_tool: Optional[str] = None
+        self._additive_rubberband_items: Optional[set[QGraphicsItem]] = None
         self.scene.selectionChanged.connect(self._expand_angle_group_selection)
         self.scene.selectionChanged.connect(self.refresh_point_handles)
 
@@ -942,9 +943,15 @@ class AngleCanvas(QGraphicsView):
                 event.accept()
                 return
 
+            if self.scene.selectedItems():
+                self._additive_rubberband_items = set(self.scene.selectedItems())
+            else:
+                self._additive_rubberband_items = None
+
         if (
             event.button() == Qt.MouseButton.LeftButton
             and (self.current_tool == "pan" or event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            and self._additive_rubberband_items is None
         ):
             self._start_pan(event.pos())
             event.accept()
@@ -1053,8 +1060,18 @@ class AngleCanvas(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+        self._restore_additive_rubberband_selection()
         self._apply_selection_filter()
         self.scene_changed.emit()
+
+    def _restore_additive_rubberband_selection(self) -> None:
+        if self._additive_rubberband_items is None:
+            return
+        previous_items = self._additive_rubberband_items
+        self._additive_rubberband_items = None
+        for item in previous_items:
+            if item.scene() is self.scene:
+                item.setSelected(True)
 
     def _segment_at(self, view_pos: QPoint) -> Optional[tuple[str, int]]:
         scene_pos = self.mapToScene(view_pos)
