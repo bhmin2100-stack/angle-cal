@@ -447,6 +447,7 @@ def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(m
             self.arc_radius_spin = _Value(55.0)
             self.label_side_combo = _Value("bottom_left")
             self.label_gap_spin = _Value(9.0)
+            self.label_font_size_spin = _Value(16.0)
 
         def exec(self):
             return QDialog.DialogCode.Accepted
@@ -465,7 +466,9 @@ def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(m
         assert all(edge.angle_arc_radius == 55.0 for edge in edges)
         assert all(edge.angle_label_side == "bottom_left" for edge in edges)
         assert all(edge.angle_label_gap == 9.0 for edge in edges)
+        assert all(edge.angle_label_font_size == 16.0 for edge in edges)
         assert window.default_angle_sector == 2
+        assert window.default_angle_label_font_size == 16.0
 
         window._create_edge_line((90.0, 20.0), (90.0, 80.0))
         newest = list(window.records.values())[-1]
@@ -473,6 +476,24 @@ def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(m
         assert newest.angle_arc_radius == 55.0
         assert newest.angle_label_side == "bottom_left"
         assert newest.angle_label_gap == 9.0
+        assert newest.angle_label_font_size == 16.0
+    finally:
+        window.close()
+
+
+def test_angle_label_font_size_is_rendered():
+    window = _window_with_edge_image()
+    try:
+        window._create_reference_line((10.0, 10.0), (100.0, 10.0))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        edge.angle_label_font_size = 18.0
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.calculate_angles(reset_hidden=True)
+
+        label = next(item for item in window.canvas.angle_items if isinstance(item, QGraphicsTextItem))
+        assert "font-size:18pt" in label.toHtml()
     finally:
         window.close()
 

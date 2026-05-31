@@ -86,6 +86,7 @@ class LineRecord:
     angle_arc_radius: float = 28.0
     angle_label_side: str = "top_right"
     angle_label_gap: float = 14.0
+    angle_label_font_size: float = 10.0
     edge_segmented: bool = False
     object_group: Optional[str] = None
     show_line: bool = True
@@ -711,6 +712,7 @@ class AngleCanvas(QGraphicsView):
         angle_type: str = "line",
         show_label: bool = True,
         show_arc: bool = True,
+        label_font_size: float = 10.0,
     ) -> list[QGraphicsItem]:
         group_id = f"A{self._angle_counter}"
         self._angle_counter += 1
@@ -719,7 +721,7 @@ class AngleCanvas(QGraphicsView):
         if show_arc and center is not None and angle_a is not None and angle_b is not None:
             items.append(self._create_angle_arc(center, angle_a, angle_b, radius, group_id, measurement_id, angle_type))
         if show_label:
-            items.append(self._create_angle_label(text, label_pos, group_id, measurement_id, angle_type))
+            items.append(self._create_angle_label(text, label_pos, group_id, measurement_id, angle_type, label_font_size))
         if not items:
             return []
         self.angle_groups[group_id] = items
@@ -751,11 +753,19 @@ class AngleCanvas(QGraphicsView):
         self.angle_items.append(item)
         return item
 
-    def _create_angle_label(self, text: str, pos: Point, group_id: str, measurement_id: str, angle_type: str) -> QGraphicsTextItem:
+    def _create_angle_label(
+        self,
+        text: str,
+        pos: Point,
+        group_id: str,
+        measurement_id: str,
+        angle_type: str,
+        font_size: float,
+    ) -> QGraphicsTextItem:
         item = QGraphicsTextItem()
         item.setHtml(
             "<div style='background-color:rgba(24,24,24,185);"
-            "color:white;padding:2px 5px;border-radius:3px;'>"
+            f"color:white;font-size:{float(font_size):.1f}pt;padding:2px 5px;border-radius:3px;'>"
             f"{text}</div>"
         )
         item.setDefaultTextColor(QColor("white"))
@@ -1463,6 +1473,7 @@ def clone_record(record: LineRecord) -> LineRecord:
         angle_arc_radius=record.angle_arc_radius,
         angle_label_side=normalize_angle_label_side(record.angle_label_side),
         angle_label_gap=record.angle_label_gap,
+        angle_label_font_size=record.angle_label_font_size,
         edge_segmented=record.edge_segmented,
         object_group=record.object_group,
         show_line=record.show_line,
@@ -1506,6 +1517,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         angle_arc_radius=float(item.get("angle_arc_radius", 28.0)),
         angle_label_side=normalize_angle_label_side(str(item.get("angle_label_side", "top_right"))),
         angle_label_gap=float(item.get("angle_label_gap", 14.0)),
+        angle_label_font_size=float(item.get("angle_label_font_size", 10.0)),
         edge_segmented=bool(item.get("edge_segmented", bool(raw_points and len(raw_points) > 6))),
         object_group=item.get("object_group"),
         show_line=bool(item.get("show_line", True)),
@@ -1793,6 +1805,7 @@ class AngleDisplaySettingsDialog(QDialog):
         arc_radius: float,
         label_side: str,
         label_gap: float,
+        label_font_size: float,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -1825,12 +1838,19 @@ class AngleDisplaySettingsDialog(QDialog):
         self.label_gap_spin.setValue(float(label_gap))
         self.label_gap_spin.setSuffix(" px")
 
+        self.label_font_size_spin = QDoubleSpinBox()
+        self.label_font_size_spin.setRange(6.0, 72.0)
+        self.label_font_size_spin.setSingleStep(1.0)
+        self.label_font_size_spin.setValue(float(label_font_size))
+        self.label_font_size_spin.setSuffix(" pt")
+
         layout = QVBoxLayout(self)
         form = QFormLayout()
         form.addRow("각도 호 위치", self.sector_combo)
         form.addRow("각도 호 크기", self.arc_radius_spin)
         form.addRow("숫자 위치", self.label_side_combo)
         form.addRow("숫자 거리", self.label_gap_spin)
+        form.addRow("숫자 크기", self.label_font_size_spin)
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -1944,6 +1964,7 @@ class MainWindow(QMainWindow):
         self.default_angle_arc_radius = 28.0
         self.default_angle_label_side = "top_right"
         self.default_angle_label_gap = 14.0
+        self.default_angle_label_font_size = 10.0
         self.cd_label_side = "above"
         self.cd_label_gap = 14.0
         self.default_stroke_color = "#ff6b6b"
@@ -3374,6 +3395,7 @@ class MainWindow(QMainWindow):
             angle_arc_radius=self.default_angle_arc_radius,
             angle_label_side=self.default_angle_label_side,
             angle_label_gap=self.default_angle_label_gap,
+            angle_label_font_size=self.default_angle_label_font_size,
             stroke_color=self.default_stroke_color,
             stroke_width=self.default_stroke_width,
         )
@@ -4014,6 +4036,7 @@ class MainWindow(QMainWindow):
             base.angle_arc_radius if base is not None else self.default_angle_arc_radius,
             base.angle_label_side if base is not None else self.default_angle_label_side,
             base.angle_label_gap if base is not None else self.default_angle_label_gap,
+            base.angle_label_font_size if base is not None else self.default_angle_label_font_size,
             self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -4023,16 +4046,19 @@ class MainWindow(QMainWindow):
         arc_radius = float(dialog.arc_radius_spin.value())
         label_side = normalize_angle_label_side(str(dialog.label_side_combo.currentData()))
         label_gap = float(dialog.label_gap_spin.value())
+        label_font_size = float(dialog.label_font_size_spin.value())
         if editing_all:
             self.default_angle_sector = sector
             self.default_angle_arc_radius = arc_radius
             self.default_angle_label_side = label_side
             self.default_angle_label_gap = label_gap
+            self.default_angle_label_font_size = label_font_size
         for edge in edges:
             edge.angle_sector = sector
             edge.angle_arc_radius = arc_radius
             edge.angle_label_side = label_side
             edge.angle_label_gap = label_gap
+            edge.angle_label_font_size = label_font_size
         self.calculate_angles(reset_hidden=False)
         target_text = "전체 경계선" if editing_all else "선택한 경계선"
         self._set_status(f"{target_text} {len(edges)}개의 각도 표시 설정을 바꿨습니다.")
@@ -4081,6 +4107,7 @@ class MainWindow(QMainWindow):
                     parent_record_id=edge.id,
                     measurement_id=measurement_id,
                     angle_type="line",
+                    label_font_size=edge.angle_label_font_size,
                 )
             length_px = record_length(edge)
             self.last_measurements.append(
@@ -4134,6 +4161,7 @@ class MainWindow(QMainWindow):
                             angle_type="intersection",
                             show_label=should_draw_label,
                             show_arc=should_draw_arc,
+                            label_font_size=edge.angle_label_font_size,
                         )
                     self.last_measurements.append(
                         {
