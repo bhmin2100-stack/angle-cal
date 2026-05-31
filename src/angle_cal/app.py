@@ -2225,7 +2225,7 @@ class MainWindow(QMainWindow):
         angle_button.clicked.connect(lambda: self.calculate_angles(reset_hidden=True))
         angle_settings_button = QPushButton("각도 표시 편집")
         angle_settings_button.clicked.connect(self.edit_angle_display_for_selected_edges)
-        cd_button = QPushButton("CD 길이")
+        cd_button = QPushButton("CD 측정")
         cd_button.clicked.connect(self.calculate_cd_lengths)
         cd_settings_button = QPushButton("CD 표시 편집")
         cd_settings_button.clicked.connect(self.edit_cd_display)
