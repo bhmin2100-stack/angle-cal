@@ -3491,10 +3491,24 @@ class MainWindow(QMainWindow):
             return
         self._sync_records_from_canvas()
         selected_ids = set(self.canvas.selected_line_ids())
-        edge_records = [record for record in self.records.values() if record.kind == "edge" and record.id in selected_ids]
+        all_edge_records = [record for record in self.records.values() if record.kind == "edge"]
+        selected_edge_ids = {record.id for record in all_edge_records if record.id in selected_ids}
+        edge_records = [record for record in all_edge_records if record.id in selected_edge_ids]
         if not edge_records:
-            QMessageBox.information(self, "인식", "인식할 경계선을 먼저 선택하세요.")
-            return
+            edge_records = all_edge_records
+            if not edge_records:
+                QMessageBox.information(self, "인식", "인식할 경계선이 없습니다.")
+                return
+            if len(edge_records) >= 10:
+                result = QMessageBox.question(
+                    self,
+                    "전체 경계선 인식",
+                    f"선택된 경계선이 없습니다. 전체 경계선 {len(edge_records)}개를 인식할까요?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if result != QMessageBox.StandardButton.Yes:
+                    return
         self.save_undo_snapshot()
         gray = to_gray(self.image_bgr)
         moved = 0
@@ -3512,7 +3526,8 @@ class MainWindow(QMainWindow):
         self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
-        self._set_status(f"{moved}/{len(edge_records)}개 경계선을 선택한 형태로 명도 변화 최대 위치에 맞췄습니다.")
+        target_text = "선택한" if selected_edge_ids else "전체"
+        self._set_status(f"{moved}/{len(edge_records)}개 {target_text} 경계선을 선택한 형태로 명도 변화 최대 위치에 맞췄습니다.")
 
     def _edge_search_radius(self, record: LineRecord) -> int:
         return int(record.search_radius_px or self.search_radius_spin.value())

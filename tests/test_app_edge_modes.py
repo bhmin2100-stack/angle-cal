@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QWheelEvent
-from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem
+from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QMessageBox
 
 import angle_cal.app as app_module
 from angle_cal.app import DataExportOptions, LineRecord, MainWindow, ScalePreset, StructureTemplate, record_points, structure_template_from_dict, structure_template_to_dict
@@ -130,6 +130,46 @@ def test_recognize_only_selected_edges():
 
         assert 80 <= window.records[edges[0].id].start[0] <= 83
         assert window.records[edges[1].id].start == (45.0, 20.0)
+    finally:
+        window.close()
+
+
+def test_recognize_all_edges_when_no_edge_is_selected():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((45.0, 20.0), (45.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.recognize_edges()
+
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        assert all(80 <= edge.start[0] <= 83 for edge in edges)
+    finally:
+        window.close()
+
+
+def test_recognize_all_edges_over_ten_requires_confirmation(monkeypatch):
+    calls: list[str] = []
+
+    def _question(*args, **kwargs):
+        calls.append("question")
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(app_module.QMessageBox, "question", _question)
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        for idx in range(10):
+            window._create_edge_line((30.0 + idx, 20.0), (30.0 + idx, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.recognize_edges()
+
+        assert calls == ["question"]
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        assert edges[0].start == (30.0, 20.0)
     finally:
         window.close()
 
