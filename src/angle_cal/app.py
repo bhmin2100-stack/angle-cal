@@ -252,6 +252,7 @@ class AngleCanvas(QGraphicsView):
         self.search_range_band_items: list[QGraphicsItem] = []
         self.search_range_label_items: list[QGraphicsItem] = []
         self.detection_preview_items: list[QGraphicsItem] = []
+        self.shortcut_overlay_items: list[QGraphicsItem] = []
         self.point_handle_items: list[PointHandleItem] = []
         self.angle_groups: dict[str, list[QGraphicsItem]] = {}
         self.angle_group_parents: dict[str, str] = {}
@@ -280,6 +281,7 @@ class AngleCanvas(QGraphicsView):
         self._updating_from_point_handle = False
         self._space_edge_previous_tool: Optional[str] = None
         self._additive_rubberband_items: Optional[set[QGraphicsItem]] = None
+        self._shortcut_overlay_visible = False
         self.scene.selectionChanged.connect(self._expand_angle_group_selection)
         self.scene.selectionChanged.connect(self.refresh_point_handles)
 
@@ -329,6 +331,7 @@ class AngleCanvas(QGraphicsView):
         self.search_range_band_items.clear()
         self.search_range_label_items.clear()
         self.detection_preview_items.clear()
+        self.shortcut_overlay_items.clear()
         self.point_handle_items.clear()
         self.angle_groups.clear()
         self.angle_group_parents.clear()
@@ -579,6 +582,49 @@ class AngleCanvas(QGraphicsView):
         for item in self.detection_preview_items:
             self.scene.removeItem(item)
         self.detection_preview_items.clear()
+
+    def show_shortcut_overlay(self) -> None:
+        self.clear_shortcut_overlay()
+        visible_rect = self.mapToScene(self.viewport().rect()).boundingRect()
+        width = 430.0
+        left = visible_rect.center().x() - width / 2.0
+        top = visible_rect.top() + max(18.0, visible_rect.height() * 0.08)
+        text = QGraphicsTextItem()
+        text.setHtml(
+            "<div style='color:white; font-size:10pt; line-height:1.35;'>"
+            "<b>단축키</b><br>"
+            "Q + 드래그: 경계선만 선택<br>"
+            "W + 드래그: 각도 호만 선택<br>"
+            "E + 드래그: 각도 숫자만 선택<br>"
+            "Ctrl + 드래그: 선택 추가 / 화면 이동<br>"
+            "Space 누르고 있기: 경계선 그리기<br>"
+            "Ctrl + 휠: 확대/축소<br>"
+            "방향키: 선택 개체 이동, Ctrl + 방향키: 1px 이동<br>"
+            "Delete: 선택 삭제, Ctrl+Z: 되돌리기"
+            "</div>"
+        )
+        text.setTextWidth(width - 28.0)
+        text_rect = text.boundingRect()
+        panel = QGraphicsRectItem(0, 0, width, text_rect.height() + 24.0)
+        panel.setBrush(QBrush(QColor(18, 24, 32, 205)))
+        panel.setPen(QPen(QColor(255, 255, 255, 95), 1.0))
+        panel.setZValue(95)
+        text.setZValue(96)
+        panel.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        text.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        panel.setPos(left, top)
+        text.setPos(left + 14.0, top + 10.0)
+        self.scene.addItem(panel)
+        self.scene.addItem(text)
+        self.shortcut_overlay_items.extend([panel, text])
+        self._shortcut_overlay_visible = True
+
+    def clear_shortcut_overlay(self) -> None:
+        for item in self.shortcut_overlay_items:
+            if item.scene() is self.scene:
+                self.scene.removeItem(item)
+        self.shortcut_overlay_items.clear()
+        self._shortcut_overlay_visible = False
 
     def update_search_range_overlay(self, records: list[LineRecord]) -> None:
         for item in self.search_range_band_items + self.search_range_label_items:
@@ -1133,6 +1179,14 @@ class AngleCanvas(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802
+        if (
+            not event.isAutoRepeat()
+            and event.key() == Qt.Key.Key_Tab
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            self.show_shortcut_overlay()
+            event.accept()
+            return
         if not event.isAutoRepeat() and event.key() == Qt.Key.Key_Space:
             if self.current_tool != "edge":
                 self._space_edge_previous_tool = self.current_tool
@@ -1171,6 +1225,10 @@ class AngleCanvas(QGraphicsView):
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):  # noqa: N802
+        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Control):
+            self.clear_shortcut_overlay()
+            event.accept()
+            return
         if not event.isAutoRepeat() and event.key() == Qt.Key.Key_Space:
             previous_tool = self._space_edge_previous_tool
             self._space_edge_previous_tool = None

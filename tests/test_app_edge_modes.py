@@ -371,6 +371,26 @@ def test_space_temporarily_switches_to_edge_tool():
         window.close()
 
 
+def test_ctrl_tab_shows_shortcut_overlay_only_while_held():
+    window = _window_with_edge_image()
+    try:
+        press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Tab, Qt.KeyboardModifier.ControlModifier)
+        window.canvas.keyPressEvent(press)
+
+        assert window.canvas._shortcut_overlay_visible is True
+        assert len(window.canvas.shortcut_overlay_items) == 2
+        text = next(item for item in window.canvas.shortcut_overlay_items if isinstance(item, QGraphicsTextItem))
+        assert "Q + 드래그" in text.toPlainText()
+
+        release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Tab, Qt.KeyboardModifier.ControlModifier)
+        window.canvas.keyReleaseEvent(release)
+
+        assert window.canvas._shortcut_overlay_visible is False
+        assert len(window.canvas.shortcut_overlay_items) == 0
+    finally:
+        window.close()
+
+
 def test_copy_paste_duplicates_parent_edge_without_angle_children():
     window = _window_with_edge_image()
     try:
