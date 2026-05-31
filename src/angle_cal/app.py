@@ -1814,7 +1814,7 @@ class AngleDisplaySettingsDialog(QDialog):
 
         self.sector_combo = QComboBox()
         for idx in range(4):
-            self.sector_combo.addItem(f"각도 위치 {idx + 1}", idx)
+            self.sector_combo.addItem(f"{idx + 1}사분면", idx)
         self.sector_combo.setCurrentIndex(max(0, min(3, int(sector))))
 
         self.arc_radius_spin = QDoubleSpinBox()
