@@ -351,6 +351,24 @@ def test_search_range_visibility_only_draws_band_without_number_label():
         window.close()
 
 
+def test_annotation_visual_sizes_use_screen_units():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        line_item = window.canvas.line_items[edge.id]
+
+        assert line_item.pen().isCosmetic()
+
+        line_item.setSelected(True)
+        window.canvas.refresh_point_handles()
+        assert window.canvas.point_handle_items
+        assert window.canvas.point_handle_items[0].flags() & QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations
+    finally:
+        window.close()
+
+
 def test_space_temporarily_switches_to_edge_tool():
     window = _window_with_edge_image()
     try:

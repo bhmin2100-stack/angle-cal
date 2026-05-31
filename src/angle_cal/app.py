@@ -135,6 +135,12 @@ ANGLE_TYPE_KEY = 5
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 
+def cosmetic_pen(color: QColor | str, width: float = 1.0, style: Qt.PenStyle = Qt.PenStyle.SolidLine) -> QPen:
+    pen = QPen(QColor(color), width, style)
+    pen.setCosmetic(True)
+    return pen
+
+
 class AnnotationLineItem(QGraphicsLineItem):
     def __init__(self, record: LineRecord, pen: QPen):
         super().__init__(record.start[0], record.start[1], record.end[0], record.end[1])
@@ -168,11 +174,12 @@ class PointHandleItem(QGraphicsEllipseItem):
         self.canvas = canvas
         self.setPos(pos[0], pos[1])
         self.setBrush(QBrush(QColor("#ffffff")))
-        self.setPen(QPen(QColor("#ffb703"), 1.2))
+        self.setPen(cosmetic_pen(QColor("#ffb703"), 1.2))
         self.setZValue(55)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     def itemChange(self, change, value):  # noqa: N802
@@ -384,7 +391,7 @@ class AngleCanvas(QGraphicsView):
                 continue
             rect = rect.adjusted(-3.0, -3.0, 3.0, 3.0)
             box = QGraphicsRectItem(rect)
-            box.setPen(QPen(QColor(255, 214, 102, 175), 0.8, Qt.PenStyle.DashLine))
+            box.setPen(cosmetic_pen(QColor(255, 214, 102, 175), 0.8, Qt.PenStyle.DashLine))
             box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
             box.setZValue(9)
             box.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
@@ -533,7 +540,7 @@ class AngleCanvas(QGraphicsView):
             )
         )
         panel.setBrush(QBrush(QColor(18, 24, 28, 185)))
-        panel.setPen(QPen(QColor(76, 201, 240, 190), 1.0))
+        panel.setPen(cosmetic_pen(QColor(76, 201, 240, 190), 1.0))
         panel.setZValue(60)
         self.scene.addItem(panel)
         self.detection_preview_items.append(panel)
@@ -553,7 +560,7 @@ class AngleCanvas(QGraphicsView):
             )
         )
         band.setBrush(QBrush(QColor(0, 220, 110, 54)))
-        band.setPen(QPen(QColor(0, 220, 110, 210), 1.0, Qt.PenStyle.DashLine))
+        band.setPen(cosmetic_pen(QColor(0, 220, 110, 210), 1.0, Qt.PenStyle.DashLine))
         band.setZValue(61)
         self.scene.addItem(band)
         self.detection_preview_items.append(band)
@@ -563,7 +570,7 @@ class AngleCanvas(QGraphicsView):
         for idx in range(segment_count + 1):
             x = line_start[0] + idx * segment_width
             tick = QGraphicsLineItem(x, center_y - radius - 4.0, x, center_y + radius + 4.0)
-            tick.setPen(QPen(QColor("#ffd166"), 1.0))
+            tick.setPen(cosmetic_pen(QColor("#ffd166"), 1.0))
             tick.setZValue(62)
             self.scene.addItem(tick)
             self.detection_preview_items.append(tick)
@@ -582,6 +589,14 @@ class AngleCanvas(QGraphicsView):
         for item in self.detection_preview_items:
             self.scene.removeItem(item)
         self.detection_preview_items.clear()
+
+    def screen_to_scene_length(self, pixels: float) -> float:
+        scale_x = abs(self.transform().m11())
+        scale_y = abs(self.transform().m22())
+        scale = (scale_x + scale_y) / 2.0
+        if scale <= 0:
+            return float(pixels)
+        return float(pixels) / scale
 
     def show_shortcut_overlay(self) -> None:
         self.clear_shortcut_overlay()
@@ -607,7 +622,7 @@ class AngleCanvas(QGraphicsView):
         text_rect = text.boundingRect()
         panel = QGraphicsRectItem(0, 0, width, text_rect.height() + 24.0)
         panel.setBrush(QBrush(QColor(18, 24, 32, 205)))
-        panel.setPen(QPen(QColor(255, 255, 255, 95), 1.0))
+        panel.setPen(cosmetic_pen(QColor(255, 255, 255, 95), 1.0))
         panel.setZValue(95)
         text.setZValue(96)
         panel.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
@@ -646,7 +661,7 @@ class AngleCanvas(QGraphicsView):
             if self.show_search_range_band and record.show_range:
                 for polygon in polygons:
                     item = QGraphicsPolygonItem(polygon)
-                    item.setPen(QPen(QColor(0, 220, 110, 220), 1.2, Qt.PenStyle.DashLine))
+                    item.setPen(cosmetic_pen(QColor(0, 220, 110, 220), 1.2, Qt.PenStyle.DashLine))
                     item.setBrush(QBrush(QColor(0, 220, 110, 46)))
                     item.setZValue(3)
                     item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
@@ -712,6 +727,7 @@ class AngleCanvas(QGraphicsView):
             label.setZValue(28)
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
             group_id = f"L_{record.id}"
             label.setData(LENGTH_GROUP_KEY, group_id)
             label.setData(LENGTH_PARENT_KEY, record.id)
@@ -723,7 +739,7 @@ class AngleCanvas(QGraphicsView):
     def add_cd_measurement(self, start: Point, end: Point, text: str, label_center: Point) -> list[QGraphicsItem]:
         items: list[QGraphicsItem] = []
         line = QGraphicsLineItem(start[0], start[1], end[0], end[1])
-        line.setPen(QPen(QColor("#8ecae6"), 2.0))
+        line.setPen(cosmetic_pen(QColor("#8ecae6"), 2.0))
         line.setZValue(18)
         line.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
         self.scene.addItem(line)
@@ -740,6 +756,7 @@ class AngleCanvas(QGraphicsView):
         label.setPos(label_center[0] - label_rect.width() / 2.0, label_center[1] - label_rect.height() / 2.0)
         label.setZValue(31)
         label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.scene.addItem(label)
         self.cd_items.append(label)
         items.append(label)
@@ -788,7 +805,7 @@ class AngleCanvas(QGraphicsView):
     ) -> QGraphicsPathItem:
         path = self._arc_path(center, angle_start, angle_end, radius)
         item = QGraphicsPathItem(path)
-        item.setPen(QPen(QColor("#ffd166"), 2.0))
+        item.setPen(cosmetic_pen(QColor("#ffd166"), 2.0))
         item.setZValue(20)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -819,6 +836,7 @@ class AngleCanvas(QGraphicsView):
         item.setZValue(30)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         item.setData(ANGLE_GROUP_KEY, group_id)
         item.setData(ANGLE_MEASUREMENT_KEY, measurement_id)
         item.setData(ANGLE_TYPE_KEY, angle_type)
@@ -1055,7 +1073,7 @@ class AngleCanvas(QGraphicsView):
                 self._drawing_start.x(),
                 self._drawing_start.y(),
             )
-            self._temp_line.setPen(QPen(QColor("#4cc9f0"), 2.0, Qt.PenStyle.DashLine))
+            self._temp_line.setPen(cosmetic_pen(QColor("#4cc9f0"), 2.0, Qt.PenStyle.DashLine))
             self._temp_line.setZValue(40)
             self.scene.addItem(self._temp_line)
             event.accept()
@@ -1251,7 +1269,7 @@ class AngleCanvas(QGraphicsView):
         self._curve_points.append(point)
         if self._temp_curve is None:
             self._temp_curve = QGraphicsPathItem()
-            self._temp_curve.setPen(QPen(QColor("#4cc9f0"), 2.0, Qt.PenStyle.DashLine))
+            self._temp_curve.setPen(cosmetic_pen(QColor("#4cc9f0"), 2.0, Qt.PenStyle.DashLine))
             self._temp_curve.setZValue(40)
             self.scene.addItem(self._temp_curve)
         self._update_curve_preview()
@@ -1355,7 +1373,7 @@ class AngleCanvas(QGraphicsView):
         color = QColor(record.stroke_color or colors.get(record.kind, "#ffffff"))
         if record.kind == "reference" and record.stroke_color is None:
             color.setAlpha(128)
-        pen = QPen(color, width)
+        pen = cosmetic_pen(color, width)
         if record.kind == "guide":
             pen.setStyle(Qt.PenStyle.DotLine)
         return pen
@@ -3879,6 +3897,7 @@ class MainWindow(QMainWindow):
         guides = [record for record in self.records.values() if record.kind == "guide"]
 
         mode = self.cd_segment_combo.currentData()
+        cd_label_gap = self.canvas.screen_to_scene_length(self.cd_label_gap)
         created = 0
         for guide in guides:
             guide_line = (guide.start, guide.end)
@@ -3905,7 +3924,7 @@ class MainWindow(QMainWindow):
                 if length_px <= 0:
                     continue
                 midpoint = ((point_a[0] + point_b[0]) / 2.0, (point_a[1] + point_b[1]) / 2.0)
-                label_pos = cd_label_center(point_a, point_b, self.cd_label_side, self.cd_label_gap)
+                label_pos = cd_label_center(point_a, point_b, self.cd_label_side, cd_label_gap)
                 if self.nm_per_px:
                     text = f"{length_px * self.nm_per_px:.3g} nm"
                     cd_length_nm = length_px * self.nm_per_px
@@ -4153,7 +4172,7 @@ class MainWindow(QMainWindow):
             edge_angle = record_angle(edge)
             angle = acute_angle_difference(edge_angle, reference_angle)
             midpoint = ((edge.start[0] + edge.end[0]) / 2.0, (edge.start[1] + edge.end[1]) / 2.0)
-            label_pos = self._label_position(midpoint, edge_angle, reference_angle, 34.0)
+            label_pos = self._label_position(midpoint, edge_angle, reference_angle, self.canvas.screen_to_scene_length(34.0))
             measurement_id = f"{edge.id}_to_{reference_name}"
             should_draw_angle = edge.show_line_angle and measurement_id not in self.hidden_angle_measurements
             if visible_measurement_ids is not None:
@@ -4190,13 +4209,15 @@ class MainWindow(QMainWindow):
                 crosses = polyline_intersections(edge, guide_line)
                 for cross_idx, (cross, edge_angle) in enumerate(crosses, start=1):
                     arc_start, arc_end, angle = angle_sector_geometry(edge_angle, guide_angle, edge.angle_sector)
+                    arc_radius = self.canvas.screen_to_scene_length(edge.angle_arc_radius)
+                    label_gap = self.canvas.screen_to_scene_length(edge.angle_label_gap)
                     label_pos = angle_label_position_for_sector(
                         cross,
                         arc_start,
                         angle,
-                        edge.angle_arc_radius,
+                        arc_radius,
                         edge.angle_label_side,
-                        edge.angle_label_gap,
+                        label_gap,
                     )
                     length_px = record_length(edge)
                     suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
@@ -4213,7 +4234,7 @@ class MainWindow(QMainWindow):
                             center=cross,
                             angle_a=arc_start,
                             angle_b=arc_end,
-                            radius=edge.angle_arc_radius,
+                            radius=arc_radius,
                             parent_record_id=edge.id,
                             measurement_id=measurement_id,
                             angle_type="intersection",
