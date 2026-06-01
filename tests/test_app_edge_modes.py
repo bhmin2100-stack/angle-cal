@@ -272,6 +272,33 @@ def test_split_search_range_wheel_adjusts_left_and_shift_adjusts_right():
         window.close()
 
 
+def test_segment_size_change_preserves_mixed_split_search_ranges():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((45.0, 20.0), (45.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        edges[0].search_radius_split = True
+        edges[0].search_radius_left_px = 12
+        edges[0].search_radius_right_px = 28
+        edges[1].search_radius_split = True
+        edges[1].search_radius_left_px = 20
+        edges[1].search_radius_right_px = 44
+        for edge in edges:
+            window.canvas.line_items[edge.id].setSelected(True)
+
+        window.curve_sensitivity_spin.setValue(13)
+
+        assert window.records[edges[0].id].search_radius_left_px == 12
+        assert window.records[edges[0].id].search_radius_right_px == 28
+        assert window.records[edges[1].id].search_radius_left_px == 20
+        assert window.records[edges[1].id].search_radius_right_px == 44
+        assert all(window.records[edge.id].segment_size_px == 13 for edge in edges)
+    finally:
+        window.close()
+
+
 def test_mouse_wheel_adjusts_search_range_for_selected_edge():
     window = _window_with_edge_image()
     try:

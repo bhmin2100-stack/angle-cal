@@ -5279,18 +5279,23 @@ class MainWindow(QMainWindow):
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self.search_radius_spin.setValue(dialog.radius_spin.value())
-        self.split_search_range_checkbox.setChecked(dialog.split_checkbox.isChecked())
-        self.search_radius_left_spin.setValue(dialog.left_radius_spin.value())
-        self.search_radius_right_spin.setValue(dialog.right_radius_spin.value())
-        self.curve_sensitivity_spin.setValue(dialog.sensitivity_spin.value())
-        self.show_search_range_checkbox.setChecked(dialog.overlay_checkbox.isChecked())
-        self._edge_detection_settings_changed()
+        self._updating_detection_controls = True
+        try:
+            self.search_radius_spin.setValue(dialog.radius_spin.value())
+            self.split_search_range_checkbox.setChecked(dialog.split_checkbox.isChecked())
+            self.search_radius_left_spin.setValue(dialog.left_radius_spin.value())
+            self.search_radius_right_spin.setValue(dialog.right_radius_spin.value())
+            self.curve_sensitivity_spin.setValue(dialog.sensitivity_spin.value())
+            self.show_search_range_checkbox.setChecked(dialog.overlay_checkbox.isChecked())
+        finally:
+            self._updating_detection_controls = False
+        self._edge_detection_settings_changed(force_all=True)
 
-    def _edge_detection_settings_changed(self) -> None:
+    def _edge_detection_settings_changed(self, *args, force_all: bool = False) -> None:
         if self._updating_detection_controls:
             return
         self._update_split_search_controls_enabled()
+        sender = None if force_all else self.sender()
         selected_edges = self._selected_edge_records()
         if selected_edges:
             radius = self.search_radius_spin.value()
@@ -5298,14 +5303,29 @@ class MainWindow(QMainWindow):
             left_radius = self.search_radius_left_spin.value()
             right_radius = self.search_radius_right_spin.value()
             segment_size_px = self.curve_sensitivity_spin.value()
+            apply_radius = force_all or sender is self.search_radius_spin
+            apply_split = force_all or sender is self.split_search_range_checkbox
+            apply_left = force_all or sender is self.search_radius_left_spin
+            apply_right = force_all or sender is self.search_radius_right_spin
+            apply_segment = force_all or sender is self.curve_sensitivity_spin
             for edge in selected_edges:
-                edge.search_radius_px = radius
-                edge.search_radius_split = split
-                edge.search_radius_left_px = left_radius
-                edge.search_radius_right_px = right_radius
-                edge.segment_size_px = segment_size_px
+                if apply_radius:
+                    edge.search_radius_px = radius
+                if apply_split:
+                    edge.search_radius_split = split
+                    if split:
+                        if edge.search_radius_left_px is None:
+                            edge.search_radius_left_px = left_radius
+                        if edge.search_radius_right_px is None:
+                            edge.search_radius_right_px = right_radius
+                if apply_left:
+                    edge.search_radius_left_px = left_radius
+                if apply_right:
+                    edge.search_radius_right_px = right_radius
+                if apply_segment:
+                    edge.segment_size_px = segment_size_px
         self._update_search_range_overlay()
-        if self.sender() in {
+        if sender in {
             self.search_radius_spin,
             self.split_search_range_checkbox,
             self.search_radius_left_spin,
