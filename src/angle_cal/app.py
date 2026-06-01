@@ -238,6 +238,7 @@ class AngleCanvas(QGraphicsView):
     edit_started = Signal()
     temporary_edge_tool_changed = Signal(bool)
     guide_context_requested = Signal(str, QPoint)
+    recognize_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -1325,6 +1326,10 @@ class AngleCanvas(QGraphicsView):
                 self.cancel_interaction()
                 event.accept()
                 return
+        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.recognize_requested.emit()
+            event.accept()
+            return
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):  # noqa: N802
@@ -2161,6 +2166,7 @@ class MainWindow(QMainWindow):
         self.canvas.edit_started.connect(self.save_undo_snapshot)
         self.canvas.temporary_edge_tool_changed.connect(self.set_temporary_edge_tool)
         self.canvas.guide_context_requested.connect(self.open_guide_context_menu)
+        self.canvas.recognize_requested.connect(self.recognize_edges)
         self.detection_preview_timer = QTimer(self)
         self.detection_preview_timer.setSingleShot(True)
         self.detection_preview_timer.timeout.connect(self.canvas.clear_detection_preview)

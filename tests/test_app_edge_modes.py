@@ -150,6 +150,42 @@ def test_recognize_all_edges_when_no_edge_is_selected():
         window.close()
 
 
+def test_enter_recognizes_selected_edge_only():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((45.0, 20.0), (45.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.line_items[edges[0].id].setSelected(True)
+
+        press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
+        window.canvas.keyPressEvent(press)
+
+        assert 80 <= window.records[edges[0].id].start[0] <= 83
+        assert window.records[edges[1].id].start == (45.0, 20.0)
+    finally:
+        window.close()
+
+
+def test_enter_without_selection_recognizes_all_edges():
+    window = _window_with_edge_image()
+    try:
+        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((75.0, 20.0), (75.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+
+        press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
+        window.canvas.keyPressEvent(press)
+
+        assert all(80 <= window.records[edge.id].start[0] <= 83 for edge in edges)
+    finally:
+        window.close()
+
+
 def test_recognize_all_edges_over_ten_requires_confirmation(monkeypatch):
     calls: list[str] = []
 
