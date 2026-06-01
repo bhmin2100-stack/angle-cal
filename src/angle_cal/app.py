@@ -2205,11 +2205,11 @@ class MainWindow(QMainWindow):
             "reference": True,
             "edge": True,
             "guide": True,
-            "line_angle": True,
+            "line_angle": False,
             "intersection_angle": True,
             "angle_arc": True,
             "cd": True,
-            "edge_length": True,
+            "edge_length": False,
             "range": True,
             "point_handle": True,
         }

@@ -379,6 +379,7 @@ def test_deleted_angle_annotation_stays_hidden_until_manual_recalculate():
         window._create_reference_line((10.0, 10.0), (100.0, 10.0))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         window.canvas.redraw_lines(list(window.records.values()))
+        window.set_visibility("line_angle", True)
 
         window.calculate_angles(reset_hidden=True)
         assert len(window.canvas.angle_items) == 1
@@ -1013,6 +1014,7 @@ def test_edge_length_overlay_uses_calibration_and_visibility():
         window._create_edge_line((20.0, 60.0), (120.0, 60.0))
         window.nm_per_px = 2.0
         window.canvas.redraw_lines(list(window.records.values()))
+        window.set_visibility("edge_length", True)
 
         window._update_edge_length_overlay()
 
@@ -1034,6 +1036,7 @@ def test_edge_length_label_is_deletable_child_object():
         window._create_edge_line((20.0, 60.0), (120.0, 60.0))
         edge = next(record for record in window.records.values() if record.kind == "edge")
         window.canvas.redraw_lines(list(window.records.values()))
+        window.set_visibility("edge_length", True)
         window._update_edge_length_overlay()
 
         assert len(window.canvas.edge_length_items) == 1
@@ -1057,6 +1060,7 @@ def test_edge_length_label_position_can_be_moved_and_persists():
         window._create_edge_line((20.0, 60.0), (120.0, 60.0))
         edge = next(record for record in window.records.values() if record.kind == "edge")
         window.canvas.redraw_lines(list(window.records.values()))
+        window.set_visibility("edge_length", True)
         window._update_edge_length_overlay()
 
         label = window.canvas.edge_length_items[0]
@@ -1335,6 +1339,17 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         assert window.tool_buttons["edge"].text() == "경계선"
         assert window.edge_mode_combo.currentData() == "line"
         assert window.structure_combo.itemText(0) == "구조 선택"
+    finally:
+        window.close()
+
+
+def test_line_angle_and_edge_length_visibility_are_off_by_default():
+    window = _window_with_edge_image()
+    try:
+        assert window.visibility["line_angle"] is False
+        assert window.visibility["edge_length"] is False
+        assert window.visibility_checkboxes["line_angle"].isChecked() is False
+        assert window.visibility_checkboxes["edge_length"].isChecked() is False
     finally:
         window.close()
 
@@ -1775,6 +1790,7 @@ def test_undo_restores_angle_label_move():
         window._create_reference_line((10.0, 10.0), (100.0, 10.0))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         window.canvas.redraw_lines(list(window.records.values()))
+        window.set_visibility("line_angle", True)
         window.calculate_angles(reset_hidden=True)
         label = next(item for item in window.canvas.angle_items if item.__class__.__name__ == "QGraphicsTextItem")
         original_pos = label.pos()
