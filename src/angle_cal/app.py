@@ -680,6 +680,7 @@ class AngleCanvas(QGraphicsView):
             "Ctrl + 드래그: 선택 추가 / 화면 이동<br>"
             "Space 누르고 있기: 경계선 그리기<br>"
             "Ctrl + 휠: 확대/축소<br>"
+            "Ctrl+Shift+C: 서식 복사, Ctrl+V: 서식/개체 붙여넣기<br>"
             "방향키: 선택 개체 이동, Ctrl + 방향키: 1px 이동<br>"
             "Delete: 선택 삭제, Ctrl+Z: 되돌리기"
             "</div>"
@@ -2151,6 +2152,8 @@ class MainWindow(QMainWindow):
         self.scale_presets: list[ScalePreset] = []
         self.structure_templates: list[StructureTemplate] = []
         self.record_clipboard: list[LineRecord] = []
+        self.format_clipboard: Optional[dict[str, object]] = None
+        self.clipboard_mode: Optional[str] = None
         self._paste_offset_steps = 0
         self.default_angle_sector = 0
         self.default_angle_arc_radius = 28.0
@@ -2242,9 +2245,12 @@ class MainWindow(QMainWindow):
         self.paste_action = QAction("붙여넣기", self)
         self.paste_action.setShortcut(QKeySequence.StandardKey.Paste)
         self.paste_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
-        self.paste_action.triggered.connect(self.paste_parent_objects)
+        self.paste_action.triggered.connect(self.paste_from_clipboard)
+        self.copy_format_action = QAction("서식 복사", self)
+        self.copy_format_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.copy_format_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.copy_format_action.triggered.connect(self.copy_selected_format)
         self.save_structure_action = QAction("구조 저장", self)
-        self.save_structure_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
         self.save_structure_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.save_structure_action.triggered.connect(self.save_current_structure_template)
         self.paste_structure_action = QAction("구조 붙여넣기", self)
@@ -2272,6 +2278,7 @@ class MainWindow(QMainWindow):
         self.addAction(self.undo_action)
         self.addAction(self.copy_action)
         self.addAction(self.paste_action)
+        self.addAction(self.copy_format_action)
         self.addAction(self.save_structure_action)
         self.addAction(self.paste_structure_action)
         self.addAction(self.group_action)
@@ -4512,9 +4519,83 @@ class MainWindow(QMainWindow):
             self._set_status("복사할 상위개체를 선택하세요. 각도 숫자/호는 복사 대상이 아닙니다.")
             return
         self.record_clipboard = copied
+        self.clipboard_mode = "object"
         self._paste_offset_steps = 0
         QApplication.clipboard().setText(json.dumps([asdict(record) for record in copied], ensure_ascii=False))
         self._set_status(f"상위개체 {len(copied)}개를 복사했습니다. Ctrl+V로 붙여넣을 수 있습니다.")
+
+    def copy_selected_format(self) -> None:
+        self._sync_records_from_canvas()
+        for record_id in self.canvas.selected_line_ids():
+            record = self.records.get(record_id)
+            if record is None or record.kind not in {"scale", "reference", "edge", "guide"}:
+                continue
+            self.format_clipboard = {
+                "stroke_color": record.stroke_color,
+                "stroke_width": record.stroke_width,
+                "angle_sector": record.angle_sector,
+                "angle_arc_radius": record.angle_arc_radius,
+                "angle_label_side": record.angle_label_side,
+                "angle_label_gap": record.angle_label_gap,
+                "angle_label_font_size": record.angle_label_font_size,
+                "show_line_angle": record.show_line_angle,
+                "show_intersection_angle": record.show_intersection_angle,
+                "show_angle_arc": record.show_angle_arc,
+                "show_edge_length": record.show_edge_length,
+                "show_range": record.show_range,
+                "show_range_label": record.show_range_label,
+            }
+            self.clipboard_mode = "format"
+            self._set_status("선택 개체의 서식을 복사했습니다. 적용할 개체를 선택하고 Ctrl+V를 누르세요.")
+            return
+        self._set_status("서식을 복사할 선 개체를 선택하세요.")
+
+    def paste_from_clipboard(self) -> None:
+        if self.clipboard_mode == "format":
+            self.paste_selected_format()
+            return
+        self.paste_parent_objects()
+
+    def paste_selected_format(self) -> None:
+        if not self.format_clipboard:
+            self._set_status("붙여넣을 서식이 없습니다. 먼저 Ctrl+Shift+C로 서식을 복사하세요.")
+            return
+        target_ids = [
+            record_id
+            for record_id in self.canvas.selected_line_ids()
+            if record_id in self.records and self.records[record_id].kind in {"scale", "reference", "edge", "guide"}
+        ]
+        if not target_ids:
+            self._set_status("서식을 붙여넣을 선 개체를 선택하세요.")
+            return
+        self.save_undo_snapshot()
+        self._sync_records_from_canvas()
+        for record_id in target_ids:
+            record = self.records[record_id]
+            record.stroke_color = self.format_clipboard.get("stroke_color")  # type: ignore[assignment]
+            stroke_width = self.format_clipboard.get("stroke_width")
+            record.stroke_width = float(stroke_width) if stroke_width is not None else None
+            if record.kind == "edge":
+                record.angle_sector = int(self.format_clipboard.get("angle_sector", record.angle_sector))
+                record.angle_arc_radius = float(self.format_clipboard.get("angle_arc_radius", record.angle_arc_radius))
+                record.angle_label_side = normalize_angle_label_side(str(self.format_clipboard.get("angle_label_side", record.angle_label_side)))
+                record.angle_label_gap = float(self.format_clipboard.get("angle_label_gap", record.angle_label_gap))
+                record.angle_label_font_size = float(self.format_clipboard.get("angle_label_font_size", record.angle_label_font_size))
+                record.show_line_angle = bool(self.format_clipboard.get("show_line_angle", record.show_line_angle))
+                record.show_intersection_angle = bool(self.format_clipboard.get("show_intersection_angle", record.show_intersection_angle))
+                record.show_angle_arc = bool(self.format_clipboard.get("show_angle_arc", record.show_angle_arc))
+                record.show_edge_length = bool(self.format_clipboard.get("show_edge_length", record.show_edge_length))
+                record.show_range = bool(self.format_clipboard.get("show_range", record.show_range))
+                record.show_range_label = bool(self.format_clipboard.get("show_range_label", record.show_range_label))
+            item = self.canvas.line_items.get(record_id)
+            if item is not None:
+                item.setPen(self.canvas._pen_for_record(record))
+        self.canvas.update_group_boxes(list(self.records.values()))
+        self.calculate_angles(reset_hidden=False)
+        self._update_edge_length_overlay()
+        self._update_search_range_overlay()
+        self._apply_visibility()
+        self._set_status(f"선택 개체 {len(target_ids)}개에 서식을 붙여넣었습니다.")
 
     def paste_parent_objects(self) -> None:
         if self.image_bgr is None:

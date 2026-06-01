@@ -1246,6 +1246,37 @@ def test_style_toolbar_applies_to_selected_line_objects_and_new_defaults():
         window.close()
 
 
+def test_copy_format_then_ctrl_v_pastes_style_to_selected_objects():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((40.0, 20.0), (40.0, 100.0))
+        window._create_edge_line((80.0, 20.0), (80.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        source, target = edges[0], edges[1]
+        source.stroke_color = "#ffd166"
+        source.stroke_width = 4.0
+        source.angle_sector = 2
+        source.angle_label_font_size = 18.0
+        target.stroke_color = "#4cc9f0"
+        target.stroke_width = 2.0
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.canvas.line_items[source.id].setSelected(True)
+        window.copy_selected_format()
+        window.canvas.scene.clearSelection()
+        window.canvas.line_items[target.id].setSelected(True)
+        window.paste_from_clipboard()
+
+        assert window.records[target.id].stroke_color == "#ffd166"
+        assert window.records[target.id].stroke_width == 4.0
+        assert window.records[target.id].angle_sector == 2
+        assert window.records[target.id].angle_label_font_size == 18.0
+        assert window.canvas.line_items[target.id].pen().widthF() == 4.0
+    finally:
+        window.close()
+
+
 def test_ctrl_pan_restore_returns_to_edge_cursor():
     window = _window_with_edge_image()
     try:
