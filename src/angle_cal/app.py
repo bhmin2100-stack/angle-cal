@@ -2136,6 +2136,7 @@ class MainWindow(QMainWindow):
         self._updating_object_visibility_controls = False
         self._updating_detection_controls = False
         self._expanding_object_group_selection = False
+        self.last_edge_record_id: Optional[str] = None
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -3561,6 +3562,7 @@ class MainWindow(QMainWindow):
             stroke_width=self.default_stroke_width,
         )
         self.records[record.id] = record
+        self.last_edge_record_id = record.id
         self._set_status(f"{'이어진 직선' if edge_mode == 'polyline' else '직선'} 경계선을 추가했습니다.")
 
     def split_edge_segment_for_selection(self, record_id: str, segment_index: int) -> None:
@@ -4707,8 +4709,41 @@ class MainWindow(QMainWindow):
         delta = 1 if steps > 0 else -1
         new_value = self.search_radius_spin.value() + delta * abs(steps)
         new_value = max(self.search_radius_spin.minimum(), min(self.search_radius_spin.maximum(), new_value))
-        if new_value != self.search_radius_spin.value():
+        if new_value == self.search_radius_spin.value():
+            return
+
+        selected_edges = self._selected_edge_records()
+        target_edges = selected_edges or self._last_edge_records()
+
+        self._updating_detection_controls = True
+        try:
             self.search_radius_spin.setValue(new_value)
+        finally:
+            self._updating_detection_controls = False
+
+        for edge in target_edges:
+            edge.search_radius_px = new_value
+        self._update_search_range_overlay()
+        self._show_detection_preview()
+
+        if selected_edges:
+            target_text = f"선택 경계선 {len(selected_edges)}개"
+        elif target_edges:
+            target_text = "마지막 경계선"
+        else:
+            target_text = "기본값"
+        self._set_status(f"{target_text} 경계인식 범위: 양쪽 {new_value}px")
+
+    def _last_edge_records(self) -> list[LineRecord]:
+        if self.last_edge_record_id in self.records:
+            record = self.records[self.last_edge_record_id]
+            if record.kind == "edge":
+                return [record]
+        for record in reversed(list(self.records.values())):
+            if record.kind == "edge":
+                self.last_edge_record_id = record.id
+                return [record]
+        return []
 
     def _update_search_range_overlay(self) -> None:
         self._sync_records_from_canvas()

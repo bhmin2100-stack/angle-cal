@@ -222,6 +222,38 @@ def test_mouse_wheel_adjusts_search_range_for_selected_edge():
         window.close()
 
 
+def test_mouse_wheel_adjusts_last_edge_and_next_edge_default_when_none_selected():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((45.0, 20.0), (45.0, 100.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        assert edges[0].search_radius_px == 35
+        assert edges[1].search_radius_px == 35
+
+        event = QWheelEvent(
+            QPointF(10.0, 10.0),
+            QPointF(10.0, 10.0),
+            QPoint(0, 0),
+            QPoint(0, 120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        window.canvas.wheelEvent(event)
+
+        assert window.records[edges[0].id].search_radius_px == 35
+        assert window.records[edges[1].id].search_radius_px == 36
+        assert window.search_radius_spin.value() == 36
+
+        window._create_edge_line((30.0, 20.0), (30.0, 100.0))
+        new_edge = [record for record in window.records.values() if record.kind == "edge"][-1]
+        assert new_edge.search_radius_px == 36
+    finally:
+        window.close()
+
+
 def test_recognize_converts_polyline_mode_to_connected_segments():
     window = _window_with_edge_image()
     try:
