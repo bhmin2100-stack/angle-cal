@@ -2227,7 +2227,7 @@ class MainWindow(QMainWindow):
         self.canvas.recognize_requested.connect(self.recognize_edges)
         self.detection_preview_timer = QTimer(self)
         self.detection_preview_timer.setSingleShot(True)
-        self.detection_preview_timer.timeout.connect(self.canvas.clear_detection_preview)
+        self.detection_preview_timer.timeout.connect(self.clear_detection_preview)
 
         self._build_actions()
         self._build_toolbar()
@@ -2661,10 +2661,22 @@ class MainWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         self.calibration_label = QLabel("Calibration: -")
+        self.detection_preview_label = QLabel("경계인식 범위: -")
+        self.detection_preview_label.setWordWrap(True)
+        self.detection_preview_label.setStyleSheet(
+            "QLabel {"
+            "background: rgba(0, 170, 90, 35);"
+            "border: 1px solid rgba(0, 140, 80, 90);"
+            "border-radius: 4px;"
+            "padding: 6px;"
+            "color: #1f2d25;"
+            "}"
+        )
         self.measurement_table = QTableWidget(0, 5)
         self.measurement_table.setHorizontalHeaderLabels(["ID", "종류", "길이(px)", "길이(nm)", "각도"])
         self.measurement_table.verticalHeader().setVisible(False)
         layout.addWidget(self.calibration_label)
+        layout.addWidget(self.detection_preview_label)
         layout.addWidget(self.measurement_table)
 
         controls = QHBoxLayout()
@@ -2677,6 +2689,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(controls)
         dock.setWidget(container)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.measurements_dock = dock
+        dock.hide()
 
     def _build_visibility_dock(self) -> None:
         dock = QDockWidget("표시", self)
@@ -5119,12 +5133,19 @@ class MainWindow(QMainWindow):
         return f"±{radius}px / {width}px"
 
     def _show_detection_preview(self) -> None:
-        self.canvas.show_detection_preview(
-            self.search_radius_spin.value(),
-            self.curve_sensitivity_spin.value(),
-            self._search_range_label(),
+        self.canvas.clear_detection_preview()
+        segment_size_px = self.curve_sensitivity_spin.value()
+        self.detection_preview_label.setText(
+            f"경계인식 범위: {self._search_range_label()}\n세그먼트 크기: {segment_size_px}px"
         )
+        self.measurements_dock.show()
+        self.measurements_dock.raise_()
         self.detection_preview_timer.start(1300)
+
+    def clear_detection_preview(self) -> None:
+        self.canvas.clear_detection_preview()
+        if hasattr(self, "detection_preview_label"):
+            self.detection_preview_label.setText("경계인식 범위: -")
 
     def _handle_scene_changed(self) -> None:
         self._refresh_table()

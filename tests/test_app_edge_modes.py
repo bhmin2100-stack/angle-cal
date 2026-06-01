@@ -438,15 +438,30 @@ def test_search_range_overlay_gets_more_transparent_when_zoomed():
         window.close()
 
 
-def test_detection_preview_uses_screen_sized_panel_when_zoomed():
+def test_measurements_dock_is_hidden_by_default():
     window = _window_with_edge_image()
     try:
-        window.canvas.scale(4.0, 4.0)
-        window.canvas.show_detection_preview(120, 9, "120 px")
-        panel = window.canvas.detection_preview_items[0]
-        screen_width = panel.sceneBoundingRect().width() * window.canvas.transform().m11()
+        assert window.measurements_dock.isHidden()
+    finally:
+        window.close()
 
-        assert 170.0 <= screen_width <= 210.0
+
+def test_detection_preview_updates_measurements_dock_not_canvas():
+    window = _window_with_edge_image()
+    try:
+        window.search_radius_spin.setValue(120)
+        window.curve_sensitivity_spin.setValue(9)
+        window.canvas.clear_detection_preview()
+        window._show_detection_preview()
+
+        assert not window.canvas.detection_preview_items
+        assert "경계인식 범위" in window.detection_preview_label.text()
+        assert "120" in window.detection_preview_label.text()
+        assert "세그먼트 크기: 9px" in window.detection_preview_label.text()
+        assert not window.measurements_dock.isHidden()
+
+        window.clear_detection_preview()
+        assert window.detection_preview_label.text() == "경계인식 범위: -"
     finally:
         window.close()
 
