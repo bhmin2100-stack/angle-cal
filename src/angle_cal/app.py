@@ -803,7 +803,7 @@ class AngleCanvas(QGraphicsView):
             self.edge_length_groups[group_id] = [label]
             self.edge_length_group_parents[group_id] = record.id
 
-    def add_cd_measurement(self, start: Point, end: Point, text: str, label_center: Point) -> list[QGraphicsItem]:
+    def add_cd_measurement(self, start: Point, end: Point, text: str, label_center: Point, font_size: float = 10.0) -> list[QGraphicsItem]:
         items: list[QGraphicsItem] = []
         line = QGraphicsLineItem(start[0], start[1], end[0], end[1])
         line.setPen(cosmetic_pen(QColor("#8ecae6"), 2.0))
@@ -816,7 +816,7 @@ class AngleCanvas(QGraphicsView):
         label = QGraphicsTextItem()
         label.setHtml(
             "<div style='background-color:rgba(3,37,65,185);"
-            "color:#d9f6ff;padding:2px 5px;border-radius:3px;'>"
+            f"color:#d9f6ff;font-size:{float(font_size):.1f}pt;padding:2px 5px;border-radius:3px;'>"
             f"{text}</div>"
         )
         label_rect = label.boundingRect()
@@ -2056,6 +2056,7 @@ class CdDisplaySettingsDialog(QDialog):
         self,
         label_side: str,
         label_gap: float,
+        label_font_size: float,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -2073,10 +2074,17 @@ class CdDisplaySettingsDialog(QDialog):
         self.label_gap_spin.setValue(float(label_gap))
         self.label_gap_spin.setSuffix(" px")
 
+        self.label_font_size_spin = QDoubleSpinBox()
+        self.label_font_size_spin.setRange(6.0, 72.0)
+        self.label_font_size_spin.setSingleStep(1.0)
+        self.label_font_size_spin.setValue(float(label_font_size))
+        self.label_font_size_spin.setSuffix(" pt")
+
         layout = QVBoxLayout(self)
         form = QFormLayout()
         form.addRow("숫자 위치", self.label_side_combo)
         form.addRow("숫자 거리", self.label_gap_spin)
+        form.addRow("글씨 크기", self.label_font_size_spin)
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -2162,6 +2170,7 @@ class MainWindow(QMainWindow):
         self.default_angle_label_font_size = 10.0
         self.cd_label_side = "above"
         self.cd_label_gap = 14.0
+        self.cd_label_font_size = 10.0
         self.default_stroke_color = "#ff6b6b"
         self.default_stroke_width = 2.2
         self.hidden_angle_measurements: set[str] = set()
@@ -2991,6 +3000,7 @@ class MainWindow(QMainWindow):
         if self.cd_label_side not in {"above", "below"}:
             self.cd_label_side = "above"
         self.cd_label_gap = float(cd_display.get("label_gap", self.cd_label_gap))
+        self.cd_label_font_size = float(cd_display.get("label_font_size", self.cd_label_font_size))
         guide_generation = payload.get("guide_generation", {})
         guide_direction = guide_generation.get("direction")
         direction_index = self.guide_direction_combo.findData(guide_direction)
@@ -3066,6 +3076,7 @@ class MainWindow(QMainWindow):
             "cd_display": {
                 "label_side": self.cd_label_side,
                 "label_gap": self.cd_label_gap,
+                "label_font_size": self.cd_label_font_size,
             },
             "guide_generation": {
                 "direction": self.guide_direction_combo.currentData(),
@@ -4057,7 +4068,7 @@ class MainWindow(QMainWindow):
                 else:
                     text = f"{length_px:.2f} px"
                     cd_length_nm = ""
-                self.canvas.add_cd_measurement(point_a, point_b, text, label_pos)
+                self.canvas.add_cd_measurement(point_a, point_b, text, label_pos, self.cd_label_font_size)
                 self.last_measurements.append(
                     {
                         "measurement": f"CD_{guide.id}_{idx + 1}_{edge_a}_{edge_b}",
@@ -4080,13 +4091,14 @@ class MainWindow(QMainWindow):
             self._set_status(f"CD 길이 {created}개를 표시했습니다.")
 
     def edit_cd_display(self) -> None:
-        dialog = CdDisplaySettingsDialog(self.cd_label_side, self.cd_label_gap, self)
+        dialog = CdDisplaySettingsDialog(self.cd_label_side, self.cd_label_gap, self.cd_label_font_size, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self.cd_label_side = str(dialog.label_side_combo.currentData())
         if self.cd_label_side not in {"above", "below"}:
             self.cd_label_side = "above"
         self.cd_label_gap = float(dialog.label_gap_spin.value())
+        self.cd_label_font_size = float(dialog.label_font_size_spin.value())
         if self.canvas.cd_items:
             self.calculate_cd_lengths()
         self._set_status("CD 표시 설정을 바꿨습니다.")

@@ -707,6 +707,7 @@ def test_cd_label_text_and_position_can_be_edited(monkeypatch):
         def __init__(self, *args, **kwargs):
             self.label_side_combo = _Value("below")
             self.label_gap_spin = _Value(22.0)
+            self.label_font_size_spin = _Value(17.0)
 
         def exec(self):
             return QDialog.DialogCode.Accepted
@@ -736,8 +737,10 @@ def test_cd_label_text_and_position_can_be_edited(monkeypatch):
         label = next(item for item in window.canvas.cd_items if isinstance(item, QGraphicsTextItem))
         assert window.cd_label_side == "below"
         assert window.cd_label_gap == 22.0
+        assert window.cd_label_font_size == 17.0
         assert abs(label.sceneBoundingRect().center().x() - 60.0) < 0.001
         assert label.sceneBoundingRect().center().y() > 60.0
+        assert "font-size:17" in label.toHtml()
     finally:
         window.close()
 
