@@ -785,6 +785,48 @@ def test_data_export_sorts_by_group_item_and_position(tmp_path):
         window.close()
 
 
+def test_data_export_dialog_has_open_after_export_option():
+    _app()
+    dialog = app_module.DataExportDialog(False)
+    try:
+        assert dialog.options().open_after_export is False
+        dialog.open_after_export_checkbox.setChecked(True)
+        assert dialog.options().open_after_export is True
+    finally:
+        dialog.close()
+
+
+def test_data_export_opens_file_when_option_is_checked(monkeypatch, tmp_path):
+    class _Dialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def options(self):
+            return DataExportOptions(scope="current", selected_items={"edge_length"}, order_priority="y", open_after_export=True)
+
+    export_path = tmp_path / "export.xlsx"
+    opened: list[str] = []
+    written: list[str] = []
+    monkeypatch.setattr(app_module, "DataExportDialog", _Dialog)
+    monkeypatch.setattr(app_module.QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(export_path), "Excel Workbook (*.xlsx)"))
+    monkeypatch.setattr(app_module, "write_xlsx", lambda path, sheets: written.append(path))
+    monkeypatch.setattr(app_module.MainWindow, "_open_export_file", staticmethod(lambda path: opened.append(path)))
+
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((40.0, 10.0), (40.0, 110.0))
+
+        window.export_data_xlsx()
+
+        assert written == [str(export_path)]
+        assert opened == [str(export_path)]
+    finally:
+        window.close()
+
+
 def test_data_export_project_scope_includes_saved_image_states():
     window = _window_with_edge_image()
     try:

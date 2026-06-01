@@ -11,8 +11,8 @@ from typing import Optional
 import zipfile
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QBrush, QColor, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -125,6 +125,7 @@ class DataExportOptions:
     scope: str
     selected_items: set[str]
     order_priority: str
+    open_after_export: bool = False
 
 
 ANGLE_GROUP_KEY = 1
@@ -2117,6 +2118,9 @@ class DataExportDialog(QDialog):
         self.order_combo.addItem("위쪽에서 아래 우선", "y")
         self.order_combo.addItem("왼쪽에서 오른쪽 우선", "x")
 
+        self.open_after_export_checkbox = QCheckBox("Data Export 후 파일 열기")
+        self.open_after_export_checkbox.setChecked(False)
+
         layout = QVBoxLayout(self)
         form = QFormLayout()
         form.addRow("내보낼 범위", self.scope_combo)
@@ -2125,6 +2129,7 @@ class DataExportDialog(QDialog):
         layout.addWidget(QLabel("내보낼 항목"))
         for checkbox in self.item_checkboxes.values():
             layout.addWidget(checkbox)
+        layout.addWidget(self.open_after_export_checkbox)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -2135,6 +2140,7 @@ class DataExportDialog(QDialog):
             scope=str(self.scope_combo.currentData()),
             selected_items={key for key, checkbox in self.item_checkboxes.items() if checkbox.isChecked()},
             order_priority=str(self.order_combo.currentData()),
+            open_after_export=self.open_after_export_checkbox.isChecked(),
         )
 
 
@@ -3159,7 +3165,13 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Data Export", "내보낼 측정 데이터가 없습니다.")
             return
         write_xlsx(path, sheets)
+        if options.open_after_export:
+            self._open_export_file(path)
         self._set_status(f"Data Export 저장: {Path(path).name}")
+
+    @staticmethod
+    def _open_export_file(path: str) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
 
     def _export_image_states(self, scope: str) -> list[tuple[str, dict]]:
         current_path = self.image_path or "current"
