@@ -1,4 +1,5 @@
 import os
+import math
 import zipfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -558,10 +559,24 @@ def test_selected_edge_angle_display_sector_controls_measurement_angle():
 
         guide_rows = [row for row in window.last_measurements if row["kind"] == "edge_guide_intersection"]
         assert len(guide_rows) == 1
-        assert 149 <= guide_rows[0]["angle_deg"] <= 151
+        assert 29 <= guide_rows[0]["angle_deg"] <= 31
         assert len(window.canvas.angle_items) >= 2
     finally:
         window.close()
+
+
+def test_angle_sector_numbers_follow_visual_quadrants():
+    sectors = [
+        app_module.angle_sector_geometry(0.0, 30.0, idx)
+        for idx in range(4)
+    ]
+    midpoints = [math.radians((start + span / 2.0) % 360.0) for start, _end, span in sectors]
+    vectors = [(math.cos(angle), math.sin(angle)) for angle in midpoints]
+
+    assert vectors[0][0] > 0 and vectors[0][1] < 0
+    assert vectors[1][0] < 0 and vectors[1][1] < 0
+    assert vectors[2][0] < 0 and vectors[2][1] > 0
+    assert vectors[3][0] > 0 and vectors[3][1] > 0
 
 
 def test_angle_label_quadrant_positions():

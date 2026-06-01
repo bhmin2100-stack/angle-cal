@@ -1739,7 +1739,33 @@ def angle_sector_geometry(angle_a: float, angle_b: float, sector_index: int) -> 
             sectors.append((start, start + span, span))
     if not sectors:
         return angle_a % 360.0, (angle_a + 180.0) % 360.0, 180.0
+    quadrant_sector = sector_for_visual_quadrant(sectors, sector_index)
+    if quadrant_sector is not None:
+        return quadrant_sector
     return sectors[sector_index % len(sectors)]
+
+
+def sector_for_visual_quadrant(
+    sectors: list[tuple[float, float, float]],
+    quadrant_index: int,
+) -> Optional[tuple[float, float, float]]:
+    target_quadrant = quadrant_index % 4
+    for sector in sectors:
+        start, _end, span = sector
+        midpoint = math.radians((start + span / 2.0) % 360.0)
+        dx = math.cos(midpoint)
+        dy = math.sin(midpoint)
+        if dx >= 0 and dy <= 0:
+            visual_quadrant = 0
+        elif dx < 0 and dy <= 0:
+            visual_quadrant = 1
+        elif dx < 0 and dy > 0:
+            visual_quadrant = 2
+        else:
+            visual_quadrant = 3
+        if visual_quadrant == target_quadrant:
+            return sector
+    return None
 
 
 def angle_label_position_for_sector(
