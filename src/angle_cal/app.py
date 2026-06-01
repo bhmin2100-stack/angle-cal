@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsTextItem,
     QGraphicsView,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -48,6 +49,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -2310,17 +2312,31 @@ class MainWindow(QMainWindow):
             self.addAction(action)
 
     def _build_toolbar(self) -> None:
-        file_toolbar = self._new_toolbar("파일")
-        for action in [self.open_action, self.open_folder_action, self.open_project_action, self.save_project_action]:
-            file_toolbar.addWidget(self._button_for_action(action))
+        ribbon = QWidget()
+        ribbon_layout = QVBoxLayout(ribbon)
+        ribbon_layout.setContentsMargins(4, 4, 4, 2)
+        ribbon_layout.setSpacing(2)
 
-        export_toolbar = self._new_toolbar("내보내기")
-        for action in [self.export_png_action, self.export_csv_action, self.export_data_action]:
-            export_toolbar.addWidget(self._button_for_action(action))
+        def page() -> QWidget:
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            layout.setContentsMargins(6, 6, 6, 6)
+            layout.setSpacing(8)
+            layout.addStretch(1)
+            return widget
 
-        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
-        tool_toolbar = self._new_toolbar("도구")
+        def group(parent_page: QWidget, title: str) -> QHBoxLayout:
+            box = QGroupBox(title)
+            layout = QHBoxLayout(box)
+            layout.setContentsMargins(8, 12, 8, 8)
+            layout.setSpacing(5)
+            parent_page.layout().insertWidget(parent_page.layout().count() - 1, box)
+            return layout
 
+        quick_row = QHBoxLayout()
+        quick_row.setContentsMargins(6, 0, 6, 0)
+        quick_row.setSpacing(5)
+        quick_row.addWidget(QLabel("도구"))
         self.tool_buttons: dict[str, QPushButton] = {}
         self.tool_button_group = QButtonGroup(self)
         self.tool_button_group.setExclusive(True)
@@ -2338,30 +2354,55 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda checked=False, selected_tool=tool: self.set_current_tool(selected_tool))
             self.tool_button_group.addButton(button)
             self.tool_buttons[tool] = button
-            tool_toolbar.addWidget(button)
+            quick_row.addWidget(button)
         self.tool_buttons["select"].setChecked(True)
+        quick_recognize_button = QPushButton("인식")
+        quick_recognize_button.clicked.connect(self.recognize_edges)
+        quick_row.addWidget(quick_recognize_button)
+        quick_row.addStretch(1)
+        ribbon_layout.addLayout(quick_row)
 
-        reference_toolbar = self._new_toolbar("기준")
+        self.ribbon_tabs = QTabWidget()
+        self.ribbon_tabs.setDocumentMode(True)
+        self.ribbon_tabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #c7c7c7; } "
+            "QTabBar::tab { padding: 5px 14px; } "
+            "QGroupBox { font-weight: 600; margin-top: 8px; border: 1px solid #d0d0d0; border-radius: 4px; } "
+            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+        )
+        ribbon_layout.addWidget(self.ribbon_tabs)
+        self.setMenuWidget(ribbon)
+
+        file_page = page()
+        file_group = group(file_page, "불러오기 / 저장")
+        for action in [self.open_action, self.open_folder_action, self.open_project_action, self.save_project_action]:
+            file_group.addWidget(self._button_for_action(action))
+        export_group = group(file_page, "내보내기")
+        for action in [self.export_png_action, self.export_csv_action, self.export_data_action]:
+            export_group.addWidget(self._button_for_action(action))
+        self.ribbon_tabs.addTab(file_page, "파일")
+
+        edge_page = page()
+        reference_group = group(edge_page, "기준선")
 
         self.axis_combo = QComboBox()
         self.axis_combo.addItem("수평기준선", "horizontal")
         self.axis_combo.addItem("수직기준선", "vertical")
         self.axis_combo.currentIndexChanged.connect(self._axis_changed)
-        reference_toolbar.addWidget(self.axis_combo)
+        reference_group.addWidget(self.axis_combo)
 
         align_button = QPushButton("이미지 맞춤")
         align_button.clicked.connect(self.align_to_reference)
-        reference_toolbar.addWidget(align_button)
+        reference_group.addWidget(align_button)
 
-        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
-        detect_toolbar = self._new_toolbar("인식")
+        detect_group = group(edge_page, "경계 인식")
 
         self.edge_mode_combo = QComboBox()
         self.edge_mode_combo.addItem("직선", "line")
         self.edge_mode_combo.addItem("이어진 직선", "polyline")
         self.edge_mode_combo.currentIndexChanged.connect(self._edge_mode_changed)
-        detect_toolbar.addWidget(QLabel("경계 형태"))
-        detect_toolbar.addWidget(self.edge_mode_combo)
+        detect_group.addWidget(QLabel("경계 형태"))
+        detect_group.addWidget(self.edge_mode_combo)
         self.canvas.set_edge_draw_mode(self.edge_mode_combo.currentData())
 
         self.search_radius_spin = QSpinBox()
@@ -2369,55 +2410,29 @@ class MainWindow(QMainWindow):
         self.search_radius_spin.setValue(35)
         self.search_radius_spin.setSuffix(" px")
         self.search_radius_spin.valueChanged.connect(self._edge_detection_settings_changed)
-        detect_toolbar.addWidget(QLabel("경계인식 범위"))
-        detect_toolbar.addWidget(self.search_radius_spin)
+        detect_group.addWidget(QLabel("경계인식 범위"))
+        detect_group.addWidget(self.search_radius_spin)
 
         self.curve_sensitivity_spin = QSpinBox()
         self.curve_sensitivity_spin.setRange(2, 80)
         self.curve_sensitivity_spin.setValue(9)
         self.curve_sensitivity_spin.setSuffix(" px")
         self.curve_sensitivity_spin.valueChanged.connect(self._edge_detection_settings_changed)
-        detect_toolbar.addWidget(QLabel("세그먼트 크기"))
-        detect_toolbar.addWidget(self.curve_sensitivity_spin)
+        detect_group.addWidget(QLabel("세그먼트 크기"))
+        detect_group.addWidget(self.curve_sensitivity_spin)
 
         self.show_search_range_checkbox = QCheckBox("범위 표시")
         self.show_search_range_checkbox.setChecked(True)
         self.show_search_range_checkbox.toggled.connect(self._edge_detection_settings_changed)
-        detect_toolbar.addWidget(self.show_search_range_checkbox)
+        detect_group.addWidget(self.show_search_range_checkbox)
 
         settings_button = QPushButton("인식 설정")
         settings_button.clicked.connect(self.open_edge_detection_settings)
-        detect_toolbar.addWidget(settings_button)
+        detect_group.addWidget(settings_button)
+        self.ribbon_tabs.addTab(edge_page, "경계")
 
-        recognize_button = QPushButton("인식")
-        recognize_button.clicked.connect(self.recognize_edges)
-        detect_toolbar.addWidget(recognize_button)
-
-        style_toolbar = self._new_toolbar("양식")
-        self.stroke_color_combo = QComboBox()
-        for label, color in [
-            ("빨강", "#ff6b6b"),
-            ("노랑", "#ffd166"),
-            ("초록", "#06d6a0"),
-            ("파랑", "#4cc9f0"),
-            ("흰색", "#f7fff7"),
-            ("검정", "#111111"),
-        ]:
-            self.stroke_color_combo.addItem(label, color)
-        self.stroke_color_combo.currentIndexChanged.connect(self.apply_selected_style)
-        self.stroke_width_spin = QDoubleSpinBox()
-        self.stroke_width_spin.setRange(0.4, 12.0)
-        self.stroke_width_spin.setSingleStep(0.2)
-        self.stroke_width_spin.setValue(self.default_stroke_width)
-        self.stroke_width_spin.setSuffix(" px")
-        self.stroke_width_spin.valueChanged.connect(self.apply_selected_style)
-        style_toolbar.addWidget(QLabel("선 색"))
-        style_toolbar.addWidget(self.stroke_color_combo)
-        style_toolbar.addWidget(QLabel("선 두께"))
-        style_toolbar.addWidget(self.stroke_width_spin)
-
-        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
-        guide_toolbar = self._new_toolbar("가이드")
+        guide_page = page()
+        guide_group = group(guide_page, "가이드 생성")
 
         self.guide_orientation_combo = QComboBox()
         self.guide_orientation_combo.addItem("수평선", "horizontal")
@@ -2439,56 +2454,89 @@ class MainWindow(QMainWindow):
         self.guide_offset_spin.setRange(0, 100000)
         self.guide_offset_spin.setValue(0)
         self.guide_offset_spin.setSuffix(" px")
-        self.cd_segment_combo = QComboBox()
-        self.cd_segment_combo.addItem("CD 전체", "all")
-        self.cd_segment_combo.addItem("CD 홀수번째", "odd")
-        self.cd_segment_combo.addItem("CD 짝수번째", "even")
-        guide_toolbar.addWidget(self.guide_orientation_combo)
-        guide_toolbar.addWidget(self.guide_spacing_spin)
-        guide_toolbar.addWidget(self.guide_spacing_unit)
-        guide_toolbar.addWidget(QLabel("방향"))
-        guide_toolbar.addWidget(self.guide_direction_combo)
-        guide_toolbar.addWidget(QLabel("개수/쪽"))
-        guide_toolbar.addWidget(self.guide_count_spin)
-        guide_toolbar.addWidget(QLabel("시작"))
-        guide_toolbar.addWidget(self.guide_offset_spin)
-        guide_toolbar.addWidget(self.cd_segment_combo)
+        guide_group.addWidget(self.guide_orientation_combo)
+        guide_group.addWidget(self.guide_spacing_spin)
+        guide_group.addWidget(self.guide_spacing_unit)
+        guide_group.addWidget(QLabel("방향"))
+        guide_group.addWidget(self.guide_direction_combo)
+        guide_group.addWidget(QLabel("개수/쪽"))
+        guide_group.addWidget(self.guide_count_spin)
+        guide_group.addWidget(QLabel("시작"))
+        guide_group.addWidget(self.guide_offset_spin)
 
         add_guides_button = QPushButton("그리기")
         add_guides_button.clicked.connect(self.add_guides)
         clear_guides_button = QPushButton("가이드 지우기")
         clear_guides_button.clicked.connect(self.clear_guides)
+        guide_group.addWidget(add_guides_button)
+        guide_group.addWidget(clear_guides_button)
+
+        measurement_group = group(guide_page, "측정")
+        self.cd_segment_combo = QComboBox()
+        self.cd_segment_combo.addItem("CD 전체", "all")
+        self.cd_segment_combo.addItem("CD 홀수번째", "odd")
+        self.cd_segment_combo.addItem("CD 짝수번째", "even")
         angle_button = QPushButton("각도 계산")
         angle_button.clicked.connect(lambda: self.calculate_angles(reset_hidden=True))
-        angle_settings_button = QPushButton("각도 표시 편집")
-        angle_settings_button.clicked.connect(self.edit_angle_display_for_selected_edges)
         cd_button = QPushButton("CD 측정")
         cd_button.clicked.connect(self.calculate_cd_lengths)
+        measurement_group.addWidget(self.cd_segment_combo)
+        measurement_group.addWidget(angle_button)
+        measurement_group.addWidget(cd_button)
+        self.ribbon_tabs.addTab(guide_page, "가이드/측정")
+
+        display_page = page()
+        style_group = group(display_page, "선 서식")
+        self.stroke_color_combo = QComboBox()
+        for label, color in [
+            ("빨강", "#ff6b6b"),
+            ("노랑", "#ffd166"),
+            ("초록", "#06d6a0"),
+            ("파랑", "#4cc9f0"),
+            ("흰색", "#f7fff7"),
+            ("검정", "#111111"),
+        ]:
+            self.stroke_color_combo.addItem(label, color)
+        self.stroke_color_combo.currentIndexChanged.connect(self.apply_selected_style)
+        self.stroke_width_spin = QDoubleSpinBox()
+        self.stroke_width_spin.setRange(0.4, 12.0)
+        self.stroke_width_spin.setSingleStep(0.2)
+        self.stroke_width_spin.setValue(self.default_stroke_width)
+        self.stroke_width_spin.setSuffix(" px")
+        self.stroke_width_spin.valueChanged.connect(self.apply_selected_style)
+        style_group.addWidget(QLabel("선 색"))
+        style_group.addWidget(self.stroke_color_combo)
+        style_group.addWidget(QLabel("선 두께"))
+        style_group.addWidget(self.stroke_width_spin)
+        style_group.addWidget(self._button_for_action(self.copy_format_action))
+
+        display_edit_group = group(display_page, "표시 편집")
+        angle_settings_button = QPushButton("각도 표시 편집")
+        angle_settings_button.clicked.connect(self.edit_angle_display_for_selected_edges)
         cd_settings_button = QPushButton("CD 표시 편집")
         cd_settings_button.clicked.connect(self.edit_cd_display)
-        guide_toolbar.addWidget(add_guides_button)
-        guide_toolbar.addWidget(clear_guides_button)
-        guide_toolbar.addWidget(angle_button)
-        guide_toolbar.addWidget(angle_settings_button)
-        guide_toolbar.addWidget(cd_button)
-        guide_toolbar.addWidget(cd_settings_button)
+        display_edit_group.addWidget(angle_settings_button)
+        display_edit_group.addWidget(cd_settings_button)
+        self.ribbon_tabs.addTab(display_page, "표시/서식")
 
-        structure_toolbar = self._new_toolbar("구조")
+        structure_page = page()
+        structure_group = group(structure_page, "구조")
         self.structure_combo = QComboBox()
         self.structure_combo.addItem("구조 선택", -1)
-        structure_toolbar.addWidget(self.structure_combo)
-        structure_toolbar.addWidget(self._button_for_action(self.save_structure_action))
+        structure_group.addWidget(self.structure_combo)
+        structure_group.addWidget(self._button_for_action(self.save_structure_action))
         structure_paste_button = self._button_for_action(self.paste_structure_action)
-        structure_toolbar.addWidget(structure_paste_button)
+        structure_group.addWidget(structure_paste_button)
         structure_export_button = QPushButton("구조 공유")
         structure_export_button.clicked.connect(self.export_selected_structure_template)
         structure_import_button = QPushButton("구조 가져오기")
         structure_import_button.clicked.connect(self.import_structure_template)
         structure_delete_button = QPushButton("구조 삭제")
         structure_delete_button.clicked.connect(self.delete_selected_structure_template)
-        structure_toolbar.addWidget(structure_export_button)
-        structure_toolbar.addWidget(structure_import_button)
-        structure_toolbar.addWidget(structure_delete_button)
+        structure_group.addWidget(structure_export_button)
+        structure_group.addWidget(structure_import_button)
+        structure_group.addWidget(structure_delete_button)
+        self.ribbon_tabs.addTab(structure_page, "구조")
 
     def _new_toolbar(self, title: str) -> QToolBar:
         toolbar = QToolBar(title)
