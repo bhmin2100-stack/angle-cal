@@ -1329,6 +1329,9 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
     try:
         assert window.ribbon_tabs.count() == 5
         assert [window.ribbon_tabs.tabText(idx) for idx in range(window.ribbon_tabs.count())] == ["파일", "경계", "가이드/측정", "표시/서식", "구조"]
+        ribbon_layout = window.menuWidget().layout()
+        assert ribbon_layout.itemAt(0).widget() is window.ribbon_tabs
+        assert ribbon_layout.itemAt(1).layout() is not None
         assert window.tool_buttons["edge"].text() == "경계선"
         assert window.edge_mode_combo.currentData() == "line"
         assert window.structure_combo.itemText(0) == "구조 선택"

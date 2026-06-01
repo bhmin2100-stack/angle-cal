@@ -2372,7 +2372,6 @@ class MainWindow(QMainWindow):
         quick_recognize_button.clicked.connect(self.recognize_edges)
         quick_row.addWidget(quick_recognize_button)
         quick_row.addStretch(1)
-        ribbon_layout.addLayout(quick_row)
 
         self.ribbon_tabs = QTabWidget()
         self.ribbon_tabs.setDocumentMode(True)
@@ -2383,6 +2382,7 @@ class MainWindow(QMainWindow):
             "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
         )
         ribbon_layout.addWidget(self.ribbon_tabs)
+        ribbon_layout.addLayout(quick_row)
         self.setMenuWidget(ribbon)
 
         file_page = page()
