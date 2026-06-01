@@ -11,7 +11,7 @@ from typing import Optional
 import zipfile
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -289,11 +289,18 @@ class AngleCanvas(QGraphicsView):
         self._space_edge_previous_tool: Optional[str] = None
         self._additive_rubberband_items: Optional[set[QGraphicsItem]] = None
         self._shortcut_overlay_visible = False
+        self._magnifier_label = QLabel(self.viewport())
+        self._magnifier_label.setFixedSize(168, 168)
+        self._magnifier_label.setStyleSheet("border: 1px solid rgba(255, 209, 102, 210); background: #101418;")
+        self._magnifier_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._magnifier_label.hide()
         self.scene.selectionChanged.connect(self._expand_angle_group_selection)
         self.scene.selectionChanged.connect(self.refresh_point_handles)
 
     def set_tool(self, tool: str) -> None:
         self.current_tool = tool
+        if tool != "scale":
+            self._hide_scale_magnifier()
         if tool != "edge" or self.edge_draw_mode != "polyline":
             self._clear_curve_preview()
         if tool == "pan":
@@ -316,6 +323,7 @@ class AngleCanvas(QGraphicsView):
             self._temp_line = None
         self._clear_curve_preview()
         self._drawing_start = None
+        self._hide_scale_magnifier()
         self._panning = False
         self._resizing = False
         self._restore_tool_cursor()
@@ -340,6 +348,7 @@ class AngleCanvas(QGraphicsView):
         self.detection_preview_items.clear()
         self.shortcut_overlay_items.clear()
         self.point_handle_items.clear()
+        self._hide_scale_magnifier()
         self.angle_groups.clear()
         self.angle_group_parents.clear()
         self.angle_group_measurements.clear()
@@ -597,6 +606,62 @@ class AngleCanvas(QGraphicsView):
         if scale <= 0:
             return float(pixels)
         return float(pixels) / scale
+
+    def _scale_line_end_for_modifiers(self, start: QPointF, end: QPointF, modifiers: Qt.KeyboardModifier) -> QPointF:
+        if not (modifiers & Qt.KeyboardModifier.ShiftModifier):
+            return end
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            return QPointF(start.x(), end.y())
+        return QPointF(end.x(), start.y())
+
+    def _scale_tool_scene_point(self, view_pos: QPoint) -> QPointF:
+        return self._clamp_to_image(self.mapToScene(view_pos))
+
+    def _update_scale_magnifier(self, view_pos: QPoint) -> None:
+        if self.current_tool != "scale" or self.pixmap_item is None:
+            self._hide_scale_magnifier()
+            return
+        scene_point = self._scale_tool_scene_point(view_pos)
+        pixmap = self.pixmap_item.pixmap()
+        if pixmap.isNull():
+            self._hide_scale_magnifier()
+            return
+        image_x = int(round(scene_point.x()))
+        image_y = int(round(scene_point.y()))
+        radius = 10
+        source = QRect(image_x - radius, image_y - radius, radius * 2 + 1, radius * 2 + 1).intersected(pixmap.rect())
+        if source.isEmpty():
+            self._hide_scale_magnifier()
+            return
+        magnified = pixmap.copy(source).scaled(
+            160,
+            160,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
+        painter = QPainter(magnified)
+        painter.setPen(cosmetic_pen(QColor(255, 209, 102, 230), 1.0))
+        center_x = magnified.width() / 2.0
+        center_y = magnified.height() / 2.0
+        painter.drawLine(QPointF(center_x, 0.0), QPointF(center_x, float(magnified.height())))
+        painter.drawLine(QPointF(0.0, center_y), QPointF(float(magnified.width()), center_y))
+        painter.end()
+
+        self._magnifier_label.setPixmap(magnified)
+        label_size = self._magnifier_label.size()
+        pos = view_pos + QPoint(18, 18)
+        if pos.x() + label_size.width() > self.viewport().width():
+            pos.setX(view_pos.x() - label_size.width() - 18)
+        if pos.y() + label_size.height() > self.viewport().height():
+            pos.setY(view_pos.y() - label_size.height() - 18)
+        pos.setX(max(4, pos.x()))
+        pos.setY(max(4, pos.y()))
+        self._magnifier_label.move(pos)
+        self._magnifier_label.show()
+        self._magnifier_label.raise_()
+
+    def _hide_scale_magnifier(self) -> None:
+        self._magnifier_label.hide()
 
     def show_shortcut_overlay(self) -> None:
         self.clear_shortcut_overlay()
@@ -1044,6 +1109,10 @@ class AngleCanvas(QGraphicsView):
         if (
             event.button() == Qt.MouseButton.LeftButton
             and (self.current_tool == "pan" or event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            and not (
+                self.current_tool == "scale"
+                and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            )
             and self._additive_rubberband_items is None
         ):
             self._start_pan(event.pos())
@@ -1062,6 +1131,8 @@ class AngleCanvas(QGraphicsView):
             and self.current_tool in {"scale", "reference", "edge", "guide"}
             and self.pixmap_item is not None
         ):
+            if self.current_tool == "scale":
+                self._update_scale_magnifier(event.pos())
             if self.current_tool == "edge" and self.edge_draw_mode == "polyline":
                 self._append_curve_point(self._clamp_to_image(self.mapToScene(event.pos())))
                 event.accept()
@@ -1085,6 +1156,11 @@ class AngleCanvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):  # noqa: N802
+        if self.current_tool == "scale" and self.pixmap_item is not None:
+            self._update_scale_magnifier(event.pos())
+        else:
+            self._hide_scale_magnifier()
+
         if self._panning:
             delta = event.pos() - self._pan_last
             self._pan_last = event.pos()
@@ -1095,6 +1171,8 @@ class AngleCanvas(QGraphicsView):
 
         if self._temp_line is not None and self._drawing_start is not None:
             end = self._clamp_to_image(self.mapToScene(event.pos()))
+            if self.current_tool == "scale":
+                end = self._scale_line_end_for_modifiers(self._drawing_start, end, event.modifiers())
             self._temp_line.setLine(
                 self._drawing_start.x(),
                 self._drawing_start.y(),
@@ -1140,9 +1218,12 @@ class AngleCanvas(QGraphicsView):
         if self._temp_line is not None and self._drawing_start is not None:
             end = self._clamp_to_image(self.mapToScene(event.pos()))
             start = self._drawing_start
+            if self.current_tool == "scale":
+                end = self._scale_line_end_for_modifiers(start, end, event.modifiers())
             self.scene.removeItem(self._temp_line)
             self._temp_line = None
             self._drawing_start = None
+            self._hide_scale_magnifier()
             if math.hypot(end.x() - start.x(), end.y() - start.y()) > 3:
                 self.line_created.emit(
                     self.current_tool,
@@ -1156,6 +1237,10 @@ class AngleCanvas(QGraphicsView):
         self._restore_additive_rubberband_selection()
         self._apply_selection_filter()
         self.scene_changed.emit()
+
+    def leaveEvent(self, event):  # noqa: N802
+        self._hide_scale_magnifier()
+        super().leaveEvent(event)
 
     def _restore_additive_rubberband_selection(self) -> None:
         if self._additive_rubberband_items is None:

@@ -369,6 +369,42 @@ def test_annotation_visual_sizes_use_screen_units():
         window.close()
 
 
+def test_scale_line_shift_constraints():
+    window = _window_with_edge_image()
+    try:
+        start = QPointF(20.0, 30.0)
+        end = QPointF(90.0, 80.0)
+
+        horizontal = window.canvas._scale_line_end_for_modifiers(start, end, Qt.KeyboardModifier.ShiftModifier)
+        vertical = window.canvas._scale_line_end_for_modifiers(
+            start,
+            end,
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+        )
+
+        assert horizontal.x() == 90.0
+        assert horizontal.y() == 30.0
+        assert vertical.x() == 20.0
+        assert vertical.y() == 80.0
+    finally:
+        window.close()
+
+
+def test_scale_tool_magnifier_updates_near_cursor():
+    window = _window_with_edge_image()
+    try:
+        window.set_current_tool("scale")
+        window.canvas.resize(320, 240)
+
+        window.canvas._update_scale_magnifier(QPoint(40, 40))
+
+        assert not window.canvas._magnifier_label.isHidden()
+        assert window.canvas._magnifier_label.pixmap() is not None
+        assert not window.canvas._magnifier_label.pixmap().isNull()
+    finally:
+        window.close()
+
+
 def test_space_temporarily_switches_to_edge_tool():
     window = _window_with_edge_image()
     try:
