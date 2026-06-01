@@ -420,6 +420,36 @@ def test_search_range_visibility_only_draws_band_without_number_label():
         window.close()
 
 
+def test_search_range_overlay_gets_more_transparent_when_zoomed():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        window._update_search_range_overlay()
+        normal_alpha = window.canvas.search_range_band_items[0].brush().color().alpha()
+
+        window.canvas.scale(4.0, 4.0)
+        window._update_search_range_overlay()
+        zoomed_alpha = window.canvas.search_range_band_items[0].brush().color().alpha()
+
+        assert zoomed_alpha < normal_alpha
+    finally:
+        window.close()
+
+
+def test_detection_preview_uses_screen_sized_panel_when_zoomed():
+    window = _window_with_edge_image()
+    try:
+        window.canvas.scale(4.0, 4.0)
+        window.canvas.show_detection_preview(120, 9, "120 px")
+        panel = window.canvas.detection_preview_items[0]
+        screen_width = panel.sceneBoundingRect().width() * window.canvas.transform().m11()
+
+        assert 170.0 <= screen_width <= 210.0
+    finally:
+        window.close()
+
+
 def test_annotation_visual_sizes_use_screen_units():
     window = _window_with_edge_image()
     try:

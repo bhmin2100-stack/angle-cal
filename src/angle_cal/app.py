@@ -535,13 +535,14 @@ class AngleCanvas(QGraphicsView):
         rect = self.scene.sceneRect()
         if rect.width() <= 0 or rect.height() <= 0:
             return
-        width = min(190.0, max(120.0, rect.width() * 0.22))
-        height = 72.0
+        width = self.screen_to_scene_length(190.0)
+        height = self.screen_to_scene_length(72.0)
+        margin = self.screen_to_scene_length(8.0)
         visible_center = self.mapToScene(self.viewport().rect().center())
         left = float(visible_center.x()) - width / 2.0
         top = float(visible_center.y()) - height / 2.0
-        left = min(max(left, rect.left() + 8.0), rect.right() - width - 8.0)
-        top = min(max(top, rect.top() + 8.0), rect.bottom() - height - 8.0)
+        left = min(max(left, rect.left() + margin), rect.right() - width - margin)
+        top = min(max(top, rect.top() + margin), rect.bottom() - height - margin)
         panel = QGraphicsPolygonItem(
             QPolygonF(
                 [
@@ -552,8 +553,8 @@ class AngleCanvas(QGraphicsView):
                 ]
             )
         )
-        panel.setBrush(QBrush(QColor(18, 24, 28, 185)))
-        panel.setPen(cosmetic_pen(QColor(76, 201, 240, 190), 1.0))
+        panel.setBrush(QBrush(QColor(18, 24, 28, 135)))
+        panel.setPen(cosmetic_pen(QColor(76, 201, 240, 140), 1.0))
         panel.setZValue(60)
         self.scene.addItem(panel)
         self.detection_preview_items.append(panel)
@@ -572,8 +573,8 @@ class AngleCanvas(QGraphicsView):
                 ]
             )
         )
-        band.setBrush(QBrush(QColor(0, 220, 110, 54)))
-        band.setPen(cosmetic_pen(QColor(0, 220, 110, 210), 1.0, Qt.PenStyle.DashLine))
+        band.setBrush(QBrush(QColor(0, 220, 110, self._search_range_fill_alpha())))
+        band.setPen(cosmetic_pen(QColor(0, 220, 110, self._search_range_pen_alpha()), 1.0, Qt.PenStyle.DashLine))
         band.setZValue(61)
         self.scene.addItem(band)
         self.detection_preview_items.append(band)
@@ -610,6 +611,17 @@ class AngleCanvas(QGraphicsView):
         if scale <= 0:
             return float(pixels)
         return float(pixels) / scale
+
+    def _view_scale(self) -> float:
+        scale_x = abs(self.transform().m11())
+        scale_y = abs(self.transform().m22())
+        return max(1.0, (scale_x + scale_y) / 2.0)
+
+    def _search_range_fill_alpha(self) -> int:
+        return max(8, int(24 / (self._view_scale() ** 0.55)))
+
+    def _search_range_pen_alpha(self) -> int:
+        return max(70, int(155 / (self._view_scale() ** 0.35)))
 
     def _scale_line_end_for_modifiers(self, start: QPointF, end: QPointF, modifiers: Qt.KeyboardModifier) -> QPointF:
         if not (modifiers & Qt.KeyboardModifier.ShiftModifier):
@@ -731,8 +743,8 @@ class AngleCanvas(QGraphicsView):
             if self.show_search_range_band and record.show_range:
                 for polygon in polygons:
                     item = QGraphicsPolygonItem(polygon)
-                    item.setPen(cosmetic_pen(QColor(0, 220, 110, 220), 1.2, Qt.PenStyle.DashLine))
-                    item.setBrush(QBrush(QColor(0, 220, 110, 46)))
+                    item.setPen(cosmetic_pen(QColor(0, 220, 110, self._search_range_pen_alpha()), 1.2, Qt.PenStyle.DashLine))
+                    item.setBrush(QBrush(QColor(0, 220, 110, self._search_range_fill_alpha())))
                     item.setZValue(3)
                     item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
                     self.scene.addItem(item)
