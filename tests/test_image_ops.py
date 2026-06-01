@@ -5,6 +5,7 @@ import cv2
 
 from angle_cal.image_ops import (
     acute_angle_difference,
+    adjust_image_bgr,
     angle_to_axis,
     bgr_to_rgb8_for_display,
     intersection,
@@ -40,6 +41,20 @@ def test_snap_line_to_synthetic_vertical_edge():
     assert result is not None
     snapped_x = (result.start[0] + result.end[0]) / 2
     assert 80 <= snapped_x <= 83
+
+
+def test_adjust_image_bgr_applies_brightness_contrast_and_sharpness():
+    image = np.full((12, 12, 3), 100, dtype=np.uint8)
+    image[:, 6:] = 150
+
+    bright = adjust_image_bgr(image, brightness=35, contrast_percent=100, sharpness_percent=0)
+    contrasted = adjust_image_bgr(image, brightness=0, contrast_percent=160, sharpness_percent=0)
+    sharpened = adjust_image_bgr(image, brightness=0, contrast_percent=100, sharpness_percent=120)
+
+    assert bright.dtype == np.uint8
+    assert float(bright.mean()) > float(image.mean())
+    assert float(contrasted[:, 6:].mean() - contrasted[:, :6].mean()) > 50.0
+    assert sharpened.shape == image.shape
 
 
 def test_asymmetric_search_range_limits_normal_sides():

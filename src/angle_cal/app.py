@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 from .image_ops import (
     Point,
     acute_angle_difference,
+    adjust_image_bgr,
     bgr_to_rgb8_for_display,
     intersection,
     line_angle_degrees,
@@ -384,6 +385,13 @@ class AngleCanvas(QGraphicsView):
         self.scene.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
         self.resetTransform()
         self.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def update_image_pixmap(self, pixmap: QPixmap) -> None:
+        if self.pixmap_item is None:
+            self.set_image(pixmap)
+            return
+        self.pixmap_item.setPixmap(pixmap)
+        self.scene.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
 
     def redraw_lines(self, records: list[LineRecord]) -> None:
         self.clear_point_handles()
@@ -2464,11 +2472,15 @@ class MainWindow(QMainWindow):
         self.cd_label_font_size = 10.0
         self.default_stroke_color = "#ff6b6b"
         self.default_stroke_width = 2.2
+        self.image_brightness = 0
+        self.image_contrast = 100
+        self.image_sharpness = 0
         self.hidden_angle_measurements: set[str] = set()
         self.undo_stack: list[dict] = []
         self._restoring_undo = False
         self._updating_object_visibility_controls = False
         self._updating_detection_controls = False
+        self._updating_image_adjustment_controls = False
         self._expanding_object_group_selection = False
         self.last_edge_record_id: Optional[str] = None
         self.visibility: dict[str, bool] = {
@@ -2823,6 +2835,31 @@ class MainWindow(QMainWindow):
         cd_settings_button.clicked.connect(self.edit_cd_display)
         display_edit_group.addWidget(angle_settings_button)
         display_edit_group.addWidget(cd_settings_button)
+
+        image_adjust_group = group(display_page, "이미지 보정")
+        self.image_brightness_spin = QSpinBox()
+        self.image_brightness_spin.setRange(-120, 120)
+        self.image_brightness_spin.setValue(self.image_brightness)
+        self.image_brightness_spin.valueChanged.connect(self.apply_image_adjustments)
+        self.image_contrast_spin = QSpinBox()
+        self.image_contrast_spin.setRange(0, 300)
+        self.image_contrast_spin.setValue(self.image_contrast)
+        self.image_contrast_spin.setSuffix(" %")
+        self.image_contrast_spin.valueChanged.connect(self.apply_image_adjustments)
+        self.image_sharpness_spin = QSpinBox()
+        self.image_sharpness_spin.setRange(0, 300)
+        self.image_sharpness_spin.setValue(self.image_sharpness)
+        self.image_sharpness_spin.setSuffix(" %")
+        self.image_sharpness_spin.valueChanged.connect(self.apply_image_adjustments)
+        reset_adjust_button = QPushButton("리셋")
+        reset_adjust_button.clicked.connect(self.reset_image_adjustments)
+        image_adjust_group.addWidget(QLabel("명도"))
+        image_adjust_group.addWidget(self.image_brightness_spin)
+        image_adjust_group.addWidget(QLabel("대비"))
+        image_adjust_group.addWidget(self.image_contrast_spin)
+        image_adjust_group.addWidget(QLabel("선명도"))
+        image_adjust_group.addWidget(self.image_sharpness_spin)
+        image_adjust_group.addWidget(reset_adjust_button)
         self.ribbon_tabs.addTab(display_page, "표시/서식")
 
         structure_page = page()
@@ -3189,6 +3226,7 @@ class MainWindow(QMainWindow):
             "counter": self._counter,
             "nm_per_px": self.nm_per_px,
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
+            "image_adjustments": self._image_adjustment_state(),
         }
 
     def _restore_image_state(self, state: dict) -> None:
@@ -3196,6 +3234,7 @@ class MainWindow(QMainWindow):
         self._counter = int(state.get("counter", len(self.records) + 1))
         self.nm_per_px = state.get("nm_per_px")
         self.hidden_angle_measurements = set(state.get("hidden_angle_measurements", []))
+        self._restore_image_adjustments(state.get("image_adjustments"), refresh=False)
 
     def _current_image_state_dict(self) -> dict:
         self._sync_records_from_canvas()
@@ -3204,6 +3243,7 @@ class MainWindow(QMainWindow):
             "counter": self._counter,
             "nm_per_px": self.nm_per_px,
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
+            "image_adjustments": self._image_adjustment_state(),
         }
 
     def load_browser_image(self, path: str) -> None:
@@ -3353,6 +3393,7 @@ class MainWindow(QMainWindow):
         self.image_path = image_path
         self.project_path = path
         self.nm_per_px = payload.get("nm_per_px")
+        self._restore_image_adjustments(payload.get("image_adjustments"), refresh=False)
         edge_detection = payload.get("edge_detection", {})
         edge_mode = edge_detection.get("edge_mode", self.edge_mode_combo.currentData())
         if edge_mode == "curve":
@@ -3443,6 +3484,7 @@ class MainWindow(QMainWindow):
         payload = {
             "image_path": self.image_path,
             "nm_per_px": self.nm_per_px,
+            "image_adjustments": self._image_adjustment_state(),
             "edge_detection": {
                 "edge_mode": self.edge_mode_combo.currentData(),
                 "search_radius_px": self.search_radius_spin.value(),
@@ -4135,7 +4177,7 @@ class MainWindow(QMainWindow):
                 if result != QMessageBox.StandardButton.Yes:
                     return
         self.save_undo_snapshot()
-        gray = to_gray(self.image_bgr)
+        gray = to_gray(self._adjusted_image_bgr())
         moved = 0
         for chain in self._connected_edge_chains(edge_records):
             source_points = self._chain_points(chain)
@@ -5124,14 +5166,84 @@ class MainWindow(QMainWindow):
         self._apply_visibility()
         self._set_status(f"선택 개체 {len(new_ids)}개를 드래그 위치에 복사했습니다.")
 
+    def _image_adjustment_state(self) -> dict[str, int]:
+        return {
+            "brightness": int(self.image_brightness),
+            "contrast": int(self.image_contrast),
+            "sharpness": int(self.image_sharpness),
+        }
+
+    def _set_image_adjustments(
+        self,
+        brightness: int,
+        contrast: int,
+        sharpness: int,
+        refresh: bool = True,
+    ) -> None:
+        self.image_brightness = int(max(-120, min(120, brightness)))
+        self.image_contrast = int(max(0, min(300, contrast)))
+        self.image_sharpness = int(max(0, min(300, sharpness)))
+        if hasattr(self, "image_brightness_spin"):
+            self._updating_image_adjustment_controls = True
+            try:
+                self.image_brightness_spin.setValue(self.image_brightness)
+                self.image_contrast_spin.setValue(self.image_contrast)
+                self.image_sharpness_spin.setValue(self.image_sharpness)
+            finally:
+                self._updating_image_adjustment_controls = False
+        if refresh:
+            self._refresh_adjusted_image_display()
+
+    def _restore_image_adjustments(self, state: Optional[dict], refresh: bool = True) -> None:
+        state = state or {}
+        self._set_image_adjustments(
+            int(state.get("brightness", 0)),
+            int(state.get("contrast", 100)),
+            int(state.get("sharpness", 0)),
+            refresh=refresh,
+        )
+
+    def _adjusted_image_bgr(self) -> np.ndarray:
+        if self.image_bgr is None:
+            raise RuntimeError("No image loaded")
+        return adjust_image_bgr(
+            self.image_bgr,
+            self.image_brightness,
+            self.image_contrast,
+            self.image_sharpness,
+        )
+
+    def _pixmap_from_bgr(self, image: np.ndarray) -> QPixmap:
+        rgb = bgr_to_rgb8_for_display(image)
+        h, w = rgb.shape[:2]
+        qimage = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
+        return QPixmap.fromImage(qimage)
+
+    def apply_image_adjustments(self, *args) -> None:
+        if self._updating_image_adjustment_controls:
+            return
+        self.image_brightness = self.image_brightness_spin.value()
+        self.image_contrast = self.image_contrast_spin.value()
+        self.image_sharpness = self.image_sharpness_spin.value()
+        self._refresh_adjusted_image_display()
+        self._set_status(
+            f"이미지 보정: 명도 {self.image_brightness}, 대비 {self.image_contrast}%, 선명도 {self.image_sharpness}%"
+        )
+
+    def reset_image_adjustments(self) -> None:
+        self._set_image_adjustments(0, 100, 0)
+        self._set_status("이미지 보정을 초기화했습니다.")
+
+    def _refresh_adjusted_image_display(self) -> None:
+        if self.image_bgr is None:
+            return
+        self.canvas.update_image_pixmap(self._pixmap_from_bgr(self._adjusted_image_bgr()))
+
     def _show_image(self, keep_view: bool = False) -> None:
         if self.image_bgr is None:
             return
         transform = self.canvas.transform() if keep_view else None
-        h, w = self.image_bgr.shape[:2]
-        rgb = bgr_to_rgb8_for_display(self.image_bgr)
-        qimage = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
-        self.canvas.set_image(QPixmap.fromImage(qimage))
+        self.canvas.set_image(self._pixmap_from_bgr(self._adjusted_image_bgr()))
         if keep_view and transform is not None:
             self.canvas.setTransform(transform)
 

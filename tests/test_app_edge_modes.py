@@ -299,6 +299,44 @@ def test_segment_size_change_preserves_mixed_split_search_ranges():
         window.close()
 
 
+def test_image_adjustment_updates_background_without_dropping_annotations():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+
+        window.image_brightness_spin.setValue(45)
+
+        assert window.image_brightness == 45
+        assert edge.id in window.canvas.line_items
+        assert window.canvas.line_items[edge.id].scene() is window.canvas.scene
+        assert window.canvas.pixmap_item is not None
+    finally:
+        window.close()
+
+
+def test_recognition_uses_adjusted_image(monkeypatch):
+    captured: dict[str, float] = {}
+
+    def fake_snap(gray, *args, **kwargs):
+        captured["mean"] = float(gray.mean())
+        return None
+
+    monkeypatch.setattr(app_module, "snap_polyline_to_gradient", fake_snap)
+    window = _window_with_edge_image()
+    try:
+        original_mean = float(app_module.to_gray(window.image_bgr).mean())
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.image_brightness_spin.setValue(35)
+
+        window.recognize_edges()
+
+        assert captured["mean"] > original_mean
+    finally:
+        window.close()
+
+
 def test_mouse_wheel_adjusts_search_range_for_selected_edge():
     window = _window_with_edge_image()
     try:

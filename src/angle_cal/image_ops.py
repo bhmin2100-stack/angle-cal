@@ -117,6 +117,23 @@ def bgr_to_rgb8_for_display(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
 
 
+def adjust_image_bgr(
+    image: np.ndarray,
+    brightness: int = 0,
+    contrast_percent: int = 100,
+    sharpness_percent: int = 0,
+) -> np.ndarray:
+    bgr = ensure_bgr(image).astype(np.float32)
+    contrast = max(0.0, float(contrast_percent)) / 100.0
+    adjusted = (bgr - 127.5) * contrast + 127.5 + float(brightness)
+    adjusted = np.clip(adjusted, 0, 255).astype(np.uint8)
+    if sharpness_percent > 0:
+        amount = min(5.0, float(sharpness_percent) / 100.0)
+        blurred = cv2.GaussianBlur(adjusted, (0, 0), 1.0)
+        adjusted = cv2.addWeighted(adjusted, 1.0 + amount, blurred, -amount, 0)
+    return adjusted
+
+
 def _bilinear_sample(gray: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
     h, w = gray.shape[:2]
     x0 = np.floor(xs).astype(np.int32)
