@@ -4438,14 +4438,15 @@ class MainWindow(QMainWindow):
     def _refresh_guide_measurements(self) -> None:
         edges = [record for record in self.records.values() if record.kind == "edge"]
         guides = [record for record in self.records.values() if record.kind == "guide"]
+        had_cd_measurements = bool(self.canvas.cd_items)
         if not edges:
             self.canvas.clear_angle_items()
             self.canvas.clear_cd_items()
             return
         self.calculate_angles(reset_hidden=False, update_status=False)
-        if guides and self.visibility.get("cd", True):
+        if guides and had_cd_measurements and self.visibility.get("cd", True):
             self.calculate_cd_lengths(silent=True, update_angles=False, update_status=False)
-        elif not guides:
+        elif not guides or not had_cd_measurements or not self.visibility.get("cd", True):
             self.canvas.clear_cd_items()
 
     def clear_guides(self, redraw: bool = True) -> None:
@@ -4623,12 +4624,7 @@ class MainWindow(QMainWindow):
             item = self.canvas.line_items.get(record_id)
             if item is not None and self.records.get(record_id, None) and self.records[record_id].kind == "edge":
                 item.setSelected(True)
-        if any(record.kind == "guide" for record in self.records.values()) and len(
-            [record for record in self.records.values() if record.kind == "edge"]
-        ) >= 2:
-            self.calculate_cd_lengths()
-        else:
-            self.calculate_angles(reset_hidden=False)
+        self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
         skipped = " 기존 가이드를 유지했습니다." if has_guides else ""

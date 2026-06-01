@@ -1031,6 +1031,9 @@ def test_structure_template_paste_skips_guides_when_current_image_has_guides():
         assert len(edges) == 2
         assert len(guides) == 1
         assert window.cd_segment_combo.currentData() == "odd"
+        assert not [row for row in window.last_measurements if row["kind"] == "cd_length"]
+
+        window.calculate_cd_lengths()
         assert len([row for row in window.last_measurements if row["kind"] == "cd_length"]) == 1
     finally:
         window.close()
@@ -1827,7 +1830,7 @@ def test_main_guide_generates_guides_from_selected_baseline():
         window.close()
 
 
-def test_moving_guide_refreshes_cd_and_respects_cd_visibility():
+def test_cd_only_appears_after_measure_button_then_refreshes_on_move():
     window = _window_with_edge_image()
     try:
         for x in (40.0, 80.0):
@@ -1845,12 +1848,21 @@ def test_moving_guide_refreshes_cd_and_respects_cd_visibility():
 
         guide_item.moveBy(0.0, 5.0)
         window._handle_scene_changed()
+
+        assert not [row for row in window.last_measurements if row["kind"] == "cd_length"]
+        assert not window.canvas.cd_items
+
+        window.calculate_cd_lengths()
+        assert len([row for row in window.last_measurements if row["kind"] == "cd_length"]) == 1
+        assert len(window.canvas.cd_items) == 2
+
+        guide_item.moveBy(0.0, 5.0)
+        window._handle_scene_changed()
         cd_rows = [row for row in window.last_measurements if row["kind"] == "cd_length"]
         assert len(cd_rows) == 1
         assert len(window.canvas.cd_items) == 2
 
         window.set_visibility("cd", False)
-        window.canvas.clear_cd_items()
         guide_item.moveBy(0.0, 5.0)
         window._handle_scene_changed()
 
