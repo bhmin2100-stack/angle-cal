@@ -2864,6 +2864,7 @@ class MainWindow(QMainWindow):
         if state is None:
             self.hidden_angle_measurements.clear()
         self._show_image()
+        self.canvas.redraw_lines(list(self.records.values()))
         self._refresh_table()
         self._update_search_range_overlay()
         self._apply_visibility()

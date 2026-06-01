@@ -1114,6 +1114,7 @@ def test_switching_images_restores_per_image_annotations(tmp_path):
     cv2.imwrite(str(path_a), np.zeros((80, 120, 3), dtype=np.uint8))
     cv2.imwrite(str(path_b), np.full((80, 120, 3), 255, dtype=np.uint8))
 
+    _app()
     window = MainWindow()
     try:
         window.browser_image_paths = [str(path_a), str(path_b)]
@@ -1131,6 +1132,8 @@ def test_switching_images_restores_per_image_annotations(tmp_path):
 
         assert edge.id in window.records
         assert window.records[edge.id].start == (20.0, 20.0)
+        assert edge.id in window.canvas.line_items
+        assert window.canvas.line_items[edge.id].isVisible()
         assert not [record for record in window.records.values() if record.kind == "scale"]
     finally:
         window.close()
