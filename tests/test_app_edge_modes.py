@@ -1449,6 +1449,53 @@ def test_grouped_objects_select_and_move_together():
         window.close()
 
 
+def test_axis_locked_drag_delta_uses_dominant_direction():
+    horizontal = app_module.AngleCanvas._axis_locked_delta(QPointF(24.0, 6.0))
+    vertical = app_module.AngleCanvas._axis_locked_delta(QPointF(4.0, -18.0))
+
+    assert horizontal == QPointF(24.0, 0.0)
+    assert vertical == QPointF(0.0, -18.0)
+
+
+def test_drag_copy_duplicates_selected_edge_group_and_guide():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 20.0), (20.0, 80.0))
+        window._create_edge_line((60.0, 20.0), (60.0, 80.0))
+        window._create_guide_line((0.0, 50.0), (120.0, 50.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        guide = next(record for record in window.records.values() if record.kind == "guide")
+        for record in [*edges, guide]:
+            window.canvas.line_items[record.id].setSelected(True)
+
+        window.group_selected_objects()
+        original_group = edges[0].object_group
+        assert original_group
+
+        window.duplicate_dragged_objects([edges[0].id, edges[1].id, guide.id], 12.0, 0.0)
+
+        copied_edges = [
+            record
+            for record in window.records.values()
+            if record.kind == "edge" and record.id not in {edge.id for edge in edges}
+        ]
+        copied_guides = [record for record in window.records.values() if record.kind == "guide" and record.id != guide.id]
+        copied_group_ids = {record.object_group for record in copied_edges + copied_guides}
+        copied_edge_starts = sorted(record.start for record in copied_edges)
+
+        assert len(copied_edges) == 2
+        assert len(copied_guides) == 1
+        assert copied_edge_starts == [(32.0, 20.0), (72.0, 20.0)]
+        assert copied_guides[0].start == (12.0, 50.0)
+        assert len(copied_group_ids) == 1
+        assert None not in copied_group_ids
+        assert copied_group_ids != {original_group}
+        assert {record.id for record in copied_edges + copied_guides} == set(window.canvas.selected_line_ids())
+    finally:
+        window.close()
+
+
 def test_ungroup_selected_objects_stops_group_selection():
     window = _window_with_edge_image()
     try:

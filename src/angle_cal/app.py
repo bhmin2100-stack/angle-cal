@@ -238,6 +238,7 @@ class AngleCanvas(QGraphicsView):
     scene_changed = Signal()
     scale_requested = Signal(float)
     search_range_wheel_requested = Signal(int)
+    copy_drag_requested = Signal(object, float, float)
     edit_started = Signal()
     temporary_edge_tool_changed = Signal(bool)
     guide_context_requested = Signal(str, QPoint)
@@ -293,6 +294,14 @@ class AngleCanvas(QGraphicsView):
         self._space_edge_previous_tool: Optional[str] = None
         self._additive_rubberband_items: Optional[set[QGraphicsItem]] = None
         self._shortcut_overlay_visible = False
+        self._object_drag_items: list[AnnotationLineItem | AnnotationCurveItem] = []
+        self._object_drag_record_ids: list[str] = []
+        self._object_drag_start_scene: Optional[QPointF] = None
+        self._object_drag_start_positions: dict[QGraphicsItem, QPointF] = {}
+        self._object_drag_copy = False
+        self._object_drag_constrain = False
+        self._object_drag_moved = False
+        self._object_drag_last_delta = QPointF(0.0, 0.0)
         self._magnifier_label = QLabel(self.viewport())
         self._magnifier_label.setFixedSize(168, 168)
         self._magnifier_label.setStyleSheet("border: 1px solid rgba(255, 209, 102, 210); background: #101418;")
@@ -330,6 +339,7 @@ class AngleCanvas(QGraphicsView):
         self._hide_scale_magnifier()
         self._panning = False
         self._resizing = False
+        self._clear_object_drag(restore=True)
         self._restore_tool_cursor()
 
     def _restore_tool_cursor(self) -> None:
@@ -692,7 +702,9 @@ class AngleCanvas(QGraphicsView):
             "Q + 드래그: 경계선만 선택<br>"
             "W + 드래그: 각도 호만 선택<br>"
             "E + 드래그: 각도 숫자만 선택<br>"
-            "Ctrl + 드래그: 선택 추가 / 화면 이동<br>"
+            "선택 개체 Ctrl + 드래그: 복사 이동<br>"
+            "선택 개체 Shift + 드래그: 수평/수직 이동 고정<br>"
+            "빈 화면 Ctrl + 드래그: 선택 추가 / 화면 이동<br>"
             "Space 누르고 있기: 경계선 그리기<br>"
             "Ctrl + 휠: 확대/축소<br>"
             "Ctrl+Shift+C: 서식 복사, Ctrl+V: 서식/개체 붙여넣기<br>"
@@ -1063,6 +1075,96 @@ class AngleCanvas(QGraphicsView):
             return isinstance(item, QGraphicsTextItem) and item in self.angle_items
         return True
 
+    def _selected_draggable_line_at(self, view_pos: QPoint) -> Optional[AnnotationLineItem | AnnotationCurveItem]:
+        for item in self.items(view_pos):
+            if (
+                isinstance(item, (AnnotationLineItem, AnnotationCurveItem))
+                and item.kind in {"edge", "guide"}
+                and item.isSelected()
+            ):
+                return item
+        return None
+
+    def _begin_object_drag(self, view_pos: QPoint, modifiers: Qt.KeyboardModifier) -> bool:
+        clicked_item = self._selected_draggable_line_at(view_pos)
+        if clicked_item is None:
+            return False
+        selected_items = [
+            item
+            for item in self.scene.selectedItems()
+            if isinstance(item, (AnnotationLineItem, AnnotationCurveItem)) and item.kind in {"edge", "guide"}
+        ]
+        if clicked_item not in selected_items:
+            selected_items.append(clicked_item)
+        if not selected_items:
+            return False
+        self._object_drag_items = selected_items
+        self._object_drag_record_ids = [item.record_id for item in selected_items]
+        self._object_drag_start_scene = self.mapToScene(view_pos)
+        self._object_drag_start_positions = {item: QPointF(item.pos()) for item in selected_items}
+        self._object_drag_copy = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        self._object_drag_constrain = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        self._object_drag_moved = False
+        self._object_drag_last_delta = QPointF(0.0, 0.0)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        return True
+
+    @staticmethod
+    def _axis_locked_delta(delta: QPointF) -> QPointF:
+        if abs(delta.x()) >= abs(delta.y()):
+            return QPointF(delta.x(), 0.0)
+        return QPointF(0.0, delta.y())
+
+    def _current_object_drag_delta(self, view_pos: QPoint) -> QPointF:
+        if self._object_drag_start_scene is None:
+            return QPointF(0.0, 0.0)
+        raw_delta = self.mapToScene(view_pos) - self._object_drag_start_scene
+        if self._object_drag_constrain:
+            return self._axis_locked_delta(raw_delta)
+        return raw_delta
+
+    def _apply_object_drag_delta(self, delta: QPointF) -> None:
+        for item in self._object_drag_items:
+            start_pos = self._object_drag_start_positions.get(item)
+            if start_pos is None or item.scene() is not self.scene:
+                continue
+            item.setPos(start_pos + delta)
+        self.sync_point_handles_to_owners()
+        self._object_drag_last_delta = delta
+
+    def _finish_object_drag(self, modifiers: Qt.KeyboardModifier) -> None:
+        delta = self._object_drag_last_delta
+        record_ids = list(self._object_drag_record_ids)
+        should_copy = self._object_drag_copy and bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        moved = self._object_drag_moved
+        if should_copy:
+            self._restore_object_drag_positions()
+        self._clear_object_drag()
+        if not moved:
+            return
+        if should_copy:
+            self.copy_drag_requested.emit(record_ids, float(delta.x()), float(delta.y()))
+        else:
+            self.scene_changed.emit()
+
+    def _restore_object_drag_positions(self) -> None:
+        for item, start_pos in self._object_drag_start_positions.items():
+            if item.scene() is self.scene:
+                item.setPos(start_pos)
+        self.sync_point_handles_to_owners()
+
+    def _clear_object_drag(self, restore: bool = False) -> None:
+        if restore:
+            self._restore_object_drag_positions()
+        self._object_drag_items = []
+        self._object_drag_record_ids = []
+        self._object_drag_start_scene = None
+        self._object_drag_start_positions = {}
+        self._object_drag_copy = False
+        self._object_drag_constrain = False
+        self._object_drag_moved = False
+        self._object_drag_last_delta = QPointF(0.0, 0.0)
+
     def selected_persistent_bounds(self) -> Optional[QRectF]:
         items = [item for item in self.scene.selectedItems() if isinstance(item, (AnnotationLineItem, AnnotationCurveItem))]
         if not items:
@@ -1104,6 +1206,14 @@ class AngleCanvas(QGraphicsView):
                 return
         if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
             self._start_pan(event.pos())
+            event.accept()
+            return
+
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+            and self._begin_object_drag(event.pos(), event.modifiers())
+        ):
             event.accept()
             return
 
@@ -1178,6 +1288,15 @@ class AngleCanvas(QGraphicsView):
         else:
             self._hide_scale_magnifier()
 
+        if self._object_drag_start_scene is not None:
+            delta = self._current_object_drag_delta(event.pos())
+            if not self._object_drag_moved and (abs(delta.x()) + abs(delta.y())) > 0.01:
+                self.edit_started.emit()
+                self._object_drag_moved = True
+            self._apply_object_drag_delta(delta)
+            event.accept()
+            return
+
         if self._panning:
             delta = event.pos() - self._pan_last
             self._pan_last = event.pos()
@@ -1216,6 +1335,12 @@ class AngleCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._object_drag_start_scene is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._finish_object_drag(event.modifiers())
+            self._restore_tool_cursor()
+            event.accept()
+            return
+
         if self._panning and event.button() in (
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.MiddleButton,
@@ -2221,6 +2346,7 @@ class MainWindow(QMainWindow):
         self.canvas.scene_changed.connect(self._handle_scene_changed)
         self.canvas.scale_requested.connect(self.scale_selected_objects)
         self.canvas.search_range_wheel_requested.connect(self.adjust_search_range_by_wheel)
+        self.canvas.copy_drag_requested.connect(self.duplicate_dragged_objects)
         self.canvas.edit_started.connect(self.save_undo_snapshot)
         self.canvas.temporary_edge_tool_changed.connect(self.set_temporary_edge_tool)
         self.canvas.guide_context_requested.connect(self.open_guide_context_menu)
@@ -4736,6 +4862,63 @@ class MainWindow(QMainWindow):
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status(f"상위개체 {len(new_ids)}개를 붙여넣었습니다. 하위 각도 표시들은 새로 계산됩니다.")
+
+    def duplicate_dragged_objects(self, record_ids: object, dx: float, dy: float) -> None:
+        if self.image_bgr is None:
+            return
+        if abs(dx) + abs(dy) <= 0.01:
+            return
+        source_ids: list[str] = []
+        seen: set[str] = set()
+        iterable_ids = record_ids if isinstance(record_ids, (list, tuple, set)) else []
+        for raw_id in iterable_ids:
+            record_id = str(raw_id)
+            record = self.records.get(record_id)
+            if record_id in seen or record is None or record.kind not in {"edge", "guide"}:
+                continue
+            seen.add(record_id)
+            source_ids.append(record_id)
+        if not source_ids:
+            return
+
+        self._sync_records_from_canvas()
+        group_map: dict[str, str] = {}
+        new_ids: list[str] = []
+        for source_id in source_ids:
+            source = self.records[source_id]
+            record = clone_record(source)
+            record.id = self._next_id("G" if record.kind == "guide" else "E")
+            if record.object_group:
+                if record.object_group not in group_map:
+                    group_map[record.object_group] = self._next_object_group_id(set(group_map.values()))
+                record.object_group = group_map[record.object_group]
+            record.start = offset_point(record.start, dx, dy)
+            record.end = offset_point(record.end, dx, dy)
+            if record.points:
+                record.points = [offset_point(point, dx, dy) for point in record.points]
+                record.start = record.points[0]
+                record.end = record.points[-1]
+            if record.recognition_points:
+                record.recognition_points = [offset_point(point, dx, dy) for point in record.recognition_points]
+            if record.edge_length_label_pos:
+                record.edge_length_label_pos = offset_point(record.edge_length_label_pos, dx, dy)
+            if record.kind == "guide":
+                record.is_main_guide = False
+            self.records[record.id] = record
+            new_ids.append(record.id)
+
+        self.canvas.redraw_lines(list(self.records.values()))
+        self.canvas.scene.clearSelection()
+        for record_id in new_ids:
+            item = self.canvas.line_items.get(record_id)
+            if item is not None:
+                item.setSelected(True)
+        self.calculate_angles(reset_hidden=False)
+        self._refresh_guide_measurements()
+        self._update_edge_length_overlay()
+        self._update_search_range_overlay()
+        self._apply_visibility()
+        self._set_status(f"선택 개체 {len(new_ids)}개를 드래그 위치에 복사했습니다.")
 
     def _show_image(self, keep_view: bool = False) -> None:
         if self.image_bgr is None:
