@@ -83,6 +83,9 @@ class LineRecord:
     recognition_points: Optional[list[Point]] = None
     edge_mode: str = "line"
     search_radius_px: Optional[int] = None
+    search_radius_split: bool = False
+    search_radius_left_px: Optional[int] = None
+    search_radius_right_px: Optional[int] = None
     segment_size_px: Optional[int] = None
     angle_sector: int = 0
     angle_arc_radius: float = 28.0
@@ -237,7 +240,8 @@ class AngleCanvas(QGraphicsView):
     segment_split_requested = Signal(str, int)
     scene_changed = Signal()
     scale_requested = Signal(float)
-    search_range_wheel_requested = Signal(int)
+    search_range_wheel_requested = Signal(int, object)
+    search_range_side_drag_requested = Signal(str, int)
     copy_drag_requested = Signal(object, float, float)
     edit_started = Signal()
     temporary_edge_tool_changed = Signal(bool)
@@ -273,6 +277,9 @@ class AngleCanvas(QGraphicsView):
         self.edge_length_group_parents: dict[str, str] = {}
         self._angle_counter = 1
         self.search_range_radius_px = 35
+        self.search_range_split = False
+        self.search_range_left_px = 35
+        self.search_range_right_px = 35
         self.show_search_range = True
         self.show_search_range_band = True
         self.show_point_handles = True
@@ -302,6 +309,9 @@ class AngleCanvas(QGraphicsView):
         self._object_drag_constrain = False
         self._object_drag_moved = False
         self._object_drag_last_delta = QPointF(0.0, 0.0)
+        self._search_range_drag_side: Optional[str] = None
+        self._search_range_drag_segment: Optional[tuple[Point, Point]] = None
+        self._search_range_drag_moved = False
         self._magnifier_label = QLabel(self.viewport())
         self._magnifier_label.setFixedSize(168, 168)
         self._magnifier_label.setStyleSheet("border: 1px solid rgba(255, 209, 102, 210); background: #101418;")
@@ -340,6 +350,7 @@ class AngleCanvas(QGraphicsView):
         self._panning = False
         self._resizing = False
         self._clear_object_drag(restore=True)
+        self._clear_search_range_drag()
         self._restore_tool_cursor()
 
     def _restore_tool_cursor(self) -> None:
@@ -529,11 +540,17 @@ class AngleCanvas(QGraphicsView):
     def set_search_range(
         self,
         radius_px: int,
+        split: bool,
+        left_radius_px: int,
+        right_radius_px: int,
         visible: bool,
         band_visible: bool,
         records: list[LineRecord],
     ) -> None:
         self.search_range_radius_px = radius_px
+        self.search_range_split = split
+        self.search_range_left_px = left_radius_px
+        self.search_range_right_px = right_radius_px
         self.show_search_range = visible
         self.show_search_range_band = band_visible
         self.update_search_range_overlay(records)
@@ -704,6 +721,7 @@ class AngleCanvas(QGraphicsView):
             "E + 드래그: 각도 숫자만 선택<br>"
             "선택 개체 Ctrl + 드래그: 복사 이동<br>"
             "선택 개체 Shift + 드래그: 수평/수직 이동 고정<br>"
+            "좌우 분리 범위: 드래그=좌측, Shift+드래그=우측<br>"
             "빈 화면 Ctrl + 드래그: 선택 추가 / 화면 이동<br>"
             "Space 누르고 있기: 경계선 그리기<br>"
             "Ctrl + 휠: 확대/축소<br>"
@@ -742,16 +760,13 @@ class AngleCanvas(QGraphicsView):
         self.search_range_label_items.clear()
         if not self.show_search_range or self.pixmap_item is None:
             return
-        radius = float(self.search_range_radius_px)
-        if radius <= 0:
-            return
         for record in records:
             if record.kind != "edge":
                 continue
-            radius = float(record.search_radius_px or self.search_range_radius_px)
-            if radius <= 0:
+            left_radius, right_radius = self._search_range_radii_for_record(record)
+            if left_radius <= 0 and right_radius <= 0:
                 continue
-            polygons = self._search_range_polygons(record, radius)
+            polygons = self._search_range_polygons(record, left_radius, right_radius)
             if self.show_search_range_band and record.show_range:
                 for polygon in polygons:
                     item = QGraphicsPolygonItem(polygon)
@@ -761,6 +776,14 @@ class AngleCanvas(QGraphicsView):
                     item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
                     self.scene.addItem(item)
                     self.search_range_band_items.append(item)
+
+    def _search_range_radii_for_record(self, record: LineRecord) -> tuple[float, float]:
+        radius = float(record.search_radius_px or self.search_range_radius_px)
+        if record.search_radius_split:
+            left = float(record.search_radius_left_px if record.search_radius_left_px is not None else self.search_range_left_px)
+            right = float(record.search_radius_right_px if record.search_radius_right_px is not None else self.search_range_right_px)
+            return max(0.0, left), max(0.0, right)
+        return max(0.0, radius), max(0.0, radius)
 
     def clear_angle_items(self) -> None:
         for item in self.angle_items:
@@ -1085,6 +1108,57 @@ class AngleCanvas(QGraphicsView):
                 return item
         return None
 
+    def _search_range_drag_candidate(self, view_pos: QPoint) -> Optional[tuple[Point, Point]]:
+        if self.current_tool != "select" or not self.search_range_split:
+            return None
+        if self._selected_draggable_line_at(view_pos) is not None:
+            return None
+        scene_pos = self.mapToScene(view_pos)
+        point = (float(scene_pos.x()), float(scene_pos.y()))
+        max_radius = max(float(self.search_range_left_px), float(self.search_range_right_px), float(self.search_range_radius_px))
+        tolerance = max(5.0, 7.0 / max(0.2, self.transform().m11()))
+        best: Optional[tuple[float, Point, Point]] = None
+        for item in self.scene.selectedItems():
+            if not isinstance(item, (AnnotationLineItem, AnnotationCurveItem)) or item.kind != "edge":
+                continue
+            points = points_from_path_item(item)
+            for start, end in zip(points, points[1:]):
+                distance = point_to_segment_distance(point, start, end)
+                if distance <= max_radius + tolerance and (best is None or distance < best[0]):
+                    best = (distance, start, end)
+        if best is None:
+            return None
+        return (best[1], best[2])
+
+    def _begin_search_range_drag(self, view_pos: QPoint, modifiers: Qt.KeyboardModifier) -> bool:
+        segment = self._search_range_drag_candidate(view_pos)
+        if segment is None:
+            return False
+        self._search_range_drag_side = "right" if modifiers & Qt.KeyboardModifier.ShiftModifier else "left"
+        self._search_range_drag_segment = segment
+        self._search_range_drag_moved = False
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+        return True
+
+    def _search_range_radius_from_drag(self, view_pos: QPoint) -> int:
+        if self._search_range_drag_segment is None:
+            return 0
+        scene_pos = self.mapToScene(view_pos)
+        point = (float(scene_pos.x()), float(scene_pos.y()))
+        start, end = self._search_range_drag_segment
+        signed_distance = signed_distance_to_segment_normal(point, start, end)
+        if self._search_range_drag_side == "right":
+            signed_distance *= -1.0
+        return int(round(max(0.0, min(300.0, signed_distance))))
+
+    def _finish_search_range_drag(self) -> None:
+        self._clear_search_range_drag()
+
+    def _clear_search_range_drag(self) -> None:
+        self._search_range_drag_side = None
+        self._search_range_drag_segment = None
+        self._search_range_drag_moved = False
+
     def _begin_object_drag(self, view_pos: QPoint, modifiers: Qt.KeyboardModifier) -> bool:
         clicked_item = self._selected_draggable_line_at(view_pos)
         if clicked_item is None:
@@ -1191,7 +1265,8 @@ class AngleCanvas(QGraphicsView):
             return
         steps = int(event.angleDelta().y() / 120)
         if steps:
-            self.search_range_wheel_requested.emit(steps)
+            side = "right" if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else "left"
+            self.search_range_wheel_requested.emit(steps, side)
             event.accept()
             return
         super().wheelEvent(event)
@@ -1206,6 +1281,13 @@ class AngleCanvas(QGraphicsView):
                 return
         if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
             self._start_pan(event.pos())
+            event.accept()
+            return
+
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._begin_search_range_drag(event.pos(), event.modifiers())
+        ):
             event.accept()
             return
 
@@ -1288,6 +1370,15 @@ class AngleCanvas(QGraphicsView):
         else:
             self._hide_scale_magnifier()
 
+        if self._search_range_drag_segment is not None and self._search_range_drag_side is not None:
+            radius = self._search_range_radius_from_drag(event.pos())
+            if not self._search_range_drag_moved:
+                self.edit_started.emit()
+                self._search_range_drag_moved = True
+            self.search_range_side_drag_requested.emit(self._search_range_drag_side, radius)
+            event.accept()
+            return
+
         if self._object_drag_start_scene is not None:
             delta = self._current_object_drag_delta(event.pos())
             if not self._object_drag_moved and (abs(delta.x()) + abs(delta.y())) > 0.01:
@@ -1335,6 +1426,12 @@ class AngleCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._search_range_drag_segment is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._finish_search_range_drag()
+            self._restore_tool_cursor()
+            event.accept()
+            return
+
         if self._object_drag_start_scene is not None and event.button() == Qt.MouseButton.LeftButton:
             self._finish_object_drag(event.modifiers())
             self._restore_tool_cursor()
@@ -1610,7 +1707,7 @@ class AngleCanvas(QGraphicsView):
         return pen
 
     @staticmethod
-    def _search_range_polygons(record: LineRecord, radius: float) -> list[QPolygonF]:
+    def _search_range_polygons(record: LineRecord, left_radius: float, right_radius: float) -> list[QPolygonF]:
         points = record_points(record)
         polygons: list[QPolygonF] = []
         for start, end in zip(points, points[1:]):
@@ -1622,10 +1719,10 @@ class AngleCanvas(QGraphicsView):
             polygons.append(
                 QPolygonF(
                     [
-                        QPointF(sx + nx * radius, sy + ny * radius),
-                        QPointF(ex + nx * radius, ey + ny * radius),
-                        QPointF(ex - nx * radius, ey - ny * radius),
-                        QPointF(sx - nx * radius, sy - ny * radius),
+                        QPointF(sx + nx * left_radius, sy + ny * left_radius),
+                        QPointF(ex + nx * left_radius, ey + ny * left_radius),
+                        QPointF(ex - nx * right_radius, ey - ny * right_radius),
+                        QPointF(sx - nx * right_radius, sy - ny * right_radius),
                     ]
                 )
             )
@@ -1673,6 +1770,22 @@ def point_to_segment_distance(point: Point, start: Point, end: Point) -> float:
     t = max(0.0, min(1.0, t))
     projection = (start[0] + t * dx, start[1] + t * dy)
     return line_length(point, projection)
+
+
+def signed_distance_to_segment_normal(point: Point, start: Point, end: Point) -> float:
+    nx, ny = normal_for_line(start, end)
+    if nx == 0 and ny == 0:
+        return 0.0
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 0:
+        projection = start
+    else:
+        t = ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_sq
+        t = max(0.0, min(1.0, t))
+        projection = (start[0] + t * dx, start[1] + t * dy)
+    return (point[0] - projection[0]) * nx + (point[1] - projection[1]) * ny
 
 
 def record_length(record: LineRecord) -> float:
@@ -1775,6 +1888,9 @@ def clone_record(record: LineRecord) -> LineRecord:
         recognition_points=[tuple(point) for point in record.recognition_points] if record.recognition_points else None,
         edge_mode=record.edge_mode,
         search_radius_px=record.search_radius_px,
+        search_radius_split=record.search_radius_split,
+        search_radius_left_px=record.search_radius_left_px,
+        search_radius_right_px=record.search_radius_right_px,
         segment_size_px=record.segment_size_px,
         angle_sector=record.angle_sector,
         angle_arc_radius=record.angle_arc_radius,
@@ -1819,6 +1935,9 @@ def line_record_from_dict(item: dict) -> LineRecord:
         recognition_points=[tuple(point) for point in raw_recognition_points] or None,
         edge_mode=record_edge_mode,
         search_radius_px=int(item["search_radius_px"]) if item.get("search_radius_px") is not None else None,
+        search_radius_split=bool(item.get("search_radius_split", False)),
+        search_radius_left_px=int(item["search_radius_left_px"]) if item.get("search_radius_left_px") is not None else None,
+        search_radius_right_px=int(item["search_radius_right_px"]) if item.get("search_radius_right_px") is not None else None,
         segment_size_px=int(item["segment_size_px"]) if item.get("segment_size_px") is not None else None,
         angle_sector=int(item.get("angle_sector", 0)),
         angle_arc_radius=float(item.get("angle_arc_radius", 28.0)),
@@ -2099,6 +2218,9 @@ class EdgeDetectionSettingsDialog(QDialog):
         radius_px: int,
         segment_size_px: int,
         show_overlay: bool,
+        split_search_range: bool,
+        left_radius_px: int,
+        right_radius_px: int,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -2110,6 +2232,19 @@ class EdgeDetectionSettingsDialog(QDialog):
         self.radius_spin.setValue(radius_px)
         self.radius_spin.setSuffix(" px")
 
+        self.split_checkbox = QCheckBox("좌우 분리")
+        self.split_checkbox.setChecked(split_search_range)
+
+        self.left_radius_spin = QSpinBox()
+        self.left_radius_spin.setRange(0, 300)
+        self.left_radius_spin.setValue(left_radius_px)
+        self.left_radius_spin.setSuffix(" px")
+
+        self.right_radius_spin = QSpinBox()
+        self.right_radius_spin.setRange(0, 300)
+        self.right_radius_spin.setValue(right_radius_px)
+        self.right_radius_spin.setSuffix(" px")
+
         self.sensitivity_spin = QSpinBox()
         self.sensitivity_spin.setRange(2, 80)
         self.sensitivity_spin.setValue(segment_size_px)
@@ -2118,9 +2253,20 @@ class EdgeDetectionSettingsDialog(QDialog):
         self.overlay_checkbox = QCheckBox("이미지 위에 경계인식 범위 표시")
         self.overlay_checkbox.setChecked(show_overlay)
 
+        def update_split_controls(checked: bool) -> None:
+            self.radius_spin.setEnabled(not checked)
+            self.left_radius_spin.setEnabled(checked)
+            self.right_radius_spin.setEnabled(checked)
+
+        self.split_checkbox.toggled.connect(update_split_controls)
+        update_split_controls(split_search_range)
+
         layout = QVBoxLayout(self)
         form = QFormLayout()
         form.addRow("경계인식 범위", self.radius_spin)
+        form.addRow("", self.split_checkbox)
+        form.addRow("좌측 범위", self.left_radius_spin)
+        form.addRow("우측 범위", self.right_radius_spin)
         form.addRow("세그먼트 크기", self.sensitivity_spin)
         layout.addLayout(form)
         layout.addWidget(self.overlay_checkbox)
@@ -2346,6 +2492,7 @@ class MainWindow(QMainWindow):
         self.canvas.scene_changed.connect(self._handle_scene_changed)
         self.canvas.scale_requested.connect(self.scale_selected_objects)
         self.canvas.search_range_wheel_requested.connect(self.adjust_search_range_by_wheel)
+        self.canvas.search_range_side_drag_requested.connect(self.adjust_split_search_range_by_drag)
         self.canvas.copy_drag_requested.connect(self.duplicate_dragged_objects)
         self.canvas.edit_started.connect(self.save_undo_snapshot)
         self.canvas.temporary_edge_tool_changed.connect(self.set_temporary_edge_tool)
@@ -2551,6 +2698,26 @@ class MainWindow(QMainWindow):
         detect_group.addWidget(QLabel("경계인식 범위"))
         detect_group.addWidget(self.search_radius_spin)
 
+        self.split_search_range_checkbox = QCheckBox("좌우 분리")
+        self.split_search_range_checkbox.toggled.connect(self._edge_detection_settings_changed)
+        detect_group.addWidget(self.split_search_range_checkbox)
+
+        self.search_radius_left_spin = QSpinBox()
+        self.search_radius_left_spin.setRange(0, 300)
+        self.search_radius_left_spin.setValue(35)
+        self.search_radius_left_spin.setSuffix(" px")
+        self.search_radius_left_spin.valueChanged.connect(self._edge_detection_settings_changed)
+        detect_group.addWidget(QLabel("좌측"))
+        detect_group.addWidget(self.search_radius_left_spin)
+
+        self.search_radius_right_spin = QSpinBox()
+        self.search_radius_right_spin.setRange(0, 300)
+        self.search_radius_right_spin.setValue(35)
+        self.search_radius_right_spin.setSuffix(" px")
+        self.search_radius_right_spin.valueChanged.connect(self._edge_detection_settings_changed)
+        detect_group.addWidget(QLabel("우측"))
+        detect_group.addWidget(self.search_radius_right_spin)
+
         self.curve_sensitivity_spin = QSpinBox()
         self.curve_sensitivity_spin.setRange(2, 80)
         self.curve_sensitivity_spin.setValue(9)
@@ -2563,6 +2730,7 @@ class MainWindow(QMainWindow):
         self.show_search_range_checkbox.setChecked(True)
         self.show_search_range_checkbox.toggled.connect(self._edge_detection_settings_changed)
         detect_group.addWidget(self.show_search_range_checkbox)
+        self._update_split_search_controls_enabled()
 
         settings_button = QPushButton("인식 설정")
         settings_button.clicked.connect(self.open_edge_detection_settings)
@@ -3193,6 +3361,9 @@ class MainWindow(QMainWindow):
         if mode_index >= 0:
             self.edge_mode_combo.setCurrentIndex(mode_index)
         self.search_radius_spin.setValue(int(edge_detection.get("search_radius_px", self.search_radius_spin.value())))
+        self.split_search_range_checkbox.setChecked(bool(edge_detection.get("search_radius_split", False)))
+        self.search_radius_left_spin.setValue(int(edge_detection.get("search_radius_left_px", self.search_radius_left_spin.value())))
+        self.search_radius_right_spin.setValue(int(edge_detection.get("search_radius_right_px", self.search_radius_right_spin.value())))
         segment_size_px = edge_detection.get("segment_size_px")
         if segment_size_px is None and "curve_sensitivity" in edge_detection:
             segment_size_px = legacy_sensitivity_to_segment_size_px(edge_detection["curve_sensitivity"])
@@ -3275,6 +3446,9 @@ class MainWindow(QMainWindow):
             "edge_detection": {
                 "edge_mode": self.edge_mode_combo.currentData(),
                 "search_radius_px": self.search_radius_spin.value(),
+                "search_radius_split": self.split_search_range_checkbox.isChecked(),
+                "search_radius_left_px": self.search_radius_left_spin.value(),
+                "search_radius_right_px": self.search_radius_right_spin.value(),
                 "segment_size_px": self.curve_sensitivity_spin.value(),
                 "show_search_range": self.show_search_range_checkbox.isChecked(),
             },
@@ -3814,6 +3988,9 @@ class MainWindow(QMainWindow):
             recognition_points=list(points or [start, end]),
             edge_mode=edge_mode,
             search_radius_px=self.search_radius_spin.value() if hasattr(self, "search_radius_spin") else None,
+            search_radius_split=self.split_search_range_checkbox.isChecked() if hasattr(self, "split_search_range_checkbox") else False,
+            search_radius_left_px=self.search_radius_left_spin.value() if hasattr(self, "search_radius_left_spin") else None,
+            search_radius_right_px=self.search_radius_right_spin.value() if hasattr(self, "search_radius_right_spin") else None,
             segment_size_px=self.curve_sensitivity_spin.value() if hasattr(self, "curve_sensitivity_spin") else None,
             edge_segmented=edge_mode == "polyline",
             angle_sector=self.default_angle_sector,
@@ -3962,9 +4139,17 @@ class MainWindow(QMainWindow):
         moved = 0
         for chain in self._connected_edge_chains(edge_records):
             source_points = self._chain_points(chain)
-            radius = self._edge_search_radius(chain[0][0])
+            left_radius, right_radius = self._edge_search_radii(chain[0][0])
+            radius = max(left_radius, right_radius)
             segment_size_px = self._edge_segment_size(chain[0][0])
-            result = snap_polyline_to_gradient(gray, source_points, radius, segment_size_px)
+            result = snap_polyline_to_gradient(
+                gray,
+                source_points,
+                radius,
+                segment_size_px,
+                left_radius,
+                right_radius,
+            )
             if result is None:
                 continue
             self._apply_snapped_chain(chain, source_points, result.points)
@@ -3979,6 +4164,14 @@ class MainWindow(QMainWindow):
 
     def _edge_search_radius(self, record: LineRecord) -> int:
         return int(record.search_radius_px or self.search_radius_spin.value())
+
+    def _edge_search_radii(self, record: LineRecord) -> tuple[int, int]:
+        radius = self._edge_search_radius(record)
+        if not record.search_radius_split:
+            return radius, radius
+        left = record.search_radius_left_px if record.search_radius_left_px is not None else self.search_radius_left_spin.value()
+        right = record.search_radius_right_px if record.search_radius_right_px is not None else self.search_radius_right_spin.value()
+        return max(0, int(left)), max(0, int(right))
 
     def _edge_segment_size(self, record: LineRecord) -> int:
         return int(record.segment_size_px or self.curve_sensitivity_spin.value())
@@ -4758,6 +4951,10 @@ class MainWindow(QMainWindow):
             self.format_clipboard = {
                 "stroke_color": record.stroke_color,
                 "stroke_width": record.stroke_width,
+                "search_radius_px": record.search_radius_px,
+                "search_radius_split": record.search_radius_split,
+                "search_radius_left_px": record.search_radius_left_px,
+                "search_radius_right_px": record.search_radius_right_px,
                 "angle_sector": record.angle_sector,
                 "angle_arc_radius": record.angle_arc_radius,
                 "angle_label_side": record.angle_label_side,
@@ -4800,6 +4997,13 @@ class MainWindow(QMainWindow):
             record.stroke_color = self.format_clipboard.get("stroke_color")  # type: ignore[assignment]
             stroke_width = self.format_clipboard.get("stroke_width")
             record.stroke_width = float(stroke_width) if stroke_width is not None else None
+            search_radius = self.format_clipboard.get("search_radius_px")
+            record.search_radius_px = int(search_radius) if search_radius is not None else None
+            record.search_radius_split = bool(self.format_clipboard.get("search_radius_split", record.search_radius_split))
+            left_radius = self.format_clipboard.get("search_radius_left_px")
+            right_radius = self.format_clipboard.get("search_radius_right_px")
+            record.search_radius_left_px = int(left_radius) if left_radius is not None else None
+            record.search_radius_right_px = int(right_radius) if right_radius is not None else None
             if record.kind == "edge":
                 record.angle_sector = int(self.format_clipboard.get("angle_sector", record.angle_sector))
                 record.angle_arc_radius = float(self.format_clipboard.get("angle_arc_radius", record.angle_arc_radius))
@@ -5068,11 +5272,17 @@ class MainWindow(QMainWindow):
             self.search_radius_spin.value(),
             self.curve_sensitivity_spin.value(),
             self.show_search_range_checkbox.isChecked(),
+            self.split_search_range_checkbox.isChecked(),
+            self.search_radius_left_spin.value(),
+            self.search_radius_right_spin.value(),
             self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self.search_radius_spin.setValue(dialog.radius_spin.value())
+        self.split_search_range_checkbox.setChecked(dialog.split_checkbox.isChecked())
+        self.search_radius_left_spin.setValue(dialog.left_radius_spin.value())
+        self.search_radius_right_spin.setValue(dialog.right_radius_spin.value())
         self.curve_sensitivity_spin.setValue(dialog.sensitivity_spin.value())
         self.show_search_range_checkbox.setChecked(dialog.overlay_checkbox.isChecked())
         self._edge_detection_settings_changed()
@@ -5080,28 +5290,65 @@ class MainWindow(QMainWindow):
     def _edge_detection_settings_changed(self) -> None:
         if self._updating_detection_controls:
             return
+        self._update_split_search_controls_enabled()
         selected_edges = self._selected_edge_records()
         if selected_edges:
             radius = self.search_radius_spin.value()
+            split = self.split_search_range_checkbox.isChecked()
+            left_radius = self.search_radius_left_spin.value()
+            right_radius = self.search_radius_right_spin.value()
             segment_size_px = self.curve_sensitivity_spin.value()
             for edge in selected_edges:
                 edge.search_radius_px = radius
+                edge.search_radius_split = split
+                edge.search_radius_left_px = left_radius
+                edge.search_radius_right_px = right_radius
                 edge.segment_size_px = segment_size_px
         self._update_search_range_overlay()
-        if self.sender() in {self.curve_sensitivity_spin, None}:
+        if self.sender() in {
+            self.search_radius_spin,
+            self.split_search_range_checkbox,
+            self.search_radius_left_spin,
+            self.search_radius_right_spin,
+            self.curve_sensitivity_spin,
+            None,
+        }:
             self._show_detection_preview()
         radius = self.search_radius_spin.value()
+        split = self.split_search_range_checkbox.isChecked()
+        left_radius = self.search_radius_left_spin.value()
+        right_radius = self.search_radius_right_spin.value()
         segment_size_px = self.curve_sensitivity_spin.value()
         target_text = f"선택 경계선 {len(selected_edges)}개" if selected_edges else "기본값"
+        range_text = f"좌 {left_radius}px / 우 {right_radius}px" if split else f"양쪽 {radius}px"
         if self.show_search_range_checkbox.isChecked():
-            self._set_status(f"{target_text} 경계인식 범위: 양쪽 {radius}px, 세그먼트 크기 {segment_size_px}px")
+            self._set_status(f"{target_text} 경계인식 범위: {range_text}, 세그먼트 크기 {segment_size_px}px")
         else:
-            self._set_status(f"{target_text} 경계인식 범위: 양쪽 {radius}px, 세그먼트 크기 {segment_size_px}px, 표시 꺼짐")
+            self._set_status(f"{target_text} 경계인식 범위: {range_text}, 세그먼트 크기 {segment_size_px}px, 표시 꺼짐")
 
-    def adjust_search_range_by_wheel(self, steps: int) -> None:
+    def _update_split_search_controls_enabled(self) -> None:
+        if not hasattr(self, "split_search_range_checkbox"):
+            return
+        enabled = self.split_search_range_checkbox.isChecked()
+        self.search_radius_spin.setEnabled(not enabled)
+        self.search_radius_left_spin.setEnabled(enabled)
+        self.search_radius_right_spin.setEnabled(enabled)
+
+    def adjust_search_range_by_wheel(self, steps: int, side: Optional[str] = None) -> None:
         if not hasattr(self, "search_radius_spin") or steps == 0:
             return
         delta = 1 if steps > 0 else -1
+        if self.split_search_range_checkbox.isChecked():
+            target_side = "right" if side == "right" else "left"
+            spin = self.search_radius_right_spin if target_side == "right" else self.search_radius_left_spin
+            new_value = spin.value() + delta * abs(steps)
+            new_value = max(spin.minimum(), min(spin.maximum(), new_value))
+            if new_value == spin.value():
+                return
+            self.adjust_split_search_range_by_drag(target_side, new_value)
+            self._show_detection_preview()
+            return
+
         new_value = self.search_radius_spin.value() + delta * abs(steps)
         new_value = max(self.search_radius_spin.minimum(), min(self.search_radius_spin.maximum(), new_value))
         if new_value == self.search_radius_spin.value():
@@ -5129,6 +5376,35 @@ class MainWindow(QMainWindow):
             target_text = "기본값"
         self._set_status(f"{target_text} 경계인식 범위: 양쪽 {new_value}px")
 
+    def adjust_split_search_range_by_drag(self, side: str, radius: int) -> None:
+        if not hasattr(self, "split_search_range_checkbox") or not self.split_search_range_checkbox.isChecked():
+            return
+        radius = max(0, min(300, int(radius)))
+        spin = self.search_radius_right_spin if side == "right" else self.search_radius_left_spin
+        if spin.value() != radius:
+            self._updating_detection_controls = True
+            try:
+                spin.setValue(radius)
+            finally:
+                self._updating_detection_controls = False
+
+        selected_edges = self._selected_edge_records()
+        target_edges = selected_edges or self._last_edge_records()
+        for edge in target_edges:
+            edge.search_radius_split = True
+            if side == "right":
+                edge.search_radius_right_px = radius
+                if edge.search_radius_left_px is None:
+                    edge.search_radius_left_px = self.search_radius_left_spin.value()
+            else:
+                edge.search_radius_left_px = radius
+                if edge.search_radius_right_px is None:
+                    edge.search_radius_right_px = self.search_radius_right_spin.value()
+        self._update_search_range_overlay()
+        target_text = f"선택 경계선 {len(selected_edges)}개" if selected_edges else "마지막 경계선"
+        side_text = "우측" if side == "right" else "좌측"
+        self._set_status(f"{target_text} 경계인식 {side_text} 범위: {radius}px")
+
     def _last_edge_records(self) -> list[LineRecord]:
         if self.last_edge_record_id in self.records:
             record = self.records[self.last_edge_record_id]
@@ -5144,6 +5420,9 @@ class MainWindow(QMainWindow):
         self._sync_records_from_canvas()
         self.canvas.set_search_range(
             self.search_radius_spin.value(),
+            self.split_search_range_checkbox.isChecked(),
+            self.search_radius_left_spin.value(),
+            self.search_radius_right_spin.value(),
             self.show_search_range_checkbox.isChecked() and self.visibility.get("range", True),
             self.visibility.get("range", True),
             list(self.records.values()),
@@ -5274,13 +5553,25 @@ class MainWindow(QMainWindow):
         if not selected_edges:
             return
         radius_values = [self._edge_search_radius(edge) for edge in selected_edges]
+        split_values = [bool(edge.search_radius_split) for edge in selected_edges]
+        left_values = [self._edge_search_radii(edge)[0] for edge in selected_edges]
+        right_values = [self._edge_search_radii(edge)[1] for edge in selected_edges]
         segment_values = [self._edge_segment_size(edge) for edge in selected_edges]
         first_radius = radius_values[0]
+        first_split = split_values[0]
+        first_left = left_values[0]
+        first_right = right_values[0]
         first_segment = segment_values[0]
         self._updating_detection_controls = True
         try:
             if all(value == first_radius for value in radius_values):
                 self.search_radius_spin.setValue(first_radius)
+            if all(value == first_split for value in split_values):
+                self.split_search_range_checkbox.setChecked(first_split)
+            if all(value == first_left for value in left_values):
+                self.search_radius_left_spin.setValue(first_left)
+            if all(value == first_right for value in right_values):
+                self.search_radius_right_spin.setValue(first_right)
             if all(value == first_segment for value in segment_values):
                 self.curve_sensitivity_spin.setValue(first_segment)
             mode_values = [edge.edge_mode for edge in selected_edges]
@@ -5290,6 +5581,7 @@ class MainWindow(QMainWindow):
                     self.edge_mode_combo.setCurrentIndex(mode_index)
         finally:
             self._updating_detection_controls = False
+        self._update_split_search_controls_enabled()
 
     def _apply_visibility(self) -> None:
         for record_id, item in self.canvas.line_items.items():
@@ -5309,6 +5601,13 @@ class MainWindow(QMainWindow):
         self.canvas.set_point_handles_visible(self.visibility.get("point_handle", True))
 
     def _search_range_label(self) -> str:
+        if self.split_search_range_checkbox.isChecked():
+            left = self.search_radius_left_spin.value()
+            right = self.search_radius_right_spin.value()
+            width = left + right
+            if self.nm_per_px:
+                return f"좌 {left}px / 우 {right}px / 합 {width}px ({width * self.nm_per_px:.3g} nm)"
+            return f"좌 {left}px / 우 {right}px / 합 {width}px"
         radius = self.search_radius_spin.value()
         width = radius * 2
         if self.nm_per_px:

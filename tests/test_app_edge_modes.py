@@ -231,6 +231,47 @@ def test_selected_edge_detection_controls_apply_per_edge():
         window.close()
 
 
+def test_split_search_range_controls_apply_per_selected_edge():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((45.0, 20.0), (45.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.line_items[edges[0].id].setSelected(True)
+
+        window.split_search_range_checkbox.setChecked(True)
+        window.search_radius_left_spin.setValue(12)
+        window.search_radius_right_spin.setValue(28)
+
+        selected = window.records[edges[0].id]
+        unselected = window.records[edges[1].id]
+        assert selected.search_radius_split is True
+        assert selected.search_radius_left_px == 12
+        assert selected.search_radius_right_px == 28
+        assert unselected.search_radius_split is False
+    finally:
+        window.close()
+
+
+def test_split_search_range_wheel_adjusts_left_and_shift_adjusts_right():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.split_search_range_checkbox.setChecked(True)
+
+        window.adjust_search_range_by_wheel(1, "left")
+        window.adjust_search_range_by_wheel(2, "right")
+
+        assert window.records[edge.id].search_radius_left_px == 36
+        assert window.records[edge.id].search_radius_right_px == 37
+    finally:
+        window.close()
+
+
 def test_mouse_wheel_adjusts_search_range_for_selected_edge():
     window = _window_with_edge_image()
     try:

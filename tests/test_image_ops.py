@@ -42,6 +42,33 @@ def test_snap_line_to_synthetic_vertical_edge():
     assert 80 <= snapped_x <= 83
 
 
+def test_asymmetric_search_range_limits_normal_sides():
+    image = np.zeros((120, 160), dtype=np.float32)
+    image[:, 82:] = 255
+
+    too_short_right = snap_line_to_gradient(
+        image,
+        (70, 20),
+        (70, 100),
+        search_radius_px=30,
+        search_radius_left_px=30,
+        search_radius_right_px=5,
+    )
+    enough_right = snap_line_to_gradient(
+        image,
+        (70, 20),
+        (70, 100),
+        search_radius_px=30,
+        search_radius_left_px=5,
+        search_radius_right_px=20,
+    )
+
+    assert too_short_right is not None
+    assert enough_right is not None
+    assert ((too_short_right.start[0] + too_short_right.end[0]) / 2) < 78
+    assert 80 <= ((enough_right.start[0] + enough_right.end[0]) / 2) <= 83
+
+
 def test_snap_line_to_gradient_curve_follows_curved_edge():
     image = np.zeros((140, 180), dtype=np.float32)
     for y in range(image.shape[0]):

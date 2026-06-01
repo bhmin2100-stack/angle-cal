@@ -149,6 +149,8 @@ def snap_line_to_gradient(
     end: Point,
     search_radius_px: int = 30,
     samples_along_line: int = 160,
+    search_radius_left_px: Optional[int] = None,
+    search_radius_right_px: Optional[int] = None,
 ) -> Optional[SnapResult]:
     """Move a line along its normal to the strongest brightness change.
 
@@ -156,7 +158,12 @@ def snap_line_to_gradient(
     drawn line. The chosen offset is where the absolute derivative of that
     profile is largest.
     """
-    if search_radius_px <= 0 or samples_along_line < 2:
+    left_radius_px, right_radius_px = _resolve_search_radii(
+        search_radius_px,
+        search_radius_left_px,
+        search_radius_right_px,
+    )
+    if (left_radius_px <= 0 and right_radius_px <= 0) or samples_along_line < 2:
         return None
 
     length = line_length(start, end)
@@ -167,7 +174,9 @@ def snap_line_to_gradient(
     if nx == 0 and ny == 0:
         return None
 
-    offsets = np.arange(-search_radius_px, search_radius_px + 1, dtype=np.float32)
+    offsets = _search_offsets(left_radius_px, right_radius_px)
+    if offsets.size < 3:
+        return None
     t = np.linspace(0.0, 1.0, samples_along_line, dtype=np.float32)
     base_x = start[0] + (end[0] - start[0]) * t
     base_y = start[1] + (end[1] - start[1]) * t
@@ -222,8 +231,32 @@ def snap_line_to_gradient_curve(
     end: Point,
     search_radius_px: int = 30,
     segment_size_px: float = 9.0,
+    search_radius_left_px: Optional[int] = None,
+    search_radius_right_px: Optional[int] = None,
 ) -> Optional[SnapCurveResult]:
-    return snap_polyline_to_gradient(gray, [start, end], search_radius_px, segment_size_px)
+    return snap_polyline_to_gradient(
+        gray,
+        [start, end],
+        search_radius_px,
+        segment_size_px,
+        search_radius_left_px,
+        search_radius_right_px,
+    )
+
+
+def _resolve_search_radii(
+    search_radius_px: int,
+    search_radius_left_px: Optional[int],
+    search_radius_right_px: Optional[int],
+) -> tuple[int, int]:
+    symmetric_radius = max(0, int(search_radius_px))
+    left_radius = symmetric_radius if search_radius_left_px is None else max(0, int(search_radius_left_px))
+    right_radius = symmetric_radius if search_radius_right_px is None else max(0, int(search_radius_right_px))
+    return left_radius, right_radius
+
+
+def _search_offsets(left_radius_px: int, right_radius_px: int) -> np.ndarray:
+    return np.arange(-right_radius_px, left_radius_px + 1, dtype=np.float32)
 
 
 def _resample_polyline(points: Sequence[Point], step_px: float) -> list[Point]:
@@ -261,13 +294,20 @@ def snap_polyline_to_gradient(
     points: Sequence[Point],
     search_radius_px: int = 30,
     segment_size_px: float = 9.0,
+    search_radius_left_px: Optional[int] = None,
+    search_radius_right_px: Optional[int] = None,
 ) -> Optional[SnapCurveResult]:
     """Trace a connected polyline boundary near user-drawn connected segments.
 
     Segment size is the target distance in pixels between recognition points.
     Smaller values create denser segments and follow local changes more closely.
     """
-    if search_radius_px <= 0:
+    left_radius_px, right_radius_px = _resolve_search_radii(
+        search_radius_px,
+        search_radius_left_px,
+        search_radius_right_px,
+    )
+    if left_radius_px <= 0 and right_radius_px <= 0:
         return None
     if len(points) < 2:
         return None
@@ -280,7 +320,9 @@ def snap_polyline_to_gradient(
         indexes = np.linspace(0, len(sampled_points) - 1, 240).round().astype(int)
         sampled_points = [sampled_points[int(index)] for index in indexes]
     point_count = len(sampled_points)
-    offsets = np.arange(-search_radius_px, search_radius_px + 1, dtype=np.float32)
+    offsets = _search_offsets(left_radius_px, right_radius_px)
+    if offsets.size < 3:
+        return None
     local_half_width = float(np.clip(step_px * 0.55, 1.5, 8.0))
     local_tangent_offsets = np.linspace(-local_half_width, local_half_width, 5, dtype=np.float32)
 
