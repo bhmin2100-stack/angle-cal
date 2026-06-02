@@ -139,6 +139,8 @@ ANGLE_MEASUREMENT_KEY = 2
 LENGTH_GROUP_KEY = 3
 LENGTH_PARENT_KEY = 4
 ANGLE_TYPE_KEY = 5
+GROUP_BOX_GROUP_KEY = 6
+GROUP_BOX_RECORD_IDS_KEY = 7
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 TOOLTIP_STYLESHEET = (
     "QToolTip { "
@@ -427,7 +429,7 @@ class AngleCanvas(QGraphicsView):
         for record in records:
             if record.object_group and record.id in self.line_items:
                 grouped.setdefault(record.object_group, []).append(record)
-        for group_records in grouped.values():
+        for group_id, group_records in grouped.items():
             if len(group_records) < 2:
                 continue
             rect: Optional[QRectF] = None
@@ -442,9 +444,11 @@ class AngleCanvas(QGraphicsView):
             rect = rect.adjusted(-3.0, -3.0, 3.0, 3.0)
             box = QGraphicsRectItem(rect)
             box.setPen(cosmetic_pen(QColor(255, 214, 102, 175), 0.8, Qt.PenStyle.DashLine))
-            box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            box.setBrush(QBrush(QColor(255, 214, 102, 1)))
             box.setZValue(9)
             box.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            box.setData(GROUP_BOX_GROUP_KEY, group_id)
+            box.setData(GROUP_BOX_RECORD_IDS_KEY, tuple(record.id for record in group_records))
             self.scene.addItem(box)
             self.group_box_items.append(box)
 
@@ -1124,6 +1128,17 @@ class AngleCanvas(QGraphicsView):
                 return item
         return None
 
+    def _group_box_record_ids_at(self, view_pos: QPoint) -> list[str]:
+        for item in self.items(view_pos):
+            if item not in self.group_box_items:
+                continue
+            record_ids = item.data(GROUP_BOX_RECORD_IDS_KEY)
+            if isinstance(record_ids, tuple):
+                return [str(record_id) for record_id in record_ids]
+            if isinstance(record_ids, list):
+                return [str(record_id) for record_id in record_ids]
+        return []
+
     def _search_range_drag_candidate(self, view_pos: QPoint) -> Optional[tuple[Point, Point]]:
         if self.current_tool != "select" or not self.search_range_split:
             return None
@@ -1147,14 +1162,7 @@ class AngleCanvas(QGraphicsView):
         return (best[1], best[2])
 
     def _begin_search_range_drag(self, view_pos: QPoint, modifiers: Qt.KeyboardModifier) -> bool:
-        segment = self._search_range_drag_candidate(view_pos)
-        if segment is None:
-            return False
-        self._search_range_drag_side = "right" if modifiers & Qt.KeyboardModifier.ShiftModifier else "left"
-        self._search_range_drag_segment = segment
-        self._search_range_drag_moved = False
-        self.setCursor(Qt.CursorShape.SizeHorCursor)
-        return True
+        return False
 
     def _search_range_radius_from_drag(self, view_pos: QPoint) -> int:
         if self._search_range_drag_segment is None:
@@ -1175,6 +1183,48 @@ class AngleCanvas(QGraphicsView):
         self._search_range_drag_segment = None
         self._search_range_drag_moved = False
 
+    def _begin_object_drag_for_items(
+        self,
+        selected_items: list[AnnotationLineItem | AnnotationCurveItem],
+        view_pos: QPoint,
+        modifiers: Qt.KeyboardModifier,
+    ) -> bool:
+        unique_items: list[AnnotationLineItem | AnnotationCurveItem] = []
+        seen_ids: set[str] = set()
+        for item in selected_items:
+            if item.record_id in seen_ids or item.kind not in {"edge", "guide"}:
+                continue
+            unique_items.append(item)
+            seen_ids.add(item.record_id)
+        if not unique_items:
+            return False
+        self._object_drag_items = unique_items
+        self._object_drag_record_ids = [item.record_id for item in unique_items]
+        self._object_drag_start_scene = self.mapToScene(view_pos)
+        self._object_drag_start_positions = {item: QPointF(item.pos()) for item in unique_items}
+        self._object_drag_copy = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        self._object_drag_constrain = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        self._object_drag_moved = False
+        self._object_drag_last_delta = QPointF(0.0, 0.0)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        return True
+
+    def _begin_group_box_drag(self, view_pos: QPoint, modifiers: Qt.KeyboardModifier) -> bool:
+        record_ids = self._group_box_record_ids_at(view_pos)
+        if not record_ids:
+            return False
+        selected_items = [
+            self.line_items[record_id]
+            for record_id in record_ids
+            if record_id in self.line_items and self.line_items[record_id].kind in {"edge", "guide"}
+        ]
+        if not selected_items:
+            return False
+        self.scene.clearSelection()
+        for item in selected_items:
+            item.setSelected(True)
+        return self._begin_object_drag_for_items(selected_items, view_pos, modifiers)
+
     def _begin_object_drag(self, view_pos: QPoint, modifiers: Qt.KeyboardModifier) -> bool:
         clicked_item = self._selected_draggable_line_at(view_pos)
         if clicked_item is None:
@@ -1186,18 +1236,7 @@ class AngleCanvas(QGraphicsView):
         ]
         if clicked_item not in selected_items:
             selected_items.append(clicked_item)
-        if not selected_items:
-            return False
-        self._object_drag_items = selected_items
-        self._object_drag_record_ids = [item.record_id for item in selected_items]
-        self._object_drag_start_scene = self.mapToScene(view_pos)
-        self._object_drag_start_positions = {item: QPointF(item.pos()) for item in selected_items}
-        self._object_drag_copy = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
-        self._object_drag_constrain = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
-        self._object_drag_moved = False
-        self._object_drag_last_delta = QPointF(0.0, 0.0)
-        self.setCursor(Qt.CursorShape.SizeAllCursor)
-        return True
+        return self._begin_object_drag_for_items(selected_items, view_pos, modifiers)
 
     @staticmethod
     def _axis_locked_delta(delta: QPointF) -> QPointF:
@@ -1302,7 +1341,8 @@ class AngleCanvas(QGraphicsView):
 
         if (
             event.button() == Qt.MouseButton.LeftButton
-            and self._begin_search_range_drag(event.pos(), event.modifiers())
+            and self.current_tool == "select"
+            and self._begin_group_box_drag(event.pos(), event.modifiers())
         ):
             event.accept()
             return

@@ -390,6 +390,23 @@ def test_mouse_wheel_adjusts_search_range_for_selected_edge():
         window.close()
 
 
+def test_mouse_drag_does_not_adjust_search_range():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.split_search_range_checkbox.setChecked(True)
+        view_pos = window.canvas.mapFromScene(QPointF(90.0, 60.0))
+
+        assert window.canvas._search_range_drag_candidate(view_pos) is not None
+        assert not window.canvas._begin_search_range_drag(view_pos, Qt.KeyboardModifier.NoModifier)
+        assert window.canvas._search_range_drag_segment is None
+    finally:
+        window.close()
+
+
 def test_mouse_wheel_adjusts_last_edge_and_next_edge_default_when_none_selected():
     window = _window_with_edge_image()
     try:
@@ -1774,6 +1791,34 @@ def test_grouped_objects_select_and_move_together():
         assert window.records[edges[1].id].start == (70.0, 20.0)
         moved_box = window.canvas.group_box_items[0].rect()
         assert moved_box.left() > original_box.left()
+    finally:
+        window.close()
+
+
+def test_group_box_drag_moves_grouped_objects():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 20.0), (20.0, 80.0))
+        window._create_edge_line((60.0, 20.0), (60.0, 80.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.redraw_lines(list(window.records.values()))
+        for edge in edges:
+            window.canvas.line_items[edge.id].setSelected(True)
+        window.group_selected_objects()
+        window.canvas.scene.clearSelection()
+        box = window.canvas.group_box_items[0]
+        view_pos = window.canvas.mapFromScene(box.rect().center())
+
+        assert set(window.canvas._group_box_record_ids_at(view_pos)) == {edge.id for edge in edges}
+        assert window.canvas._begin_group_box_drag(view_pos, Qt.KeyboardModifier.NoModifier)
+        assert set(window.canvas.selected_line_ids()) == {edge.id for edge in edges}
+
+        window.canvas._apply_object_drag_delta(QPointF(15.0, 5.0))
+        window.canvas._object_drag_moved = True
+        window.canvas._finish_object_drag(Qt.KeyboardModifier.NoModifier)
+
+        assert window.records[edges[0].id].start == (35.0, 25.0)
+        assert window.records[edges[1].id].start == (75.0, 25.0)
     finally:
         window.close()
 
