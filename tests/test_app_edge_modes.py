@@ -756,15 +756,25 @@ def test_angle_sector_numbers_follow_visual_quadrants():
     assert vectors[3][0] > 0 and vectors[3][1] > 0
 
 
-def test_angle_label_quadrant_positions():
+def test_angle_label_degree_positions():
     center = (100.0, 100.0)
-    assert app_module.angle_label_position_for_sector(center, 0.0, 90.0, 20.0, "top_right", 5.0) == (125.0, 75.0)
-    assert app_module.angle_label_position_for_sector(center, 0.0, 90.0, 20.0, "top_left", 5.0) == (75.0, 75.0)
-    assert app_module.angle_label_position_for_sector(center, 0.0, 90.0, 20.0, "bottom_right", 5.0) == (125.0, 125.0)
-    assert app_module.angle_label_position_for_sector(center, 0.0, 90.0, 20.0, "bottom_left", 5.0) == (75.0, 125.0)
+    positions = [
+        app_module.angle_label_position_for_sector(center, 0.0, 90.0, 20.0, angle, 5.0)
+        for angle in (0, 90, 180, 270)
+    ]
+
+    assert [(round(x, 3), round(y, 3)) for x, y in positions] == [
+        (125.0, 100.0),
+        (100.0, 75.0),
+        (75.0, 100.0),
+        (100.0, 125.0),
+    ]
+    assert app_module.normalize_angle_label_side("bottom_left") == "225"
 
 
 def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(monkeypatch):
+    observed_live_values: list[list[str]] = []
+
     class _Value:
         def __init__(self, value):
             self._value = value
@@ -779,11 +789,17 @@ def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(m
         def __init__(self, *args, **kwargs):
             self.sector_combo = _Value(2)
             self.arc_radius_spin = _Value(55.0)
-            self.label_side_combo = _Value("bottom_left")
+            self.label_position_spin = _Value(225)
             self.label_gap_spin = _Value(9.0)
             self.label_font_size_spin = _Value(16.0)
+            self._on_changed = kwargs.get("on_changed")
 
         def exec(self):
+            if self._on_changed is not None:
+                self._on_changed()
+                observed_live_values.append(
+                    [record.angle_label_side for record in window.records.values() if record.kind == "edge"]
+                )
             return QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(app_module, "AngleDisplaySettingsDialog", _Dialog)
@@ -796,9 +812,10 @@ def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(m
         window.edit_angle_display_for_selected_edges()
 
         edges = [record for record in window.records.values() if record.kind == "edge"]
+        assert observed_live_values == [["225", "225"]]
         assert all(edge.angle_sector == 2 for edge in edges)
         assert all(edge.angle_arc_radius == 55.0 for edge in edges)
-        assert all(edge.angle_label_side == "bottom_left" for edge in edges)
+        assert all(edge.angle_label_side == "225" for edge in edges)
         assert all(edge.angle_label_gap == 9.0 for edge in edges)
         assert all(edge.angle_label_font_size == 16.0 for edge in edges)
         assert window.default_angle_sector == 2
@@ -808,7 +825,7 @@ def test_angle_display_edit_without_selection_applies_to_all_edges_and_default(m
         newest = list(window.records.values())[-1]
         assert newest.angle_sector == 2
         assert newest.angle_arc_radius == 55.0
-        assert newest.angle_label_side == "bottom_left"
+        assert newest.angle_label_side == "225"
         assert newest.angle_label_gap == 9.0
         assert newest.angle_label_font_size == 16.0
     finally:
@@ -958,6 +975,8 @@ def test_data_export_rows_use_signed_main_guide_display_ids():
 
 
 def test_cd_label_text_and_position_can_be_edited(monkeypatch):
+    observed_live_values: list[str] = []
+
     class _Value:
         def __init__(self, value):
             self._value = value
@@ -970,11 +989,15 @@ def test_cd_label_text_and_position_can_be_edited(monkeypatch):
 
     class _Dialog:
         def __init__(self, *args, **kwargs):
-            self.label_side_combo = _Value("below")
+            self.label_position_spin = _Value(270)
             self.label_gap_spin = _Value(22.0)
             self.label_font_size_spin = _Value(17.0)
+            self._on_changed = kwargs.get("on_changed")
 
         def exec(self):
+            if self._on_changed is not None:
+                self._on_changed()
+                observed_live_values.append(window.cd_label_side)
             return QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(app_module, "CdDisplaySettingsDialog", _Dialog)
@@ -1000,7 +1023,8 @@ def test_cd_label_text_and_position_can_be_edited(monkeypatch):
 
         window.edit_cd_display()
         label = next(item for item in window.canvas.cd_items if isinstance(item, QGraphicsTextItem))
-        assert window.cd_label_side == "below"
+        assert observed_live_values == ["270"]
+        assert window.cd_label_side == "270"
         assert window.cd_label_gap == 22.0
         assert window.cd_label_font_size == 17.0
         assert abs(label.sceneBoundingRect().center().x() - 60.0) < 0.001

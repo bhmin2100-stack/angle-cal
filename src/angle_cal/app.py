@@ -7,7 +7,7 @@ import json
 import math
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Callable, Optional
 import zipfile
 
 import numpy as np
@@ -90,7 +90,7 @@ class LineRecord:
     segment_size_px: Optional[int] = None
     angle_sector: int = 0
     angle_arc_radius: float = 28.0
-    angle_label_side: str = "top_right"
+    angle_label_side: str = "45"
     angle_label_gap: float = 14.0
     angle_label_font_size: float = 10.0
     edge_segmented: bool = False
@@ -1876,19 +1876,48 @@ def offset_point(point: Point, dx: float, dy: float) -> Point:
     return (point[0] + dx, point[1] + dy)
 
 
-def normalize_angle_label_side(value: str) -> str:
-    if value in {"top_right", "top_left", "bottom_right", "bottom_left"}:
-        return value
-    legacy_map = {
-        "outside": "top_right",
-        "on_arc": "top_right",
-        "inside": "bottom_right",
-        "right": "top_right",
-        "left": "top_left",
-        "up": "top_right",
-        "down": "bottom_right",
-    }
-    return legacy_map.get(value, "top_right")
+LEGACY_LABEL_POSITION_DEGREES = {
+    "top_right": 45.0,
+    "top_left": 135.0,
+    "bottom_left": 225.0,
+    "bottom_right": 315.0,
+    "outside": 45.0,
+    "on_arc": 45.0,
+    "inside": 315.0,
+    "right": 0.0,
+    "left": 180.0,
+    "up": 90.0,
+    "down": 270.0,
+    "above": 90.0,
+    "below": 270.0,
+}
+
+
+def normalize_label_position_degrees(value: object, default: float = 45.0) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) % 360.0
+    text = str(value).strip()
+    if text in LEGACY_LABEL_POSITION_DEGREES:
+        return LEGACY_LABEL_POSITION_DEGREES[text]
+    if text.endswith("°"):
+        text = text[:-1].strip()
+    try:
+        return float(text) % 360.0
+    except ValueError:
+        return float(default) % 360.0
+
+
+def label_position_degrees_text(value: object, default: float = 45.0) -> str:
+    degrees = int(round(normalize_label_position_degrees(value, default))) % 360
+    return str(degrees)
+
+
+def normalize_angle_label_side(value: object) -> str:
+    return label_position_degrees_text(value, 45.0)
+
+
+def normalize_cd_label_side(value: object) -> str:
+    return label_position_degrees_text(value, 90.0)
 
 
 def clone_record(record: LineRecord) -> LineRecord:
@@ -2052,11 +2081,9 @@ def angle_label_position_for_sector(
     side: str,
     gap: float,
 ) -> Point:
-    side = normalize_angle_label_side(side)
     distance = radius + gap
-    dx = distance if side.endswith("right") else -distance
-    dy = -distance if side.startswith("top") else distance
-    return (center[0] + dx, center[1] + dy)
+    angle_rad = math.radians(normalize_label_position_degrees(side, 45.0))
+    return (center[0] + math.cos(angle_rad) * distance, center[1] - math.sin(angle_rad) * distance)
 
 
 def polyline_intersections(edge: LineRecord, guide_line: tuple[Point, Point]) -> list[tuple[Point, float]]:
@@ -2096,14 +2123,8 @@ def cd_segment_allowed(index: int, mode: str) -> bool:
 
 def cd_label_center(start: Point, end: Point, side: str, gap: float) -> Point:
     midpoint = ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
-    nx, ny = normal_for_line(start, end)
-    if abs(ny) < 0.0001:
-        nx, ny = 0.0, -1.0
-    if side == "above" and ny > 0:
-        nx, ny = -nx, -ny
-    elif side == "below" and ny < 0:
-        nx, ny = -nx, -ny
-    return (midpoint[0] + nx * gap, midpoint[1] + ny * gap)
+    angle_rad = math.radians(normalize_label_position_degrees(side, 90.0))
+    return (midpoint[0] + math.cos(angle_rad) * gap, midpoint[1] - math.sin(angle_rad) * gap)
 
 
 def record_center(record: LineRecord) -> Point:
@@ -2356,8 +2377,10 @@ class AngleDisplaySettingsDialog(QDialog):
         label_gap: float,
         label_font_size: float,
         parent: Optional[QWidget] = None,
+        on_changed: Optional[Callable[[], None]] = None,
     ):
         super().__init__(parent)
+        self._on_changed = on_changed
         self.setWindowTitle("각도 표시 편집")
         self.setModal(True)
 
@@ -2371,16 +2394,11 @@ class AngleDisplaySettingsDialog(QDialog):
         self.arc_radius_spin.setValue(float(arc_radius))
         self.arc_radius_spin.setSuffix(" px")
 
-        self.label_side_combo = QComboBox()
-        for label, value in [
-            ("호 오른쪽위", "top_right"),
-            ("호 왼쪽위", "top_left"),
-            ("호 오른쪽아래", "bottom_right"),
-            ("호 왼쪽아래", "bottom_left"),
-        ]:
-            self.label_side_combo.addItem(label, value)
-        side_index = self.label_side_combo.findData(normalize_angle_label_side(label_side))
-        self.label_side_combo.setCurrentIndex(side_index if side_index >= 0 else 0)
+        self.label_position_spin = QSpinBox()
+        self.label_position_spin.setRange(0, 359)
+        self.label_position_spin.setWrapping(True)
+        self.label_position_spin.setValue(int(normalize_label_position_degrees(label_side, 45.0)))
+        self.label_position_spin.setSuffix("°")
 
         self.label_gap_spin = QDoubleSpinBox()
         self.label_gap_spin.setRange(0.0, 300.0)
@@ -2397,14 +2415,23 @@ class AngleDisplaySettingsDialog(QDialog):
         form = QFormLayout()
         form.addRow("각도 호 위치", self.sector_combo)
         form.addRow("각도 호 크기", self.arc_radius_spin)
-        form.addRow("숫자 위치", self.label_side_combo)
+        form.addRow("숫자 위치", self.label_position_spin)
         form.addRow("숫자 거리", self.label_gap_spin)
         form.addRow("숫자 크기", self.label_font_size_spin)
         layout.addLayout(form)
+        self.sector_combo.currentIndexChanged.connect(self._notify_changed)
+        self.arc_radius_spin.valueChanged.connect(self._notify_changed)
+        self.label_position_spin.valueChanged.connect(self._notify_changed)
+        self.label_gap_spin.valueChanged.connect(self._notify_changed)
+        self.label_font_size_spin.valueChanged.connect(self._notify_changed)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _notify_changed(self, *args) -> None:
+        if self._on_changed is not None:
+            self._on_changed()
 
 
 class CdDisplaySettingsDialog(QDialog):
@@ -2414,16 +2441,18 @@ class CdDisplaySettingsDialog(QDialog):
         label_gap: float,
         label_font_size: float,
         parent: Optional[QWidget] = None,
+        on_changed: Optional[Callable[[], None]] = None,
     ):
         super().__init__(parent)
+        self._on_changed = on_changed
         self.setWindowTitle("CD 표시 편집")
         self.setModal(True)
 
-        self.label_side_combo = QComboBox()
-        self.label_side_combo.addItem("선분 위", "above")
-        self.label_side_combo.addItem("선분 아래", "below")
-        side_index = self.label_side_combo.findData(label_side)
-        self.label_side_combo.setCurrentIndex(side_index if side_index >= 0 else 0)
+        self.label_position_spin = QSpinBox()
+        self.label_position_spin.setRange(0, 359)
+        self.label_position_spin.setWrapping(True)
+        self.label_position_spin.setValue(int(normalize_label_position_degrees(label_side, 90.0)))
+        self.label_position_spin.setSuffix("°")
 
         self.label_gap_spin = QDoubleSpinBox()
         self.label_gap_spin.setRange(0.0, 300.0)
@@ -2438,14 +2467,21 @@ class CdDisplaySettingsDialog(QDialog):
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
-        form.addRow("숫자 위치", self.label_side_combo)
+        form.addRow("숫자 위치", self.label_position_spin)
         form.addRow("숫자 거리", self.label_gap_spin)
         form.addRow("글씨 크기", self.label_font_size_spin)
         layout.addLayout(form)
+        self.label_position_spin.valueChanged.connect(self._notify_changed)
+        self.label_gap_spin.valueChanged.connect(self._notify_changed)
+        self.label_font_size_spin.valueChanged.connect(self._notify_changed)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _notify_changed(self, *args) -> None:
+        if self._on_changed is not None:
+            self._on_changed()
 
 
 class DataExportDialog(QDialog):
@@ -2527,10 +2563,10 @@ class MainWindow(QMainWindow):
         self._paste_offset_steps = 0
         self.default_angle_sector = 0
         self.default_angle_arc_radius = 28.0
-        self.default_angle_label_side = "top_right"
+        self.default_angle_label_side = "45"
         self.default_angle_label_gap = 14.0
         self.default_angle_label_font_size = 10.0
-        self.cd_label_side = "above"
+        self.cd_label_side = "90"
         self.cd_label_gap = 14.0
         self.cd_label_font_size = 10.0
         self.default_stroke_color = "#ff6b6b"
@@ -3538,9 +3574,7 @@ class MainWindow(QMainWindow):
         if cd_index >= 0:
             self.cd_segment_combo.setCurrentIndex(cd_index)
         cd_display = payload.get("cd_display", {})
-        self.cd_label_side = str(cd_display.get("label_side", self.cd_label_side))
-        if self.cd_label_side not in {"above", "below"}:
-            self.cd_label_side = "above"
+        self.cd_label_side = normalize_cd_label_side(cd_display.get("label_side", self.cd_label_side))
         self.cd_label_gap = float(cd_display.get("label_gap", self.cd_label_gap))
         self.cd_label_font_size = float(cd_display.get("label_font_size", self.cd_label_font_size))
         guide_generation = payload.get("guide_generation", {})
@@ -4699,16 +4733,29 @@ class MainWindow(QMainWindow):
             self._set_status(f"CD 길이 {created}개를 표시했습니다.")
 
     def edit_cd_display(self) -> None:
-        dialog = CdDisplaySettingsDialog(self.cd_label_side, self.cd_label_gap, self.cd_label_font_size, self)
+        original = (self.cd_label_side, self.cd_label_gap, self.cd_label_font_size)
+        had_cd_measurements = bool(self.canvas.cd_items)
+
+        def apply_dialog_values() -> None:
+            self.cd_label_side = normalize_cd_label_side(dialog.label_position_spin.value())
+            self.cd_label_gap = float(dialog.label_gap_spin.value())
+            self.cd_label_font_size = float(dialog.label_font_size_spin.value())
+            if had_cd_measurements:
+                self.calculate_cd_lengths(silent=True, update_status=False)
+
+        dialog = CdDisplaySettingsDialog(
+            self.cd_label_side,
+            self.cd_label_gap,
+            self.cd_label_font_size,
+            self,
+            on_changed=apply_dialog_values,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.cd_label_side, self.cd_label_gap, self.cd_label_font_size = original
+            if had_cd_measurements:
+                self.calculate_cd_lengths(silent=True, update_status=False)
             return
-        self.cd_label_side = str(dialog.label_side_combo.currentData())
-        if self.cd_label_side not in {"above", "below"}:
-            self.cd_label_side = "above"
-        self.cd_label_gap = float(dialog.label_gap_spin.value())
-        self.cd_label_font_size = float(dialog.label_font_size_spin.value())
-        if self.canvas.cd_items:
-            self.calculate_cd_lengths()
+        apply_dialog_values()
         self._set_status("CD 표시 설정을 바꿨습니다.")
 
     def save_current_structure_template(self) -> None:
@@ -4849,6 +4896,68 @@ class MainWindow(QMainWindow):
         if editing_all:
             edges = [record for record in self.records.values() if record.kind == "edge"]
         base = edges[0] if edges else None
+        original_defaults = (
+            self.default_angle_sector,
+            self.default_angle_arc_radius,
+            self.default_angle_label_side,
+            self.default_angle_label_gap,
+            self.default_angle_label_font_size,
+        )
+        original_edges = {
+            edge.id: (
+                edge.angle_sector,
+                edge.angle_arc_radius,
+                edge.angle_label_side,
+                edge.angle_label_gap,
+                edge.angle_label_font_size,
+            )
+            for edge in edges
+        }
+        undo_stack_before = list(self.undo_stack)
+        if edges:
+            self.save_undo_snapshot()
+
+        def apply_dialog_values() -> None:
+            sector = int(dialog.sector_combo.currentData())
+            arc_radius = float(dialog.arc_radius_spin.value())
+            label_side = normalize_angle_label_side(dialog.label_position_spin.value())
+            label_gap = float(dialog.label_gap_spin.value())
+            label_font_size = float(dialog.label_font_size_spin.value())
+            if editing_all:
+                self.default_angle_sector = sector
+                self.default_angle_arc_radius = arc_radius
+                self.default_angle_label_side = label_side
+                self.default_angle_label_gap = label_gap
+                self.default_angle_label_font_size = label_font_size
+            for edge in edges:
+                edge.angle_sector = sector
+                edge.angle_arc_radius = arc_radius
+                edge.angle_label_side = label_side
+                edge.angle_label_gap = label_gap
+                edge.angle_label_font_size = label_font_size
+            self.calculate_angles(reset_hidden=False, update_status=False)
+
+        def restore_original_values() -> None:
+            (
+                self.default_angle_sector,
+                self.default_angle_arc_radius,
+                self.default_angle_label_side,
+                self.default_angle_label_gap,
+                self.default_angle_label_font_size,
+            ) = original_defaults
+            for edge in edges:
+                values = original_edges.get(edge.id)
+                if values is None:
+                    continue
+                (
+                    edge.angle_sector,
+                    edge.angle_arc_radius,
+                    edge.angle_label_side,
+                    edge.angle_label_gap,
+                    edge.angle_label_font_size,
+                ) = values
+            self.calculate_angles(reset_hidden=False, update_status=False)
+
         dialog = AngleDisplaySettingsDialog(
             base.angle_sector if base is not None else self.default_angle_sector,
             base.angle_arc_radius if base is not None else self.default_angle_arc_radius,
@@ -4856,28 +4965,13 @@ class MainWindow(QMainWindow):
             base.angle_label_gap if base is not None else self.default_angle_label_gap,
             base.angle_label_font_size if base is not None else self.default_angle_label_font_size,
             self,
+            on_changed=apply_dialog_values,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            restore_original_values()
+            self.undo_stack = undo_stack_before
             return
-        self.save_undo_snapshot()
-        sector = int(dialog.sector_combo.currentData())
-        arc_radius = float(dialog.arc_radius_spin.value())
-        label_side = normalize_angle_label_side(str(dialog.label_side_combo.currentData()))
-        label_gap = float(dialog.label_gap_spin.value())
-        label_font_size = float(dialog.label_font_size_spin.value())
-        if editing_all:
-            self.default_angle_sector = sector
-            self.default_angle_arc_radius = arc_radius
-            self.default_angle_label_side = label_side
-            self.default_angle_label_gap = label_gap
-            self.default_angle_label_font_size = label_font_size
-        for edge in edges:
-            edge.angle_sector = sector
-            edge.angle_arc_radius = arc_radius
-            edge.angle_label_side = label_side
-            edge.angle_label_gap = label_gap
-            edge.angle_label_font_size = label_font_size
-        self.calculate_angles(reset_hidden=False)
+        apply_dialog_values()
         target_text = "전체 경계선" if editing_all else "선택한 경계선"
         self._set_status(f"{target_text} {len(edges)}개의 각도 표시 설정을 바꿨습니다.")
 
