@@ -348,7 +348,7 @@ class AngleCanvas(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
 
     def set_edge_draw_mode(self, mode: str) -> None:
-        self.edge_draw_mode = mode
+        self.edge_draw_mode = "line"
         self.cancel_interaction()
 
     def cancel_interaction(self) -> None:
@@ -837,7 +837,7 @@ class AngleCanvas(QGraphicsView):
         for record in records:
             if record.kind != "edge":
                 continue
-            if record.edge_mode == "polyline" or (record.points and len(record.points) > 2):
+            if record.points and len(record.points) > 2:
                 continue
             if not record.show_edge_length:
                 continue
@@ -1674,7 +1674,7 @@ class AngleCanvas(QGraphicsView):
         start = points[0]
         end = points[-1]
         self._clear_curve_preview()
-        if record_length(LineRecord("_preview", "edge", start, end, points=points, edge_mode="polyline")) > 3:
+        if record_length(LineRecord("_preview", "edge", start, end, points=points, edge_mode="line")) > 3:
             self.line_created.emit(self.current_tool, start, end, points)
 
     def _clear_curve_preview(self) -> None:
@@ -2002,11 +2002,6 @@ def clone_record(record: LineRecord) -> LineRecord:
 def line_record_from_dict(item: dict) -> LineRecord:
     raw_points = item.get("points") or []
     raw_recognition_points = item.get("recognition_points") or []
-    record_edge_mode = item.get("edge_mode")
-    if record_edge_mode == "curve":
-        record_edge_mode = "polyline"
-    if record_edge_mode not in {"line", "polyline"}:
-        record_edge_mode = "polyline" if raw_points else "line"
     legacy_show_angle = bool(item.get("show_angle", True))
     return LineRecord(
         id=item["id"],
@@ -2018,7 +2013,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         value_nm=item.get("value_nm"),
         points=[tuple(point) for point in raw_points] or None,
         recognition_points=[tuple(point) for point in raw_recognition_points] or None,
-        edge_mode=record_edge_mode,
+        edge_mode="line",
         search_radius_px=int(item["search_radius_px"]) if item.get("search_radius_px") is not None else None,
         search_radius_split=bool(item.get("search_radius_split", False)),
         search_radius_left_px=int(item["search_radius_left_px"]) if item.get("search_radius_left_px") is not None else None,
@@ -2029,7 +2024,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         angle_label_side=normalize_angle_label_side(str(item.get("angle_label_side", "top_right"))),
         angle_label_gap=float(item.get("angle_label_gap", 14.0)),
         angle_label_font_size=float(item.get("angle_label_font_size", 10.0)),
-        edge_segmented=bool(item.get("edge_segmented", bool(raw_points and len(raw_points) > 6))),
+        edge_segmented=bool(item.get("edge_segmented", bool(raw_points and len(raw_points) > 2))),
         object_group=item.get("object_group"),
         show_line=bool(item.get("show_line", True)),
         show_angle=legacy_show_angle,
@@ -2849,7 +2844,6 @@ class MainWindow(QMainWindow):
 
         self.edge_mode_combo = QComboBox()
         self.edge_mode_combo.addItem("직선", "line")
-        self.edge_mode_combo.addItem("이어진 직선", "polyline")
         self.edge_mode_combo.currentIndexChanged.connect(self._edge_mode_changed)
         detect_group.addWidget(QLabel("경계 형태"))
         detect_group.addWidget(self.edge_mode_combo)
@@ -3200,7 +3194,7 @@ class MainWindow(QMainWindow):
         for key, label in [
             ("scale", "스케일바"),
             ("reference", "기준선"),
-            ("edge", "경계/이어진 직선"),
+            ("edge", "경계"),
             ("guide", "가이드"),
             ("line_angle", "선 각도"),
             ("intersection_angle", "교점 각도"),
@@ -3594,10 +3588,7 @@ class MainWindow(QMainWindow):
         self.nm_per_px = payload.get("nm_per_px")
         self._restore_image_adjustments(payload.get("image_adjustments"), refresh=False)
         edge_detection = payload.get("edge_detection", {})
-        edge_mode = edge_detection.get("edge_mode", self.edge_mode_combo.currentData())
-        if edge_mode == "curve":
-            edge_mode = "polyline"
-        mode_index = self.edge_mode_combo.findData(edge_mode)
+        mode_index = self.edge_mode_combo.findData("line")
         if mode_index >= 0:
             self.edge_mode_combo.setCurrentIndex(mode_index)
         self.search_radius_spin.setValue(int(edge_detection.get("search_radius_px", self.search_radius_spin.value())))
@@ -3686,7 +3677,7 @@ class MainWindow(QMainWindow):
             "nm_per_px": current_state.get("nm_per_px"),
             "image_adjustments": current_state.get("image_adjustments", self._image_adjustment_state()),
             "edge_detection": {
-                "edge_mode": self.edge_mode_combo.currentData(),
+                "edge_mode": "line",
                 "search_radius_px": self.search_radius_spin.value(),
                 "search_radius_split": self.split_search_range_checkbox.isChecked(),
                 "search_radius_left_px": self.search_radius_left_spin.value(),
@@ -4241,11 +4232,6 @@ class MainWindow(QMainWindow):
         self._set_status("기준선을 만들었습니다. 기준 토글을 바꾼 뒤 '이미지 맞춤'으로 수평/수직 전환할 수 있습니다.")
 
     def _create_edge_line(self, start: Point, end: Point, points: Optional[list[Point]] = None) -> None:
-        edge_mode = self.edge_mode_combo.currentData()
-        if edge_mode != "polyline":
-            points = None
-        else:
-            points = points or [start, end]
         record = LineRecord(
             id=self._next_id("E"),
             kind="edge",
@@ -4253,15 +4239,15 @@ class MainWindow(QMainWindow):
             end=end,
             label="edge",
             axis=self.axis_combo.currentData(),
-            points=points,
-            recognition_points=list(points or [start, end]),
-            edge_mode=edge_mode,
+            points=None,
+            recognition_points=[start, end],
+            edge_mode="line",
             search_radius_px=self.search_radius_spin.value() if hasattr(self, "search_radius_spin") else None,
             search_radius_split=self.split_search_range_checkbox.isChecked() if hasattr(self, "split_search_range_checkbox") else False,
             search_radius_left_px=self.search_radius_left_spin.value() if hasattr(self, "search_radius_left_spin") else None,
             search_radius_right_px=self.search_radius_right_spin.value() if hasattr(self, "search_radius_right_spin") else None,
             segment_size_px=self.curve_sensitivity_spin.value() if hasattr(self, "curve_sensitivity_spin") else None,
-            edge_segmented=edge_mode == "polyline",
+            edge_segmented=False,
             angle_sector=self.default_angle_sector,
             angle_arc_radius=self.default_angle_arc_radius,
             angle_label_side=self.default_angle_label_side,
@@ -4272,7 +4258,7 @@ class MainWindow(QMainWindow):
         )
         self.records[record.id] = record
         self.last_edge_record_id = record.id
-        self._set_status(f"{'이어진 직선' if edge_mode == 'polyline' else '직선'} 경계선을 추가했습니다.")
+        self._set_status("직선 경계선을 추가했습니다.")
 
     def split_edge_segment_for_selection(self, record_id: str, segment_index: int) -> None:
         self._sync_records_from_canvas()
@@ -4303,7 +4289,7 @@ class MainWindow(QMainWindow):
             new_record.end = part_points[-1]
             new_record.points = part_points if len(part_points) > 2 else None
             new_record.recognition_points = part_points
-            new_record.edge_mode = "polyline" if len(part_points) > 2 else "line"
+            new_record.edge_mode = "line"
             new_record.edge_segmented = len(part_points) > 2
             new_record.object_group = None if is_selected else original_group
             new_record.edge_length_label_pos = None
@@ -4406,11 +4392,11 @@ class MainWindow(QMainWindow):
         self.save_undo_snapshot()
         gray = to_gray(self._adjusted_image_bgr())
         moved = 0
-        for chain in self._connected_edge_chains(edge_records):
-            source_points = self._chain_points(chain)
-            left_radius, right_radius = self._edge_search_radii(chain[0][0])
+        for record in edge_records:
+            source_points = list(recognition_points(record))
+            left_radius, right_radius = self._edge_search_radii(record)
             radius = max(left_radius, right_radius)
-            segment_size_px = self._edge_segment_size(chain[0][0])
+            segment_size_px = self._edge_segment_size(record)
             result = snap_polyline_to_gradient(
                 gray,
                 source_points,
@@ -4421,8 +4407,8 @@ class MainWindow(QMainWindow):
             )
             if result is None:
                 continue
-            self._apply_snapped_chain(chain, source_points, result.points)
-            moved += len(chain)
+            self._apply_snapped_edge(record, result.points)
+            moved += 1
         self.canvas.redraw_lines(list(self.records.values()))
         self._select_record_ids({record.id for record in edge_records})
         self.calculate_angles(reset_hidden=False)
@@ -4445,83 +4431,19 @@ class MainWindow(QMainWindow):
     def _edge_segment_size(self, record: LineRecord) -> int:
         return int(record.segment_size_px or self.curve_sensitivity_spin.value())
 
-    def _connected_edge_chains(self, records: list[LineRecord]) -> list[list[tuple[LineRecord, bool]]]:
-        remaining = list(records)
-        chains: list[list[tuple[LineRecord, bool]]] = []
-        while remaining:
-            record = remaining.pop(0)
-            chain: list[tuple[LineRecord, bool]] = [(record, False)]
-            changed = True
-            while changed:
-                changed = False
-                chain_start = self._oriented_points(chain[0][0], chain[0][1])[0]
-                chain_end = self._oriented_points(chain[-1][0], chain[-1][1])[-1]
-                for candidate in list(remaining):
-                    points = recognition_points(candidate)
-                    candidate_start = points[0]
-                    candidate_end = points[-1]
-                    if points_close(chain_end, candidate_start):
-                        chain.append((candidate, False))
-                    elif points_close(chain_end, candidate_end):
-                        chain.append((candidate, True))
-                    elif points_close(chain_start, candidate_end):
-                        chain.insert(0, (candidate, False))
-                    elif points_close(chain_start, candidate_start):
-                        chain.insert(0, (candidate, True))
-                    else:
-                        continue
-                    remaining.remove(candidate)
-                    changed = True
-                    break
-            chains.append(chain)
-        return chains
-
     @staticmethod
-    def _oriented_points(record: LineRecord, reverse: bool) -> list[Point]:
-        points = list(recognition_points(record))
-        return list(reversed(points)) if reverse else points
-
-    def _chain_points(self, chain: list[tuple[LineRecord, bool]]) -> list[Point]:
-        points: list[Point] = []
-        for record, reverse in chain:
-            record_chain_points = self._oriented_points(record, reverse)
-            if points and points_close(points[-1], record_chain_points[0]):
-                points.extend(record_chain_points[1:])
-            else:
-                points.extend(record_chain_points)
-        return points
-
-    def _apply_snapped_chain(
-        self,
-        chain: list[tuple[LineRecord, bool]],
-        source_points: list[Point],
-        snapped_points: list[Point],
-    ) -> None:
-        source_total = record_length(LineRecord("_chain", "edge", source_points[0], source_points[-1], points=source_points))
-        snapped_total = record_length(LineRecord("_snapped", "edge", snapped_points[0], snapped_points[-1], points=snapped_points))
-        if source_total <= 0 or snapped_total <= 0:
+    def _apply_snapped_edge(record: LineRecord, snapped_points: list[Point]) -> None:
+        if len(snapped_points) < 2:
             return
-        source_cursor = 0.0
-        snapped_cursor = 0.0
-        for record, reverse in chain:
-            original_points = self._oriented_points(record, reverse)
-            original_length = record_length(LineRecord("_part", "edge", original_points[0], original_points[-1], points=original_points))
-            snapped_next = snapped_total * min(1.0, (source_cursor + original_length) / source_total)
-            snapped_slice = polyline_slice(snapped_points, snapped_cursor, snapped_next)
-            if reverse:
-                snapped_slice = list(reversed(snapped_slice))
-            if record.edge_mode in {"curve", "polyline"} or len(snapped_slice) > 2:
-                record.points = snapped_slice
-                record.edge_segmented = True
-                record.start = snapped_slice[0]
-                record.end = snapped_slice[-1]
-            else:
-                record.points = None
-                record.edge_segmented = False
-                record.start = snapped_slice[0]
-                record.end = snapped_slice[-1]
-            source_cursor += original_length
-            snapped_cursor = snapped_next
+        record.edge_mode = "line"
+        record.start = snapped_points[0]
+        record.end = snapped_points[-1]
+        if len(snapped_points) > 2:
+            record.points = list(snapped_points)
+            record.edge_segmented = True
+        else:
+            record.points = None
+            record.edge_segmented = False
 
     def add_guides(self) -> None:
         if self.image_bgr is None:
@@ -5550,7 +5472,7 @@ class MainWindow(QMainWindow):
             self.tool_buttons[tool].setChecked(True)
 
     def _edge_mode_changed(self) -> None:
-        mode = self.edge_mode_combo.currentData()
+        mode = "line"
         if self._updating_detection_controls:
             self.canvas.set_edge_draw_mode(mode)
             return
@@ -5564,14 +5486,9 @@ class MainWindow(QMainWindow):
                 record = self.records.get(record_id)
                 if record is None or record.kind != "edge":
                     continue
-                record.edge_mode = mode
-                if mode == "line":
-                    record.points = None
-                    record.edge_segmented = False
-                    record.recognition_points = [record.start, record.end]
-                elif mode == "polyline":
-                    record.recognition_points = record_points(record)
-                changed += 1
+                if record.edge_mode != "line":
+                    record.edge_mode = "line"
+                    changed += 1
             if changed:
                 self.canvas.redraw_lines(list(self.records.values()))
                 for record_id in selected_ids:
@@ -5581,11 +5498,8 @@ class MainWindow(QMainWindow):
                 self.calculate_angles(reset_hidden=False)
                 self._update_search_range_overlay()
                 self._apply_visibility()
-        mode_label = "이어진 직선" if mode == "polyline" else "직선"
         if changed:
-            self._set_status(f"선택한 경계선 {changed}개를 {mode_label} 모드로 바꿨습니다.")
-        elif mode == "polyline":
-            self._set_status("경계 형태: 이어진 직선. 경계선 도구에서 점을 찍고 더블클릭 또는 Enter로 확정합니다.")
+            self._set_status(f"선택한 경계선 {changed}개를 직선 모드로 바꿨습니다.")
         else:
             self._set_status("경계 형태: 직선. 경계선 도구에서 드래그로 선분을 긋습니다.")
 
@@ -6002,7 +5916,7 @@ class MainWindow(QMainWindow):
                 self.search_radius_right_spin.setValue(first_right)
             if all(value == first_segment for value in segment_values):
                 self.curve_sensitivity_spin.setValue(first_segment)
-            mode_values = [edge.edge_mode for edge in selected_edges]
+            mode_values = ["line" for _edge in selected_edges]
             if all(value == mode_values[0] for value in mode_values):
                 mode_index = self.edge_mode_combo.findData(mode_values[0])
                 if mode_index >= 0:

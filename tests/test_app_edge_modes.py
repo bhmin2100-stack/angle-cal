@@ -123,7 +123,19 @@ def test_moving_segmented_edge_shifts_recognition_path():
         window.close()
 
 
-def test_connected_line_edges_recognize_as_joined_chain():
+def test_connected_line_edges_recognize_independently(monkeypatch):
+    calls: list[list[tuple[float, float]]] = []
+
+    class Result:
+        def __init__(self, points):
+            self.points = points
+
+    def fake_snap(_gray, points, *args):
+        source_points = [tuple(point) for point in points]
+        calls.append(source_points)
+        return Result([(point[0] + 1.0, point[1]) for point in source_points])
+
+    monkeypatch.setattr(app_module, "snap_polyline_to_gradient", fake_snap)
     window = _window_with_edge_image()
     try:
         window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
@@ -135,9 +147,14 @@ def test_connected_line_edges_recognize_as_joined_chain():
 
         edges = [record for record in window.records.values() if record.kind == "edge"]
         assert len(edges) == 2
-        assert abs(edges[0].end[0] - edges[1].start[0]) < 0.001
-        assert abs(edges[0].end[1] - edges[1].start[1]) < 0.001
-        assert 80 <= edges[0].end[0] <= 83
+        assert calls == [
+            [(70.0, 20.0), (70.0, 60.0)],
+            [(70.0, 60.0), (70.0, 100.0)],
+        ]
+        assert edges[0].edge_mode == "line"
+        assert edges[1].edge_mode == "line"
+        assert edges[0].end == (71.0, 60.0)
+        assert edges[1].start == (71.0, 60.0)
     finally:
         window.close()
 
@@ -439,23 +456,19 @@ def test_mouse_wheel_adjusts_last_edge_and_next_edge_default_when_none_selected(
         window.close()
 
 
-def test_recognize_converts_polyline_mode_to_connected_segments():
+def test_edge_mode_combo_keeps_only_straight_edge_mode():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
-        window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
-        _select_edges(window)
+        assert window.edge_mode_combo.findData("polyline") == -1
+        assert window.edge_mode_combo.currentData() == "line"
 
-        window.recognize_edges()
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
 
         edge = next(record for record in window.records.values() if record.kind == "edge")
-        assert edge.edge_mode == "polyline"
-        assert edge.edge_segmented is True
-        assert edge.points is not None
-        assert len(edge.points) > 2
-        assert 80 <= (edge.start[0] + edge.end[0]) / 2 <= 83
-        item = window.canvas.line_items[edge.id]
-        assert item.path().elementCount() == len(edge.points)
+        assert edge.edge_mode == "line"
+        assert edge.edge_segmented is False
+        assert edge.points is None
+        assert edge.recognition_points == [(70.0, 20.0), (70.0, 100.0)]
     finally:
         window.close()
 
@@ -464,8 +477,7 @@ def test_segmented_edge_does_not_show_reference_angles_after_recognition():
     window = _window_with_edge_image()
     try:
         window._create_reference_line((10.0, 10.0), (100.0, 10.0))
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
-        window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         _select_edges(window)
         window.recognize_edges()
 
@@ -483,8 +495,7 @@ def test_segmented_edge_shows_only_guide_intersection_angles():
     window = _window_with_edge_image()
     try:
         window._create_reference_line((10.0, 10.0), (100.0, 10.0))
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
-        window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         window.records["G99"] = LineRecord(
             id="G99",
             kind="guide",
@@ -494,6 +505,8 @@ def test_segmented_edge_shows_only_guide_intersection_angles():
             axis="horizontal",
         )
         window.canvas.redraw_lines(list(window.records.values()))
+        _select_edges(window)
+        window.recognize_edges()
 
         window.calculate_angles()
 
@@ -1355,11 +1368,14 @@ def test_edge_length_label_position_can_be_moved_and_persists():
         window.close()
 
 
-def test_edge_length_overlay_skips_polyline_edges():
+def test_edge_length_overlay_skips_segmented_edges():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
-        window._create_edge_line((40.0, 20.0), (70.0, 60.0), [(40.0, 20.0), (55.0, 40.0), (70.0, 60.0)])
+        window._create_edge_line((40.0, 20.0), (70.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        edge.points = [(40.0, 20.0), (55.0, 40.0), (70.0, 60.0)]
+        edge.recognition_points = list(edge.points)
+        edge.edge_segmented = True
         window.canvas.redraw_lines(list(window.records.values()))
 
         window._update_edge_length_overlay()
@@ -1957,16 +1973,15 @@ def test_nudging_selected_line_keeps_all_point_handles_attached():
         window.close()
 
 
-def test_split_polyline_segment_selects_independent_edge_for_detection_settings():
+def test_split_segmented_edge_selects_independent_edge_for_detection_settings():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
-        window._create_edge_line(
-            (20.0, 20.0),
-            (80.0, 60.0),
-            [(20.0, 20.0), (40.0, 40.0), (60.0, 40.0), (80.0, 60.0)],
-        )
+        points = [(20.0, 20.0), (40.0, 40.0), (60.0, 40.0), (80.0, 60.0)]
+        window._create_edge_line((20.0, 20.0), (80.0, 60.0))
         original = next(record for record in window.records.values() if record.kind == "edge")
+        original.points = points
+        original.recognition_points = list(points)
+        original.edge_segmented = True
         window.canvas.redraw_lines(list(window.records.values()))
 
         window.split_edge_segment_for_selection(original.id, 1)
@@ -1977,6 +1992,7 @@ def test_split_polyline_segment_selects_independent_edge_for_detection_settings(
         assert len(selected_ids) == 1
         selected = window.records[selected_ids[0]]
         assert record_points(selected) == [(40.0, 40.0), (60.0, 40.0)]
+        assert selected.edge_mode == "line"
 
         window.search_radius_spin.setValue(18)
         window.curve_sensitivity_spin.setValue(5)
@@ -1988,7 +2004,7 @@ def test_split_polyline_segment_selects_independent_edge_for_detection_settings(
         window.close()
 
 
-def test_point_handles_edit_line_endpoints_and_delete_polyline_points():
+def test_point_handles_edit_line_endpoints_and_delete_segmented_edge_points():
     window = _window_with_edge_image()
     try:
         window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
@@ -2003,9 +2019,12 @@ def test_point_handles_edit_line_endpoints_and_delete_polyline_points():
         window._sync_records_from_canvas()
         assert window.records[line_edge.id].end == (130.0, 66.0)
 
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
-        window._create_edge_line((40.0, 20.0), (70.0, 60.0), [(40.0, 20.0), (55.0, 40.0), (70.0, 60.0)])
+        segmented_points = [(40.0, 20.0), (55.0, 40.0), (70.0, 60.0)]
+        window._create_edge_line((40.0, 20.0), (70.0, 60.0))
         poly_edge = max((record for record in window.records.values() if record.kind == "edge"), key=lambda record: record.id)
+        poly_edge.points = segmented_points
+        poly_edge.recognition_points = list(segmented_points)
+        poly_edge.edge_segmented = True
         window.canvas.redraw_lines(list(window.records.values()))
         window.canvas.scene.clearSelection()
         window.canvas.line_items[poly_edge.id].setSelected(True)
@@ -2139,9 +2158,12 @@ def test_cd_only_appears_after_measure_button_then_refreshes_on_move():
 def test_delete_prefers_parent_line_over_selected_point_handle():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("polyline"))
-        window._create_edge_line((20.0, 20.0), (80.0, 80.0), [(20.0, 20.0), (50.0, 50.0), (80.0, 80.0)])
+        points = [(20.0, 20.0), (50.0, 50.0), (80.0, 80.0)]
+        window._create_edge_line((20.0, 20.0), (80.0, 80.0))
         edge = next(record for record in window.records.values() if record.kind == "edge")
+        edge.points = points
+        edge.recognition_points = list(points)
+        edge.edge_segmented = True
         window.canvas.redraw_lines(list(window.records.values()))
         window.canvas.line_items[edge.id].setSelected(True)
         window.canvas.refresh_point_handles()
