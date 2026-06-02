@@ -2116,12 +2116,43 @@ def record_center(record: LineRecord) -> Point:
     )
 
 
-def guide_display_ids(guides: list[LineRecord]) -> dict[str, str]:
-    ordered = sorted(
-        [record for record in guides if record.kind == "guide"],
-        key=lambda record: (*position_key(record_center(record), "y"), record.id),
+def guide_display_numbers(guides: list[LineRecord]) -> dict[str, int]:
+    guide_records = [record for record in guides if record.kind == "guide"]
+    main_guide = next((record for record in guide_records if record.is_main_guide), None)
+    if main_guide is None:
+        ordered = sorted(
+            guide_records,
+            key=lambda record: (*position_key(record_center(record), "y"), record.id),
+        )
+        return {record.id: index for index, record in enumerate(ordered, start=1)}
+
+    orientation = main_guide.axis if main_guide.axis in {"horizontal", "vertical"} else "horizontal"
+
+    def guide_position(record: LineRecord) -> float:
+        center = record_center(record)
+        return center[1] if orientation == "horizontal" else center[0]
+
+    def guide_secondary_position(record: LineRecord) -> float:
+        center = record_center(record)
+        return center[0] if orientation == "horizontal" else center[1]
+
+    main_pos = guide_position(main_guide)
+    before = sorted(
+        [record for record in guide_records if record.id != main_guide.id and guide_position(record) < main_pos],
+        key=lambda record: (-guide_position(record), guide_secondary_position(record), record.id),
     )
-    return {record.id: f"G{index}" for index, record in enumerate(ordered, start=1)}
+    after = sorted(
+        [record for record in guide_records if record.id != main_guide.id and guide_position(record) >= main_pos],
+        key=lambda record: (guide_position(record), guide_secondary_position(record), record.id),
+    )
+    display_numbers = {main_guide.id: 0}
+    display_numbers.update({record.id: -index for index, record in enumerate(before, start=1)})
+    display_numbers.update({record.id: index for index, record in enumerate(after, start=1)})
+    return display_numbers
+
+
+def guide_display_ids(guides: list[LineRecord]) -> dict[str, str]:
+    return {record_id: f"G{number}" for record_id, number in guide_display_numbers(guides).items()}
 
 
 def group_bounds_center(records: list[LineRecord]) -> Point:
@@ -2137,7 +2168,22 @@ def group_bounds_center(records: list[LineRecord]) -> Point:
     return ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
 
 
-EXPORT_COLUMNS = ["이미지", "그룹", "그룹번호", "순서", "항목", "측정ID", "경계ID", "가이드ID", "x_px", "y_px", "각도_deg", "길이_px", "길이_nm"]
+EXPORT_COLUMNS = [
+    "이미지",
+    "그룹",
+    "그룹번호",
+    "순서",
+    "항목",
+    "측정ID",
+    "경계ID",
+    "가이드ID",
+    "가이드번호",
+    "x_px",
+    "y_px",
+    "각도_deg",
+    "길이_px",
+    "길이_nm",
+]
 
 
 def xlsx_col_name(index: int) -> str:
@@ -2466,7 +2512,7 @@ class MainWindow(QMainWindow):
         self.records: dict[str, LineRecord] = {}
         self.image_states: dict[str, dict] = {}
         self._counter = 1
-        self.last_measurements: list[dict[str, str | float]] = []
+        self.last_measurements: list[dict[str, str | float | int]] = []
         self.browser_root: Optional[Path] = None
         self.browser_image_paths: list[str] = []
         self.current_browser_index = -1
@@ -3576,6 +3622,7 @@ class MainWindow(QMainWindow):
                     "measurement",
                     "edge_id",
                     "guide_id",
+                    "guide_number",
                     "kind",
                     "x_px",
                     "y_px",
@@ -3715,7 +3762,9 @@ class MainWindow(QMainWindow):
     ) -> dict[str, list[dict[str, object]]]:
         edges = [record for record in records if record.kind == "edge"]
         guides = [record for record in records if record.kind == "guide"]
+        guide_numbers = guide_display_numbers(guides)
         guide_ids = guide_display_ids(guides)
+        guides = sorted(guides, key=lambda guide: (guide_numbers.get(guide.id, 0), *position_key(record_center(guide), priority), guide.id))
         reference = next((record for record in records if record.kind == "reference"), None)
         reference_angle = line_angle_degrees(reference.start, reference.end) if reference else 0.0
         reference_id = reference.id if reference else "horizontal"
@@ -3732,6 +3781,7 @@ class MainWindow(QMainWindow):
                         "측정ID": f"{edge.id}_to_{reference_id}",
                         "경계ID": edge.id,
                         "가이드ID": "",
+                        "가이드번호": "",
                         "x_px": center[0],
                         "y_px": center[1],
                         "각도_deg": angle,
@@ -3746,6 +3796,7 @@ class MainWindow(QMainWindow):
                     "측정ID": f"{edge.id}_length",
                     "경계ID": edge.id,
                     "가이드ID": "",
+                    "가이드번호": "",
                     "x_px": center[0],
                     "y_px": center[1],
                     "각도_deg": "",
@@ -3764,11 +3815,13 @@ class MainWindow(QMainWindow):
                     suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
                     row = self._export_base_row(image_name, "교점각도", [edge, guide], group_info)
                     display_guide_id = guide_ids.get(guide.id, guide.id)
+                    display_guide_number = guide_numbers.get(guide.id, "")
                     row.update(
                         {
                             "측정ID": f"{edge.id}_x_{display_guide_id}{suffix}",
                             "경계ID": edge.id,
                             "가이드ID": display_guide_id,
+                            "가이드번호": display_guide_number,
                             "x_px": cross[0],
                             "y_px": cross[1],
                             "각도_deg": angle,
@@ -3804,11 +3857,13 @@ class MainWindow(QMainWindow):
                 midpoint = ((point_a[0] + point_b[0]) / 2.0, (point_a[1] + point_b[1]) / 2.0)
                 row = self._export_base_row(image_name, "CD길이", [edge_a, edge_b, guide], group_info)
                 display_guide_id = guide_ids.get(guide.id, guide.id)
+                display_guide_number = guide_numbers.get(guide.id, "")
                 row.update(
                     {
                         "측정ID": f"CD_{display_guide_id}_{idx + 1}_{edge_a_id}_{edge_b_id}",
                         "경계ID": f"{edge_a_id}|{edge_b_id}",
                         "가이드ID": display_guide_id,
+                        "가이드번호": display_guide_number,
                         "x_px": midpoint[0],
                         "y_px": midpoint[1],
                         "각도_deg": "",
@@ -3819,10 +3874,24 @@ class MainWindow(QMainWindow):
                 rows["cd_length"].append(row)
 
         for item_rows in rows.values():
-            item_rows.sort(key=lambda row: (int(row["그룹번호"]), *position_key((float(row["x_px"]), float(row["y_px"])), priority), str(row["측정ID"])))
+            item_rows.sort(key=lambda row: self._export_row_sort_key(row, priority))
             for order, row in enumerate(item_rows, start=1):
                 row["순서"] = order
         return rows
+
+    @staticmethod
+    def _export_row_sort_key(row: dict[str, object], priority: str) -> tuple[object, ...]:
+        guide_number = row.get("가이드번호")
+        has_guide_number = isinstance(guide_number, (int, float)) and not isinstance(guide_number, bool)
+        guide_sort = int(guide_number) if has_guide_number else 0
+        guide_bucket = 0 if has_guide_number else 1
+        return (
+            int(row["그룹번호"]),
+            guide_bucket,
+            guide_sort,
+            *position_key((float(row["x_px"]), float(row["y_px"])), priority),
+            str(row["측정ID"]),
+        )
 
     def _handle_line_created(self, tool: str, start: Point, end: Point, points: Optional[list[Point]]) -> None:
         self.save_undo_snapshot()
@@ -4515,13 +4584,16 @@ class MainWindow(QMainWindow):
         self._sync_records_from_canvas()
         edges = [record for record in self.records.values() if record.kind == "edge"]
         guides = [record for record in self.records.values() if record.kind == "guide"]
+        guide_numbers = guide_display_numbers(guides)
         guide_ids = guide_display_ids(guides)
+        guides = sorted(guides, key=lambda guide: (guide_numbers.get(guide.id, 0), record_center(guide), guide.id))
 
         mode = self.cd_segment_combo.currentData()
         cd_label_gap = self.canvas.screen_to_scene_length(self.cd_label_gap)
         created = 0
         for guide in guides:
             display_guide_id = guide_ids.get(guide.id, guide.id)
+            display_guide_number = guide_numbers.get(guide.id, "")
             guide_line = (guide.start, guide.end)
             crosses: list[tuple[float, Point, str]] = []
             for edge in edges:
@@ -4559,6 +4631,7 @@ class MainWindow(QMainWindow):
                         "measurement": f"CD_{display_guide_id}_{idx + 1}_{edge_a}_{edge_b}",
                         "edge_id": f"{edge_a}|{edge_b}",
                         "guide_id": display_guide_id,
+                        "guide_number": display_guide_number,
                         "kind": "cd_length",
                         "x_px": midpoint[0],
                         "y_px": midpoint[1],
@@ -4784,7 +4857,9 @@ class MainWindow(QMainWindow):
 
         edges = [record for record in self.records.values() if record.kind == "edge"]
         guides = [record for record in self.records.values() if record.kind == "guide"]
+        guide_numbers = guide_display_numbers(guides)
         guide_ids = guide_display_ids(guides)
+        guides = sorted(guides, key=lambda guide: (guide_numbers.get(guide.id, 0), record_center(guide), guide.id))
         for edge in edges:
             if has_segmented_edge_angle(edge):
                 continue
@@ -4811,6 +4886,7 @@ class MainWindow(QMainWindow):
                     "measurement": measurement_id,
                     "edge_id": edge.id,
                     "guide_id": "",
+                    "guide_number": "",
                     "kind": "edge_to_reference",
                     "x_px": midpoint[0],
                     "y_px": midpoint[1],
@@ -4824,6 +4900,7 @@ class MainWindow(QMainWindow):
         for edge in edges:
             for guide in guides:
                 display_guide_id = guide_ids.get(guide.id, guide.id)
+                display_guide_number = guide_numbers.get(guide.id, "")
                 guide_line = (guide.start, guide.end)
                 guide_angle = line_angle_degrees(guide.start, guide.end)
                 crosses = polyline_intersections(edge, guide_line)
@@ -4867,6 +4944,7 @@ class MainWindow(QMainWindow):
                             "measurement": f"{edge.id}_x_{display_guide_id}{suffix}",
                             "edge_id": edge.id,
                             "guide_id": display_guide_id,
+                            "guide_number": display_guide_number,
                             "kind": "edge_guide_intersection",
                             "x_px": cross[0],
                             "y_px": cross[1],

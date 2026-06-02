@@ -868,29 +868,57 @@ def test_cd_length_modes_measure_adjacent_edge_intersections():
         window.close()
 
 
-def test_guide_display_ids_are_numbered_top_to_bottom_then_left_to_right():
-    guides = [
-        LineRecord("G99", "guide", (0.0, 100.0), (160.0, 100.0), axis="horizontal"),
-        LineRecord("G10", "guide", (120.0, 0.0), (120.0, 120.0), axis="vertical"),
-        LineRecord("G8", "guide", (30.0, 0.0), (30.0, 120.0), axis="vertical"),
-        LineRecord("G42", "guide", (0.0, 20.0), (160.0, 20.0), axis="horizontal"),
+def test_guide_display_ids_use_main_guide_as_zero_with_signed_positions():
+    horizontal_guides = [
+        LineRecord("G_top2", "guide", (0.0, 20.0), (160.0, 20.0), axis="horizontal"),
+        LineRecord("G_top1", "guide", (0.0, 40.0), (160.0, 40.0), axis="horizontal"),
+        LineRecord("G_main", "guide", (0.0, 60.0), (160.0, 60.0), axis="horizontal", is_main_guide=True),
+        LineRecord("G_bottom1", "guide", (0.0, 80.0), (160.0, 80.0), axis="horizontal"),
+        LineRecord("G_bottom2", "guide", (0.0, 100.0), (160.0, 100.0), axis="horizontal"),
+    ]
+    vertical_guides = [
+        LineRecord("G_left2", "guide", (20.0, 0.0), (20.0, 120.0), axis="vertical"),
+        LineRecord("G_left1", "guide", (40.0, 0.0), (40.0, 120.0), axis="vertical"),
+        LineRecord("G_main", "guide", (60.0, 0.0), (60.0, 120.0), axis="vertical", is_main_guide=True),
+        LineRecord("G_right1", "guide", (80.0, 0.0), (80.0, 120.0), axis="vertical"),
     ]
 
-    assert app_module.guide_display_ids(guides) == {
-        "G42": "G1",
-        "G8": "G2",
-        "G10": "G3",
-        "G99": "G4",
+    assert app_module.guide_display_ids(horizontal_guides) == {
+        "G_top2": "G-2",
+        "G_top1": "G-1",
+        "G_main": "G0",
+        "G_bottom1": "G1",
+        "G_bottom2": "G2",
+    }
+    assert app_module.guide_display_numbers(horizontal_guides) == {
+        "G_top2": -2,
+        "G_top1": -1,
+        "G_main": 0,
+        "G_bottom1": 1,
+        "G_bottom2": 2,
+    }
+    assert app_module.guide_display_ids(vertical_guides) == {
+        "G_left2": "G-2",
+        "G_left1": "G-1",
+        "G_main": "G0",
+        "G_right1": "G1",
+    }
+    assert app_module.guide_display_numbers(vertical_guides) == {
+        "G_left2": -2,
+        "G_left1": -1,
+        "G_main": 0,
+        "G_right1": 1,
     }
 
 
-def test_measurement_rows_use_spatial_guide_display_ids():
+def test_measurement_rows_use_signed_main_guide_display_ids():
     window = _window_with_edge_image()
     try:
         window._create_edge_line((80.0, 10.0), (80.0, 110.0))
         edge = next(record for record in window.records.values() if record.kind == "edge")
-        window.records["G99"] = LineRecord("G99", "guide", (0.0, 90.0), (150.0, 90.0), axis="horizontal")
-        window.records["G10"] = LineRecord("G10", "guide", (0.0, 30.0), (150.0, 30.0), axis="horizontal")
+        window.records["G_top"] = LineRecord("G_top", "guide", (0.0, 30.0), (150.0, 30.0), axis="horizontal")
+        window.records["G_main"] = LineRecord("G_main", "guide", (0.0, 60.0), (150.0, 60.0), axis="horizontal", is_main_guide=True)
+        window.records["G_bottom"] = LineRecord("G_bottom", "guide", (0.0, 90.0), (150.0, 90.0), axis="horizontal")
 
         window.calculate_angles(reset_hidden=False)
 
@@ -898,19 +926,21 @@ def test_measurement_rows_use_spatial_guide_display_ids():
             [row for row in window.last_measurements if row["kind"] == "edge_guide_intersection"],
             key=lambda row: float(row["y_px"]),
         )
-        assert [row["guide_id"] for row in rows] == ["G1", "G2"]
-        assert [row["measurement"] for row in rows] == [f"{edge.id}_x_G1", f"{edge.id}_x_G2"]
+        assert [row["guide_id"] for row in rows] == ["G-1", "G0", "G1"]
+        assert [row["guide_number"] for row in rows] == [-1, 0, 1]
+        assert [row["measurement"] for row in rows] == [f"{edge.id}_x_G-1", f"{edge.id}_x_G0", f"{edge.id}_x_G1"]
     finally:
         window.close()
 
 
-def test_data_export_rows_use_spatial_guide_display_ids():
+def test_data_export_rows_use_signed_main_guide_display_ids():
     window = _window_with_edge_image()
     try:
         edge = LineRecord("E1", "edge", (80.0, 10.0), (80.0, 110.0))
-        bottom = LineRecord("G99", "guide", (0.0, 90.0), (150.0, 90.0), axis="horizontal")
-        top = LineRecord("G10", "guide", (0.0, 30.0), (150.0, 30.0), axis="horizontal")
-        records = [edge, bottom, top]
+        top = LineRecord("G_top", "guide", (0.0, 30.0), (150.0, 30.0), axis="horizontal")
+        main = LineRecord("G_main", "guide", (0.0, 60.0), (150.0, 60.0), axis="horizontal", is_main_guide=True)
+        bottom = LineRecord("G_bottom", "guide", (0.0, 90.0), (150.0, 90.0), axis="horizontal")
+        records = [edge, bottom, main, top]
 
         rows = window._export_rows_for_records(
             "image.png",
@@ -919,10 +949,9 @@ def test_data_export_rows_use_spatial_guide_display_ids():
             window._export_group_info(records, "y"),
             "y",
         )["intersection_angle"]
-        rows = sorted(rows, key=lambda row: float(row["y_px"]))
-
-        assert [row["가이드ID"] for row in rows] == ["G1", "G2"]
-        assert [row["측정ID"] for row in rows] == ["E1_x_G1", "E1_x_G2"]
+        assert [row["가이드ID"] for row in rows] == ["G-1", "G0", "G1"]
+        assert [row["가이드번호"] for row in rows] == [-1, 0, 1]
+        assert [row["측정ID"] for row in rows] == ["E1_x_G-1", "E1_x_G0", "E1_x_G1"]
     finally:
         window.close()
 
