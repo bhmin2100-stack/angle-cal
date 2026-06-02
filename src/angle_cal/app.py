@@ -3237,6 +3237,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self._save_current_image_state()
+        self.project_path = None
         self.image_states.clear()
         self.image_path = None
         self.browser_root = None
@@ -3255,6 +3256,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "폴더 열기", "폴더 안에서 지원되는 이미지 파일을 찾지 못했습니다.")
             return
         self._save_current_image_state()
+        self.project_path = None
         self.image_states.clear()
         self.image_path = None
         self.browser_root = root
@@ -3275,7 +3277,6 @@ class MainWindow(QMainWindow):
         state = self.image_states.get(path)
         self.image_bgr = image
         self.image_path = path
-        self.project_path = None
         if state is not None:
             self._restore_image_state(state)
         else:
@@ -3322,6 +3323,37 @@ class MainWindow(QMainWindow):
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "image_adjustments": self._image_adjustment_state(),
         }
+
+    @staticmethod
+    def _normalize_image_state(state: dict) -> dict:
+        records = list(state.get("records") or [])
+        counter = state.get("counter")
+        return {
+            "records": records,
+            "counter": int(counter) if counter is not None else len(records) + 1,
+            "nm_per_px": state.get("nm_per_px"),
+            "hidden_angle_measurements": list(state.get("hidden_angle_measurements", [])),
+            "image_adjustments": dict(state.get("image_adjustments", {})),
+        }
+
+    def _project_image_states_from_payload(self, payload: dict, current_image_path: str) -> dict[str, dict]:
+        states: dict[str, dict] = {}
+        raw_states = payload.get("image_states", {})
+        if isinstance(raw_states, dict):
+            for image_path, state in raw_states.items():
+                if isinstance(state, dict):
+                    states[str(image_path)] = self._normalize_image_state(state)
+        if current_image_path not in states:
+            states[current_image_path] = self._normalize_image_state(
+                {
+                    "records": payload.get("records", []),
+                    "counter": payload.get("counter", len(payload.get("records", [])) + 1),
+                    "nm_per_px": payload.get("nm_per_px"),
+                    "hidden_angle_measurements": payload.get("hidden_angle_measurements", []),
+                    "image_adjustments": payload.get("image_adjustments", {}),
+                }
+            )
+        return states
 
     def load_browser_image(self, path: str) -> None:
         if path not in self.browser_image_paths:
@@ -3458,16 +3490,30 @@ class MainWindow(QMainWindow):
             return
         with open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
-        image_path = payload.get("image_path")
+        image_path = str(payload.get("image_path") or "")
+        browser_paths = [str(item) for item in (payload.get("browser_image_paths") or []) if item]
+        if not image_path and browser_paths:
+            current_index = int(payload.get("current_browser_index", 0))
+            current_index = max(0, min(len(browser_paths) - 1, current_index))
+            image_path = browser_paths[current_index]
+        if image_path and image_path not in browser_paths:
+            browser_paths.insert(0, image_path)
         if not image_path or not Path(image_path).exists():
             QMessageBox.warning(self, "프로젝트 열기", "프로젝트에 기록된 이미지 경로를 찾을 수 없습니다.")
             return
-        image = read_image(image_path)
-        if image is None:
+        if read_image(image_path) is None:
             QMessageBox.warning(self, "프로젝트 열기", "이미지를 읽을 수 없습니다.")
             return
-        self.image_bgr = image
-        self.image_path = image_path
+
+        self._save_current_image_state()
+        self.image_bgr = None
+        self.image_path = None
+        self.records.clear()
+        self.image_states = self._project_image_states_from_payload(payload, image_path)
+        self.browser_image_paths = browser_paths or [image_path]
+        browser_root = payload.get("browser_root")
+        self.browser_root = Path(browser_root) if browser_root else (Path(self.browser_image_paths[0]).parent if len(self.browser_image_paths) > 1 else None)
+        self.current_browser_index = self.browser_image_paths.index(image_path) if image_path in self.browser_image_paths else 0
         self.project_path = path
         self.nm_per_px = payload.get("nm_per_px")
         self._restore_image_adjustments(payload.get("image_adjustments"), refresh=False)
@@ -3534,23 +3580,21 @@ class MainWindow(QMainWindow):
             if template.records
         ]
         self._refresh_structure_combo()
-        self.records = {}
-        self.hidden_angle_measurements.clear()
         self.undo_stack.clear()
-        for item in payload.get("records", []):
-            self.records[item["id"]] = line_record_from_dict(item)
-        self._counter = payload.get("counter", len(self.records) + 1)
-        self._show_image()
-        self.canvas.redraw_lines(list(self.records.values()))
-        self._refresh_table()
-        self._update_search_range_overlay()
-        self._apply_visibility()
-        self._set_status(f"프로젝트 로드: {Path(path).name}")
+        self._populate_thumbnails()
+        self._load_image_path(image_path, preserve_calibration=True)
+        self.project_path = path
+        self._set_status(f"프로젝트 로드: {Path(path).name}, 이미지 {len(self.browser_image_paths)}개")
 
     def save_project(self) -> None:
         if self.image_bgr is None:
             return
-        self._sync_records_from_canvas()
+        self._save_current_image_state()
+        current_state = self.image_states.get(self.image_path, self._current_image_state_dict())
+        browser_paths = list(self.browser_image_paths)
+        if self.image_path and self.image_path not in browser_paths:
+            browser_paths.insert(0, self.image_path)
+        current_index = browser_paths.index(self.image_path) if self.image_path in browser_paths else 0
         path = self.project_path
         if not path:
             path, _ = QFileDialog.getSaveFileName(self, "프로젝트 저장", "", "Angle Cal Project (*.anglecal.json)")
@@ -3559,9 +3603,14 @@ class MainWindow(QMainWindow):
             if not path.endswith(".anglecal.json"):
                 path += ".anglecal.json"
         payload = {
+            "project_format_version": 2,
             "image_path": self.image_path,
-            "nm_per_px": self.nm_per_px,
-            "image_adjustments": self._image_adjustment_state(),
+            "browser_root": str(self.browser_root) if self.browser_root else "",
+            "browser_image_paths": browser_paths,
+            "current_browser_index": current_index,
+            "image_states": self.image_states,
+            "nm_per_px": current_state.get("nm_per_px"),
+            "image_adjustments": current_state.get("image_adjustments", self._image_adjustment_state()),
             "edge_detection": {
                 "edge_mode": self.edge_mode_combo.currentData(),
                 "search_radius_px": self.search_radius_spin.value(),
@@ -3584,8 +3633,9 @@ class MainWindow(QMainWindow):
             },
             "scale_presets": [asdict(preset) for preset in self.scale_presets],
             "structure_templates": [structure_template_to_dict(template) for template in self.structure_templates],
-            "counter": self._counter,
-            "records": [asdict(record) for record in self.records.values()],
+            "counter": current_state.get("counter", self._counter),
+            "records": current_state.get("records", []),
+            "hidden_angle_measurements": current_state.get("hidden_angle_measurements", []),
         }
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)

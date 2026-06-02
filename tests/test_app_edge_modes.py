@@ -1,4 +1,5 @@
 import os
+import json
 import math
 import zipfile
 
@@ -1375,6 +1376,89 @@ def test_switching_images_restores_per_image_annotations(tmp_path):
         assert edge.id in window.canvas.line_items
         assert window.canvas.line_items[edge.id].isVisible()
         assert not [record for record in window.records.values() if record.kind == "scale"]
+    finally:
+        window.close()
+
+
+def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
+    path_a = tmp_path / "a.png"
+    path_b = tmp_path / "b.png"
+    project_path = tmp_path / "folder_project.anglecal.json"
+    cv2.imwrite(str(path_a), np.zeros((80, 120, 3), dtype=np.uint8))
+    cv2.imwrite(str(path_b), np.full((80, 120, 3), 255, dtype=np.uint8))
+    monkeypatch.setattr(app_module.QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(project_path), "Angle Cal Project (*.anglecal.json)"))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(path_a), str(path_b)]
+        window.current_browser_index = 0
+        window._load_image_path(str(path_a), preserve_calibration=False)
+        window._create_edge_line((20.0, 20.0), (90.0, 20.0))
+
+        window._load_image_path(str(path_b), preserve_calibration=True)
+        window._create_edge_line((30.0, 30.0), (100.0, 30.0))
+
+        window.save_project()
+
+        payload = json.loads(project_path.read_text(encoding="utf-8"))
+        assert payload["project_format_version"] == 2
+        assert payload["image_path"] == str(path_b)
+        assert payload["browser_root"] == str(tmp_path)
+        assert payload["browser_image_paths"] == [str(path_a), str(path_b)]
+        assert set(payload["image_states"]) == {str(path_a), str(path_b)}
+        assert len(payload["image_states"][str(path_a)]["records"]) == 1
+        assert len(payload["image_states"][str(path_b)]["records"]) == 1
+        assert payload["records"] == payload["image_states"][str(path_b)]["records"]
+    finally:
+        window.close()
+
+
+def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
+    path_a = tmp_path / "a.png"
+    path_b = tmp_path / "b.png"
+    project_path = tmp_path / "folder_project.anglecal.json"
+    cv2.imwrite(str(path_a), np.zeros((80, 120, 3), dtype=np.uint8))
+    cv2.imwrite(str(path_b), np.full((80, 120, 3), 255, dtype=np.uint8))
+    edge_a = LineRecord("E_a", "edge", (20.0, 20.0), (90.0, 20.0))
+    edge_b = LineRecord("E_b", "edge", (30.0, 30.0), (100.0, 30.0))
+    payload = {
+        "project_format_version": 2,
+        "image_path": str(path_b),
+        "browser_root": str(tmp_path),
+        "browser_image_paths": [str(path_a), str(path_b)],
+        "current_browser_index": 1,
+        "image_states": {
+            str(path_a): {"records": [app_module.asdict(edge_a)], "counter": 2, "nm_per_px": 1.5, "hidden_angle_measurements": [], "image_adjustments": {}},
+            str(path_b): {"records": [app_module.asdict(edge_b)], "counter": 2, "nm_per_px": 2.0, "hidden_angle_measurements": [], "image_adjustments": {}},
+        },
+        "records": [app_module.asdict(edge_b)],
+        "counter": 2,
+        "nm_per_px": 2.0,
+    }
+    project_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(app_module.QFileDialog, "getOpenFileName", lambda *args, **kwargs: (str(project_path), "Angle Cal Project (*.anglecal.json)"))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.open_project()
+
+        assert window.project_path == str(project_path)
+        assert window.browser_root == tmp_path
+        assert window.browser_image_paths == [str(path_a), str(path_b)]
+        assert window.current_browser_index == 1
+        assert set(window.image_states) == {str(path_a), str(path_b)}
+        assert "E_b" in window.records
+        assert window.nm_per_px == 2.0
+
+        window.load_browser_image(str(path_a))
+
+        assert window.project_path == str(project_path)
+        assert window.current_browser_index == 0
+        assert "E_a" in window.records
+        assert window.nm_per_px == 1.5
     finally:
         window.close()
 
