@@ -856,6 +856,65 @@ def test_cd_length_modes_measure_adjacent_edge_intersections():
         window.close()
 
 
+def test_guide_display_ids_are_numbered_top_to_bottom_then_left_to_right():
+    guides = [
+        LineRecord("G99", "guide", (0.0, 100.0), (160.0, 100.0), axis="horizontal"),
+        LineRecord("G10", "guide", (120.0, 0.0), (120.0, 120.0), axis="vertical"),
+        LineRecord("G8", "guide", (30.0, 0.0), (30.0, 120.0), axis="vertical"),
+        LineRecord("G42", "guide", (0.0, 20.0), (160.0, 20.0), axis="horizontal"),
+    ]
+
+    assert app_module.guide_display_ids(guides) == {
+        "G42": "G1",
+        "G8": "G2",
+        "G10": "G3",
+        "G99": "G4",
+    }
+
+
+def test_measurement_rows_use_spatial_guide_display_ids():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((80.0, 10.0), (80.0, 110.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.records["G99"] = LineRecord("G99", "guide", (0.0, 90.0), (150.0, 90.0), axis="horizontal")
+        window.records["G10"] = LineRecord("G10", "guide", (0.0, 30.0), (150.0, 30.0), axis="horizontal")
+
+        window.calculate_angles(reset_hidden=False)
+
+        rows = sorted(
+            [row for row in window.last_measurements if row["kind"] == "edge_guide_intersection"],
+            key=lambda row: float(row["y_px"]),
+        )
+        assert [row["guide_id"] for row in rows] == ["G1", "G2"]
+        assert [row["measurement"] for row in rows] == [f"{edge.id}_x_G1", f"{edge.id}_x_G2"]
+    finally:
+        window.close()
+
+
+def test_data_export_rows_use_spatial_guide_display_ids():
+    window = _window_with_edge_image()
+    try:
+        edge = LineRecord("E1", "edge", (80.0, 10.0), (80.0, 110.0))
+        bottom = LineRecord("G99", "guide", (0.0, 90.0), (150.0, 90.0), axis="horizontal")
+        top = LineRecord("G10", "guide", (0.0, 30.0), (150.0, 30.0), axis="horizontal")
+        records = [edge, bottom, top]
+
+        rows = window._export_rows_for_records(
+            "image.png",
+            records,
+            None,
+            window._export_group_info(records, "y"),
+            "y",
+        )["intersection_angle"]
+        rows = sorted(rows, key=lambda row: float(row["y_px"]))
+
+        assert [row["가이드ID"] for row in rows] == ["G1", "G2"]
+        assert [row["측정ID"] for row in rows] == ["E1_x_G1", "E1_x_G2"]
+    finally:
+        window.close()
+
+
 def test_cd_label_text_and_position_can_be_edited(monkeypatch):
     class _Value:
         def __init__(self, value):
