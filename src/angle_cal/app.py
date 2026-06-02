@@ -140,6 +140,14 @@ LENGTH_GROUP_KEY = 3
 LENGTH_PARENT_KEY = 4
 ANGLE_TYPE_KEY = 5
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+TOOLTIP_STYLESHEET = (
+    "QToolTip { "
+    "color: #f8fafc; "
+    "background-color: #111827; "
+    "border: 1px solid #94a3b8; "
+    "padding: 4px; "
+    "}"
+)
 
 
 def cosmetic_pen(color: QColor | str, width: float = 1.0, style: Qt.PenStyle = Qt.PenStyle.SolidLine) -> QPen:
@@ -2448,6 +2456,7 @@ class DataExportDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._apply_tooltip_style()
         self.setWindowTitle("Angle Cal - SEM Angle Measurement")
         self.resize(1280, 820)
         self.image_bgr: Optional[np.ndarray] = None
@@ -2532,6 +2541,17 @@ class MainWindow(QMainWindow):
         self.canvas.scene.selectionChanged.connect(self._update_object_visibility_controls)
         self.setStatusBar(QStatusBar())
         self._set_status("이미지를 불러오면 시작할 수 있습니다.")
+
+    @staticmethod
+    def _apply_tooltip_style() -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        current = app.styleSheet()
+        if TOOLTIP_STYLESHEET in current:
+            return
+        separator = "\n" if current and not current.endswith("\n") else ""
+        app.setStyleSheet(f"{current}{separator}{TOOLTIP_STYLESHEET}")
 
     def _build_actions(self) -> None:
         self.open_action = QAction("이미지 열기", self)

@@ -48,6 +48,18 @@ def test_ctrl_s_shortcut_saves_project():
         window.close()
 
 
+def test_tooltips_use_readable_contrast():
+    window = _window_with_edge_image()
+    try:
+        stylesheet = QApplication.instance().styleSheet()
+
+        assert "QToolTip" in stylesheet
+        assert "color: #f8fafc" in stylesheet
+        assert "background-color: #111827" in stylesheet
+    finally:
+        window.close()
+
+
 def test_recognize_segments_line_mode_by_segment_size():
     window = _window_with_edge_image()
     try:
