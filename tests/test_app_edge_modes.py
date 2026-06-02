@@ -40,11 +40,12 @@ def _select_edges(window: MainWindow) -> list[LineRecord]:
 def test_ctrl_s_shortcut_saves_project():
     window = _window_with_edge_image()
     try:
-        shortcut = window.save_project_action.shortcut()
+        shortcut = window.smart_save_action.shortcut()
 
         assert shortcut.matches(QKeySequence(QKeySequence.StandardKey.Save)) == QKeySequence.SequenceMatch.ExactMatch
-        assert window.save_project_action.shortcutContext() == Qt.ShortcutContext.ApplicationShortcut
-        assert window.save_project_action in window.actions()
+        assert window.smart_save_action.shortcutContext() == Qt.ShortcutContext.ApplicationShortcut
+        assert window.smart_save_action in window.actions()
+        assert window.save_project_action.shortcut().isEmpty()
     finally:
         window.close()
 
@@ -420,6 +421,29 @@ def test_mouse_drag_does_not_adjust_search_range():
         assert window.canvas._search_range_drag_candidate(view_pos) is not None
         assert not window.canvas._begin_search_range_drag(view_pos, Qt.KeyboardModifier.NoModifier)
         assert window.canvas._search_range_drag_segment is None
+    finally:
+        window.close()
+
+
+def test_grouped_split_search_range_has_no_drag_candidate():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((45.0, 20.0), (45.0, 100.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        for edge in edges:
+            edge.object_group = "G1"
+            edge.search_radius_split = True
+            edge.search_radius_left_px = 12
+            edge.search_radius_right_px = 28
+        window.split_search_range_checkbox.setChecked(True)
+        window.canvas.redraw_lines(list(window.records.values()))
+        for edge in edges:
+            window.canvas.line_items[edge.id].setSelected(True)
+        view_pos = window.canvas.mapFromScene(QPointF(90.0, 60.0))
+
+        assert window.canvas._search_range_drag_candidate(view_pos) is None
+        assert not window.canvas._begin_search_range_drag(view_pos, Qt.KeyboardModifier.NoModifier)
     finally:
         window.close()
 
@@ -1468,6 +1492,116 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         assert len(payload["image_states"][str(path_a)]["records"]) == 1
         assert len(payload["image_states"][str(path_b)]["records"]) == 1
         assert payload["records"] == payload["image_states"][str(path_b)]["records"]
+    finally:
+        window.close()
+
+
+def test_switching_images_auto_saves_image_format_sidecar(tmp_path):
+    path_a = tmp_path / "a.png"
+    path_b = tmp_path / "b.png"
+    cv2.imwrite(str(path_a), np.zeros((80, 120, 3), dtype=np.uint8))
+    cv2.imwrite(str(path_b), np.full((80, 120, 3), 255, dtype=np.uint8))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(path_a), str(path_b)]
+        window.current_browser_index = 0
+        window._load_image_path(str(path_a), preserve_calibration=False)
+        window._create_edge_line((20.0, 20.0), (90.0, 20.0))
+
+        window._load_image_path(str(path_b), preserve_calibration=True)
+
+        format_path = window._image_format_path(str(path_a))
+        payload = json.loads(format_path.read_text(encoding="utf-8"))
+        assert payload["angle_cal_format_version"] == 1
+        assert payload["image_path"] == str(path_a)
+        assert len(payload["image_state"]["records"]) == 1
+    finally:
+        window.close()
+
+
+def test_loading_image_restores_image_format_sidecar(tmp_path):
+    path = tmp_path / "a.png"
+    cv2.imwrite(str(path), np.zeros((80, 120, 3), dtype=np.uint8))
+    edge = LineRecord("E1", "edge", (20.0, 20.0), (90.0, 20.0))
+    format_path = MainWindow._image_format_path(str(path))
+    format_path.write_text(
+        json.dumps(
+            {
+                "angle_cal_format_version": 1,
+                "image_path": str(path),
+                "image_state": {
+                    "records": [app_module.asdict(edge)],
+                    "counter": 2,
+                    "nm_per_px": 1.25,
+                    "hidden_angle_measurements": [],
+                    "image_adjustments": {},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    _app()
+    window = MainWindow()
+    try:
+        window._load_image_path(str(path), preserve_calibration=False)
+
+        assert "E1" in window.records
+        assert window.nm_per_px == 1.25
+        assert window.image_states[str(path)]["counter"] == 2
+    finally:
+        window.close()
+
+
+def test_smart_save_writes_image_format_without_project(tmp_path, monkeypatch):
+    path = tmp_path / "a.png"
+    cv2.imwrite(str(path), np.zeros((80, 120, 3), dtype=np.uint8))
+
+    def fail_save_dialog(*args, **kwargs):
+        raise AssertionError("smart save without project should not ask for a project path")
+
+    monkeypatch.setattr(app_module.QFileDialog, "getSaveFileName", fail_save_dialog)
+    _app()
+    window = MainWindow()
+    try:
+        window._load_image_path(str(path), preserve_calibration=False)
+        window._create_edge_line((20.0, 20.0), (90.0, 20.0))
+
+        window.smart_save()
+
+        format_path = window._image_format_path(str(path))
+        payload = json.loads(format_path.read_text(encoding="utf-8"))
+        assert len(payload["image_state"]["records"]) == 1
+        assert window.project_path is None
+    finally:
+        window.close()
+
+
+def test_smart_save_uses_existing_project_path(tmp_path):
+    image_path = tmp_path / "a.png"
+    project_path = tmp_path / "folder_project.anglecal.json"
+    cv2.imwrite(str(image_path), np.zeros((80, 120, 3), dtype=np.uint8))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(image_path)]
+        window.current_browser_index = 0
+        window.project_path = str(project_path)
+        window._load_image_path(str(image_path), preserve_calibration=False)
+        window._create_edge_line((20.0, 20.0), (90.0, 20.0))
+
+        window.smart_save()
+
+        payload = json.loads(project_path.read_text(encoding="utf-8"))
+        assert payload["project_format_version"] == 2
+        assert payload["browser_image_paths"] == [str(image_path)]
+        assert len(payload["image_states"][str(image_path)]["records"]) == 1
     finally:
         window.close()
 

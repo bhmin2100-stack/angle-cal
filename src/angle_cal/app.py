@@ -142,6 +142,7 @@ ANGLE_TYPE_KEY = 5
 GROUP_BOX_GROUP_KEY = 6
 GROUP_BOX_RECORD_IDS_KEY = 7
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+IMAGE_FORMAT_SUFFIX = ".anglecal.format.json"
 TOOLTIP_STYLESHEET = (
     "QToolTip { "
     "color: #f8fafc; "
@@ -163,6 +164,8 @@ class AnnotationLineItem(QGraphicsLineItem):
         super().__init__(record.start[0], record.start[1], record.end[0], record.end[1])
         self.record_id = record.id
         self.kind = record.kind
+        self.object_group = record.object_group
+        self.search_radius_split = record.search_radius_split
         self.setPen(pen)
         self.setZValue(10 if record.kind != "guide" else 4)
         if record.kind in {"edge", "scale", "guide"}:
@@ -175,6 +178,8 @@ class AnnotationCurveItem(QGraphicsPathItem):
         super().__init__(path_from_points(record.points or [record.start, record.end], smooth=False))
         self.record_id = record.id
         self.kind = record.kind
+        self.object_group = record.object_group
+        self.search_radius_split = record.search_radius_split
         self.anchor_points = list(record.points or [record.start, record.end])
         self.setPen(pen)
         self.setZValue(10)
@@ -1144,14 +1149,19 @@ class AngleCanvas(QGraphicsView):
             return None
         if self._selected_draggable_line_at(view_pos) is not None:
             return None
+        selected_edges = [
+            item
+            for item in self.scene.selectedItems()
+            if isinstance(item, (AnnotationLineItem, AnnotationCurveItem)) and item.kind == "edge"
+        ]
+        if any(getattr(item, "object_group", None) and getattr(item, "search_radius_split", False) for item in selected_edges):
+            return None
         scene_pos = self.mapToScene(view_pos)
         point = (float(scene_pos.x()), float(scene_pos.y()))
         max_radius = max(float(self.search_range_left_px), float(self.search_range_right_px), float(self.search_range_radius_px))
         tolerance = max(5.0, 7.0 / max(0.2, self.transform().m11()))
         best: Optional[tuple[float, Point, Point]] = None
-        for item in self.scene.selectedItems():
-            if not isinstance(item, (AnnotationLineItem, AnnotationCurveItem)) or item.kind != "edge":
-                continue
+        for item in selected_edges:
             points = points_from_path_item(item)
             for start, end in zip(points, points[1:]):
                 distance = point_to_segment_distance(point, start, end)
@@ -2675,9 +2685,13 @@ class MainWindow(QMainWindow):
         self.open_action.triggered.connect(self.open_image)
         self.open_folder_action = QAction("폴더 열기", self)
         self.open_folder_action.triggered.connect(self.open_folder)
+        self.smart_save_action = QAction("저장", self)
+        self.smart_save_action.setShortcut(QKeySequence.StandardKey.Save)
+        self.smart_save_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.smart_save_action.triggered.connect(self.smart_save)
+        self.save_image_format_action = QAction("이미지 저장", self)
+        self.save_image_format_action.triggered.connect(self.save_image_format)
         self.save_project_action = QAction("프로젝트 저장", self)
-        self.save_project_action.setShortcut(QKeySequence.StandardKey.Save)
-        self.save_project_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.save_project_action.triggered.connect(self.save_project)
         self.open_project_action = QAction("프로젝트 열기", self)
         self.open_project_action.triggered.connect(self.open_project)
@@ -2740,7 +2754,7 @@ class MainWindow(QMainWindow):
         self.addAction(self.copy_action)
         self.addAction(self.paste_action)
         self.addAction(self.copy_format_action)
-        self.addAction(self.save_project_action)
+        self.addAction(self.smart_save_action)
         self.addAction(self.save_structure_action)
         self.addAction(self.paste_structure_action)
         self.addAction(self.group_action)
@@ -2820,7 +2834,13 @@ class MainWindow(QMainWindow):
 
         file_page = page()
         file_group = group(file_page, "불러오기 / 저장")
-        for action in [self.open_action, self.open_folder_action, self.open_project_action, self.save_project_action]:
+        for action in [
+            self.open_action,
+            self.open_folder_action,
+            self.open_project_action,
+            self.save_image_format_action,
+            self.save_project_action,
+        ]:
             file_group.addWidget(self._button_for_action(action))
         export_group = group(file_page, "내보내기")
         for action in [self.export_png_action, self.export_csv_action, self.export_data_action]:
@@ -3345,6 +3365,10 @@ class MainWindow(QMainWindow):
             return
         previous_nm_per_px = self.nm_per_px
         state = self.image_states.get(path)
+        if state is None:
+            state = self._load_image_format_state(path)
+            if state is not None:
+                self.image_states[path] = state
         self.image_bgr = image
         self.image_path = path
         if state is not None:
@@ -3369,13 +3393,15 @@ class MainWindow(QMainWindow):
         if not self.image_path:
             return
         self._sync_records_from_canvas()
-        self.image_states[self.image_path] = {
+        state = {
             "records": [asdict(record) for record in self.records.values()],
             "counter": self._counter,
             "nm_per_px": self.nm_per_px,
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "image_adjustments": self._image_adjustment_state(),
         }
+        self.image_states[self.image_path] = state
+        self._write_image_format_file(self.image_path, state, explicit=False)
 
     def _restore_image_state(self, state: dict) -> None:
         self.records = {item["id"]: line_record_from_dict(item) for item in state.get("records", [])}
@@ -3393,6 +3419,43 @@ class MainWindow(QMainWindow):
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "image_adjustments": self._image_adjustment_state(),
         }
+
+    @staticmethod
+    def _image_format_path(image_path: str) -> Path:
+        path = Path(image_path)
+        return path.with_name(f"{path.name}{IMAGE_FORMAT_SUFFIX}")
+
+    def _write_image_format_file(self, image_path: str, state: dict, explicit: bool) -> Optional[Path]:
+        path = self._image_format_path(image_path)
+        payload = {
+            "angle_cal_format_version": 1,
+            "image_path": image_path,
+            "image_state": self._normalize_image_state(state),
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            if explicit:
+                QMessageBox.warning(self, "이미지 저장", f"이미지 서식파일을 저장할 수 없습니다.\n{exc}")
+            return None
+        return path
+
+    def _load_image_format_state(self, image_path: str) -> Optional[dict]:
+        path = self._image_format_path(image_path)
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        state = payload.get("image_state", payload)
+        if not isinstance(state, dict):
+            return None
+        return self._normalize_image_state(state)
 
     @staticmethod
     def _normalize_image_state(state: dict) -> dict:
@@ -3650,6 +3713,22 @@ class MainWindow(QMainWindow):
         self._load_image_path(image_path, preserve_calibration=True)
         self.project_path = path
         self._set_status(f"프로젝트 로드: {Path(path).name}, 이미지 {len(self.browser_image_paths)}개")
+
+    def smart_save(self) -> None:
+        if self.project_path:
+            self.save_project()
+        else:
+            self.save_image_format()
+
+    def save_image_format(self) -> None:
+        if self.image_bgr is None or not self.image_path:
+            return
+        self._sync_records_from_canvas()
+        state = self._current_image_state_dict()
+        self.image_states[self.image_path] = state
+        path = self._write_image_format_file(self.image_path, state, explicit=True)
+        if path is not None:
+            self._set_status(f"이미지 서식 저장: {path.name}")
 
     def save_project(self) -> None:
         if self.image_bgr is None:
