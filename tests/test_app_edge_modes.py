@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QKeyEvent, QWheelEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QWheelEvent
 from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QMessageBox
 
 import angle_cal.app as app_module
@@ -34,6 +34,18 @@ def _select_edges(window: MainWindow) -> list[LineRecord]:
     for edge in edges:
         window.canvas.line_items[edge.id].setSelected(True)
     return edges
+
+
+def test_ctrl_s_shortcut_saves_project():
+    window = _window_with_edge_image()
+    try:
+        shortcut = window.save_project_action.shortcut()
+
+        assert shortcut.matches(QKeySequence(QKeySequence.StandardKey.Save)) == QKeySequence.SequenceMatch.ExactMatch
+        assert window.save_project_action.shortcutContext() == Qt.ShortcutContext.ApplicationShortcut
+        assert window.save_project_action in window.actions()
+    finally:
+        window.close()
 
 
 def test_recognize_segments_line_mode_by_segment_size():
