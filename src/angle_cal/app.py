@@ -2693,6 +2693,8 @@ class MainWindow(QMainWindow):
         self.save_image_format_action.triggered.connect(self.save_image_format)
         self.save_project_action = QAction("프로젝트 저장", self)
         self.save_project_action.triggered.connect(self.save_project)
+        self.save_project_as_action = QAction("새 프로젝트로 저장", self)
+        self.save_project_as_action.triggered.connect(self.save_project_as_new)
         self.open_project_action = QAction("프로젝트 열기", self)
         self.open_project_action.triggered.connect(self.open_project)
         self.export_png_action = QAction("주석 PNG 내보내기", self)
@@ -2840,6 +2842,7 @@ class MainWindow(QMainWindow):
             self.open_project_action,
             self.save_image_format_action,
             self.save_project_action,
+            self.save_project_as_action,
         ]:
             file_group.addWidget(self._button_for_action(action))
         export_group = group(file_page, "내보내기")
@@ -3730,22 +3733,37 @@ class MainWindow(QMainWindow):
         if path is not None:
             self._set_status(f"이미지 서식 저장: {path.name}")
 
+    def _prompt_project_save_path(self, title: str) -> Optional[str]:
+        path, _ = QFileDialog.getSaveFileName(self, title, "", "Angle Cal Project (*.anglecal.json)")
+        if not path:
+            return None
+        if not path.endswith(".anglecal.json"):
+            path += ".anglecal.json"
+        return path
+
     def save_project(self) -> None:
         if self.image_bgr is None:
             return
+        path = self.project_path or self._prompt_project_save_path("프로젝트 저장")
+        if not path:
+            return
+        self._save_project_to_path(path)
+
+    def save_project_as_new(self) -> None:
+        if self.image_bgr is None:
+            return
+        path = self._prompt_project_save_path("새 프로젝트로 저장")
+        if not path:
+            return
+        self._save_project_to_path(path)
+
+    def _save_project_to_path(self, path: str) -> None:
         self._save_current_image_state()
         current_state = self.image_states.get(self.image_path, self._current_image_state_dict())
         browser_paths = list(self.browser_image_paths)
         if self.image_path and self.image_path not in browser_paths:
             browser_paths.insert(0, self.image_path)
         current_index = browser_paths.index(self.image_path) if self.image_path in browser_paths else 0
-        path = self.project_path
-        if not path:
-            path, _ = QFileDialog.getSaveFileName(self, "프로젝트 저장", "", "Angle Cal Project (*.anglecal.json)")
-            if not path:
-                return
-            if not path.endswith(".anglecal.json"):
-                path += ".anglecal.json"
         payload = {
             "project_format_version": 2,
             "image_path": self.image_path,

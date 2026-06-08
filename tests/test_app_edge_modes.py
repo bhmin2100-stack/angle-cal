@@ -1496,6 +1496,40 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         window.close()
 
 
+def test_save_project_as_new_prompts_even_with_existing_project_path(tmp_path, monkeypatch):
+    image_path = tmp_path / "a.png"
+    old_project_path = tmp_path / "old_project.anglecal.json"
+    new_project_path = tmp_path / "new_project.anglecal.json"
+    cv2.imwrite(str(image_path), np.zeros((80, 120, 3), dtype=np.uint8))
+    dialogs: list[str] = []
+
+    def save_dialog(_parent, title, *args, **kwargs):
+        dialogs.append(title)
+        return (str(new_project_path), "Angle Cal Project (*.anglecal.json)")
+
+    monkeypatch.setattr(app_module.QFileDialog, "getSaveFileName", save_dialog)
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(image_path)]
+        window.current_browser_index = 0
+        window.project_path = str(old_project_path)
+        window._load_image_path(str(image_path), preserve_calibration=False)
+        window._create_edge_line((20.0, 20.0), (90.0, 20.0))
+
+        window.save_project_as_new()
+
+        assert dialogs == ["새 프로젝트로 저장"]
+        assert window.project_path == str(new_project_path)
+        assert not old_project_path.exists()
+        payload = json.loads(new_project_path.read_text(encoding="utf-8"))
+        assert payload["project_format_version"] == 2
+        assert len(payload["image_states"][str(image_path)]["records"]) == 1
+    finally:
+        window.close()
+
+
 def test_switching_images_auto_saves_image_format_sidecar(tmp_path):
     path_a = tmp_path / "a.png"
     path_b = tmp_path / "b.png"
