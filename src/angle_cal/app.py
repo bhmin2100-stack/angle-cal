@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
+    QTabBar,
     QTabWidget,
     QToolBar,
     QVBoxLayout,
@@ -262,6 +263,7 @@ class AngleCanvas(QGraphicsView):
     edit_started = Signal()
     temporary_edge_tool_changed = Signal(bool)
     guide_context_requested = Signal(str, QPoint)
+    image_context_requested = Signal(QPoint)
     recognize_requested = Signal()
 
     def __init__(self):
@@ -1348,7 +1350,10 @@ class AngleCanvas(QGraphicsView):
                 self.guide_context_requested.emit(item.record_id, self.mapToGlobal(event.pos()))
                 event.accept()
                 return
-        if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
+            self.image_context_requested.emit(self.mapToGlobal(event.pos()))
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.MiddleButton:
             self._start_pan(event.pos())
             event.accept()
             return
@@ -2600,9 +2605,11 @@ class MainWindow(QMainWindow):
         self.last_measurements: list[dict[str, str | float | int]] = []
         self.browser_root: Optional[Path] = None
         self.browser_image_paths: list[str] = []
+        self.favorite_image_paths: list[str] = []
         self.current_browser_index = -1
         self.thumbnail_buttons: dict[str, QPushButton] = {}
         self.thumbnail_columns = 2
+        self._updating_favorite_tabs = False
         self.current_tool = "select"
         self.scale_presets: list[ScalePreset] = []
         self.structure_templates: list[StructureTemplate] = []
@@ -2646,8 +2653,21 @@ class MainWindow(QMainWindow):
             "point_handle": True,
         }
 
+        self.favorite_tab_bar = QTabBar()
+        self.favorite_tab_bar.setDrawBase(False)
+        self.favorite_tab_bar.setMovable(False)
+        self.favorite_tab_bar.setExpanding(False)
+        self.favorite_tab_bar.currentChanged.connect(self._favorite_tab_changed)
+        self.favorite_tab_bar.hide()
+
         self.canvas = AngleCanvas()
-        self.setCentralWidget(self.canvas)
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self.favorite_tab_bar)
+        central_layout.addWidget(self.canvas, 1)
+        self.setCentralWidget(central)
         self.canvas.line_created.connect(self._handle_line_created)
         self.canvas.segment_split_requested.connect(self.split_edge_segment_for_selection)
         self.canvas.scene_changed.connect(self._handle_scene_changed)
@@ -2658,6 +2678,7 @@ class MainWindow(QMainWindow):
         self.canvas.edit_started.connect(self.save_undo_snapshot)
         self.canvas.temporary_edge_tool_changed.connect(self.set_temporary_edge_tool)
         self.canvas.guide_context_requested.connect(self.open_guide_context_menu)
+        self.canvas.image_context_requested.connect(self.open_image_context_menu)
         self.canvas.recognize_requested.connect(self.recognize_edges)
         self.detection_preview_timer = QTimer(self)
         self.detection_preview_timer.setSingleShot(True)
@@ -3340,7 +3361,9 @@ class MainWindow(QMainWindow):
         self.image_path = None
         self.browser_root = None
         self.browser_image_paths = [path]
+        self.favorite_image_paths = []
         self.current_browser_index = 0
+        self._refresh_favorite_tabs()
         self._populate_thumbnails()
         self._load_image_path(path, preserve_calibration=False)
 
@@ -3359,7 +3382,9 @@ class MainWindow(QMainWindow):
         self.image_path = None
         self.browser_root = root
         self.browser_image_paths = [str(path) for path in image_paths]
+        self.favorite_image_paths = []
         self.current_browser_index = 0
+        self._refresh_favorite_tabs()
         self._populate_thumbnails()
         self._load_image_path(self.browser_image_paths[0], preserve_calibration=True)
         self._set_status(f"폴더 로드: {root.name}, 이미지 {len(self.browser_image_paths)}개")
@@ -3569,6 +3594,64 @@ class MainWindow(QMainWindow):
         self.thumbnail_layout.setRowStretch(row + 1, 1)
         self._select_thumbnail(self.image_path)
 
+    def _refresh_favorite_tabs(self) -> None:
+        valid_paths: list[str] = []
+        for path in self.favorite_image_paths:
+            if path in self.browser_image_paths and Path(path).exists() and path not in valid_paths:
+                valid_paths.append(path)
+        self.favorite_image_paths = valid_paths
+        self._updating_favorite_tabs = True
+        try:
+            while self.favorite_tab_bar.count():
+                self.favorite_tab_bar.removeTab(0)
+            for path in self.favorite_image_paths:
+                index = self.favorite_tab_bar.addTab(Path(path).name)
+                self.favorite_tab_bar.setTabData(index, path)
+                self.favorite_tab_bar.setTabToolTip(index, path)
+            current_index = self.favorite_image_paths.index(self.image_path) if self.image_path in self.favorite_image_paths else -1
+            self.favorite_tab_bar.setCurrentIndex(current_index)
+            self.favorite_tab_bar.setVisible(bool(self.favorite_image_paths))
+        finally:
+            self._updating_favorite_tabs = False
+
+    def _favorite_tab_changed(self, index: int) -> None:
+        if self._updating_favorite_tabs or index < 0:
+            return
+        path = self.favorite_tab_bar.tabData(index)
+        if isinstance(path, str) and path and path != self.image_path:
+            self.load_browser_image(path)
+
+    def open_image_context_menu(self, global_pos: QPoint) -> None:
+        if not self.image_path:
+            return
+        menu = QMenu(self)
+        if self.image_path in self.favorite_image_paths:
+            action = menu.addAction("즐겨찾기에서 제거")
+            action.triggered.connect(lambda checked=False, path=self.image_path: self.remove_favorite_image(path))
+        else:
+            action = menu.addAction("즐겨찾기에 저장")
+            action.triggered.connect(lambda checked=False, path=self.image_path: self.add_favorite_image(path))
+        menu.exec(global_pos)
+
+    def add_favorite_image(self, path: Optional[str] = None) -> None:
+        target = path or self.image_path
+        if not target:
+            return
+        if target not in self.browser_image_paths:
+            self.browser_image_paths.append(target)
+        if target not in self.favorite_image_paths:
+            self.favorite_image_paths.append(target)
+        self._refresh_favorite_tabs()
+        self._set_status(f"즐겨찾기 추가: {Path(target).name}")
+
+    def remove_favorite_image(self, path: Optional[str] = None) -> None:
+        target = path or self.image_path
+        if not target:
+            return
+        self.favorite_image_paths = [favorite for favorite in self.favorite_image_paths if favorite != target]
+        self._refresh_favorite_tabs()
+        self._set_status(f"즐겨찾기 제거: {Path(target).name}")
+
     def _thumbnail_columns_changed(self) -> None:
         self.thumbnail_columns = int(self.thumbnail_columns_combo.currentData())
         self._populate_thumbnails()
@@ -3624,6 +3707,7 @@ class MainWindow(QMainWindow):
                 if checked
                 else ""
             )
+        self._refresh_favorite_tabs()
 
     def open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", "", "Angle Cal Project (*.anglecal.json)")
@@ -3639,6 +3723,10 @@ class MainWindow(QMainWindow):
             image_path = browser_paths[current_index]
         if image_path and image_path not in browser_paths:
             browser_paths.insert(0, image_path)
+        favorite_paths = [str(item) for item in (payload.get("favorite_image_paths") or []) if item]
+        for favorite_path in favorite_paths:
+            if favorite_path not in browser_paths and Path(favorite_path).exists():
+                browser_paths.append(favorite_path)
         if not image_path or not Path(image_path).exists():
             QMessageBox.warning(self, "프로젝트 열기", "프로젝트에 기록된 이미지 경로를 찾을 수 없습니다.")
             return
@@ -3652,6 +3740,11 @@ class MainWindow(QMainWindow):
         self.records.clear()
         self.image_states = self._project_image_states_from_payload(payload, image_path)
         self.browser_image_paths = browser_paths or [image_path]
+        self.favorite_image_paths = [
+            path
+            for path in favorite_paths
+            if path in self.browser_image_paths and Path(path).exists()
+        ]
         browser_root = payload.get("browser_root")
         self.browser_root = Path(browser_root) if browser_root else (Path(self.browser_image_paths[0]).parent if len(self.browser_image_paths) > 1 else None)
         self.current_browser_index = self.browser_image_paths.index(image_path) if image_path in self.browser_image_paths else 0
@@ -3718,6 +3811,7 @@ class MainWindow(QMainWindow):
         self._refresh_structure_combo()
         self.undo_stack.clear()
         self._populate_thumbnails()
+        self._refresh_favorite_tabs()
         self._load_image_path(image_path, preserve_calibration=True)
         self.project_path = path
         self._set_status(f"프로젝트 로드: {Path(path).name}, 이미지 {len(self.browser_image_paths)}개")
@@ -3774,6 +3868,11 @@ class MainWindow(QMainWindow):
             "image_path": self.image_path,
             "browser_root": str(self.browser_root) if self.browser_root else "",
             "browser_image_paths": browser_paths,
+            "favorite_image_paths": [
+                path
+                for path in self.favorite_image_paths
+                if path in browser_paths and Path(path).exists()
+            ],
             "current_browser_index": current_index,
             "image_states": self.image_states,
             "nm_per_px": current_state.get("nm_per_px"),

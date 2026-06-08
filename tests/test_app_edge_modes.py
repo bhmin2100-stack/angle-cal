@@ -756,6 +756,28 @@ def test_scale_tool_magnifier_updates_near_cursor():
         window.close()
 
 
+def test_canvas_right_click_requests_image_context_menu():
+    window = _window_with_edge_image()
+    try:
+        captured: list[QPoint] = []
+        window.canvas.image_context_requested.connect(captured.append)
+        view_pos = QPointF(window.canvas.mapFromScene(QPointF(20.0, 20.0)))
+        event = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            view_pos,
+            Qt.MouseButton.RightButton,
+            Qt.MouseButton.RightButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+        window.canvas.mousePressEvent(event)
+
+        assert len(captured) == 1
+        assert window.canvas._panning is False
+    finally:
+        window.close()
+
+
 def test_space_temporarily_switches_to_edge_tool():
     window = _window_with_edge_image()
     try:
@@ -1618,6 +1640,41 @@ def test_switching_images_restores_per_image_annotations(tmp_path):
         window.close()
 
 
+def test_favorite_images_show_as_tabs_and_switch_images(tmp_path):
+    path_a = tmp_path / "a.png"
+    path_b = tmp_path / "b.png"
+    cv2.imwrite(str(path_a), np.zeros((80, 120, 3), dtype=np.uint8))
+    cv2.imwrite(str(path_b), np.full((80, 120, 3), 255, dtype=np.uint8))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(path_a), str(path_b)]
+        window.current_browser_index = 0
+        window._load_image_path(str(path_a), preserve_calibration=False)
+
+        window.add_favorite_image(str(path_a))
+        window.add_favorite_image(str(path_b))
+
+        assert not window.favorite_tab_bar.isHidden()
+        assert window.favorite_tab_bar.count() == 2
+        assert window.favorite_tab_bar.tabData(0) == str(path_a)
+        assert window.favorite_tab_bar.tabText(1) == "b.png"
+
+        window.favorite_tab_bar.setCurrentIndex(1)
+
+        assert window.image_path == str(path_b)
+        assert window.current_browser_index == 1
+
+        window.remove_favorite_image(str(path_b))
+
+        assert window.favorite_tab_bar.count() == 1
+        assert window.favorite_image_paths == [str(path_a)]
+    finally:
+        window.close()
+
+
 def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
     path_a = tmp_path / "a.png"
     path_b = tmp_path / "b.png"
@@ -1631,6 +1688,7 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
     try:
         window.browser_root = tmp_path
         window.browser_image_paths = [str(path_a), str(path_b)]
+        window.favorite_image_paths = [str(path_a)]
         window.current_browser_index = 0
         window._load_image_path(str(path_a), preserve_calibration=False)
         window._create_edge_line((20.0, 20.0), (90.0, 20.0))
@@ -1645,6 +1703,7 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         assert payload["image_path"] == str(path_b)
         assert payload["browser_root"] == str(tmp_path)
         assert payload["browser_image_paths"] == [str(path_a), str(path_b)]
+        assert payload["favorite_image_paths"] == [str(path_a)]
         assert set(payload["image_states"]) == {str(path_a), str(path_b)}
         assert len(payload["image_states"][str(path_a)]["records"]) == 1
         assert len(payload["image_states"][str(path_b)]["records"]) == 1
@@ -1810,6 +1869,7 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         "image_path": str(path_b),
         "browser_root": str(tmp_path),
         "browser_image_paths": [str(path_a), str(path_b)],
+        "favorite_image_paths": [str(path_a)],
         "current_browser_index": 1,
         "image_states": {
             str(path_a): {"records": [app_module.asdict(edge_a)], "counter": 2, "nm_per_px": 1.5, "hidden_angle_measurements": [], "image_adjustments": {}},
@@ -1830,6 +1890,9 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         assert window.project_path == str(project_path)
         assert window.browser_root == tmp_path
         assert window.browser_image_paths == [str(path_a), str(path_b)]
+        assert window.favorite_image_paths == [str(path_a)]
+        assert window.favorite_tab_bar.count() == 1
+        assert window.favorite_tab_bar.tabData(0) == str(path_a)
         assert window.current_browser_index == 1
         assert set(window.image_states) == {str(path_a), str(path_b)}
         assert "E_b" in window.records
