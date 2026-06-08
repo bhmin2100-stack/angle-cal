@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QKeyEvent, QKeySequence, QWheelEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QMessageBox
 
 import angle_cal.app as app_module
@@ -686,6 +686,57 @@ def test_scale_line_shift_constraints():
         assert horizontal.y() == 30.0
         assert vertical.x() == 20.0
         assert vertical.y() == 80.0
+    finally:
+        window.close()
+
+
+def test_guide_line_shift_constraints_with_mouse_drag():
+    window = _window_with_edge_image()
+    try:
+        window.set_current_tool("guide")
+        start = QPointF(20.0, 30.0)
+        end = QPointF(90.0, 80.0)
+
+        def drag(modifiers: Qt.KeyboardModifier) -> LineRecord:
+            before = {record.id for record in window.records.values() if record.kind == "guide"}
+            start_pos = QPointF(window.canvas.mapFromScene(start))
+            end_pos = QPointF(window.canvas.mapFromScene(end))
+            press = QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                start_pos,
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                modifiers,
+            )
+            move = QMouseEvent(
+                QEvent.Type.MouseMove,
+                end_pos,
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.LeftButton,
+                modifiers,
+            )
+            release = QMouseEvent(
+                QEvent.Type.MouseButtonRelease,
+                end_pos,
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.NoButton,
+                modifiers,
+            )
+            window.canvas.mousePressEvent(press)
+            window.canvas.mouseMoveEvent(move)
+            window.canvas.mouseReleaseEvent(release)
+            created = [record for record in window.records.values() if record.kind == "guide" and record.id not in before]
+            assert len(created) == 1
+            return created[0]
+
+        horizontal = drag(Qt.KeyboardModifier.ShiftModifier)
+        vertical = drag(Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+
+        assert math.isclose(horizontal.start[1], horizontal.end[1], abs_tol=0.001)
+        assert horizontal.axis == "horizontal"
+        assert math.isclose(vertical.start[0], vertical.end[0], abs_tol=0.001)
+        assert vertical.axis == "vertical"
+        assert window.canvas._panning is False
     finally:
         window.close()
 

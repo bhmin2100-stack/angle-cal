@@ -1385,7 +1385,7 @@ class AngleCanvas(QGraphicsView):
             event.button() == Qt.MouseButton.LeftButton
             and (self.current_tool == "pan" or event.modifiers() & Qt.KeyboardModifier.ControlModifier)
             and not (
-                self.current_tool == "scale"
+                self.current_tool in {"scale", "guide"}
                 and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
             )
             and self._additive_rubberband_items is None
@@ -1464,7 +1464,7 @@ class AngleCanvas(QGraphicsView):
 
         if self._temp_line is not None and self._drawing_start is not None:
             end = self._clamp_to_image(self.mapToScene(event.pos()))
-            if self.current_tool == "scale":
+            if self.current_tool in {"scale", "guide"}:
                 end = self._scale_line_end_for_modifiers(self._drawing_start, end, event.modifiers())
             self._temp_line.setLine(
                 self._drawing_start.x(),
@@ -1523,7 +1523,7 @@ class AngleCanvas(QGraphicsView):
         if self._temp_line is not None and self._drawing_start is not None:
             end = self._clamp_to_image(self.mapToScene(event.pos()))
             start = self._drawing_start
-            if self.current_tool == "scale":
+            if self.current_tool in {"scale", "guide"}:
                 end = self._scale_line_end_for_modifiers(start, end, event.modifiers())
             self.scene.removeItem(self._temp_line)
             self._temp_line = None
