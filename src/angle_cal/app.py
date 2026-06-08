@@ -1313,13 +1313,17 @@ class AngleCanvas(QGraphicsView):
             rect = rect.united(item.sceneBoundingRect())
         return rect
 
-    def export_scene_png(self, path: str) -> None:
+    def scene_image(self) -> QImage:
         rect = self.scene.sceneRect()
         image = QImage(int(rect.width()), int(rect.height()), QImage.Format.Format_ARGB32)
         image.fill(Qt.GlobalColor.transparent)
         painter = QPainter(image)
         self.scene.render(painter, QRectF(image.rect()), rect)
         painter.end()
+        return image
+
+    def export_scene_png(self, path: str) -> None:
+        image = self.scene_image()
         image.save(path)
 
     def wheelEvent(self, event):  # noqa: N802
@@ -5319,6 +5323,9 @@ class MainWindow(QMainWindow):
 
     def copy_selected_parent_objects(self) -> None:
         self._sync_records_from_canvas()
+        if self.current_tool == "select" and not self.canvas.scene.selectedItems():
+            self.copy_scene_image_to_clipboard()
+            return
         selected_ids = self.canvas.selected_line_ids()
         copied = [
             clone_record(self.records[record_id])
@@ -5333,6 +5340,14 @@ class MainWindow(QMainWindow):
         self._paste_offset_steps = 0
         QApplication.clipboard().setText(json.dumps([asdict(record) for record in copied], ensure_ascii=False))
         self._set_status(f"상위개체 {len(copied)}개를 복사했습니다. Ctrl+V로 붙여넣을 수 있습니다.")
+
+    def copy_scene_image_to_clipboard(self) -> None:
+        if self.image_bgr is None or self.canvas.pixmap_item is None:
+            return
+        image = self.canvas.scene_image()
+        QApplication.clipboard().setImage(image)
+        self.clipboard_mode = None
+        self._set_status(f"이미지와 주석을 원본 크기 {image.width()} x {image.height()} px로 클립보드에 복사했습니다.")
 
     def copy_selected_format(self) -> None:
         self._sync_records_from_canvas()

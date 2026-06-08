@@ -819,6 +819,43 @@ def test_copy_paste_duplicates_parent_edge_without_angle_children():
         window.close()
 
 
+def test_ctrl_c_without_selection_copies_annotated_image_at_original_size():
+    window = _window_with_edge_image()
+    try:
+        window.set_current_tool("select")
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.scene.clearSelection()
+        QApplication.clipboard().clear()
+
+        window.copy_selected_parent_objects()
+
+        image = QApplication.clipboard().image()
+        assert not image.isNull()
+        assert image.width() == 160
+        assert image.height() == 120
+        assert window.clipboard_mode is None
+    finally:
+        window.close()
+
+
+def test_ctrl_c_with_selected_object_still_copies_parent_object():
+    window = _window_with_edge_image()
+    try:
+        window.set_current_tool("select")
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.line_items[edge.id].setSelected(True)
+
+        window.copy_selected_parent_objects()
+
+        assert len(window.record_clipboard) == 1
+        assert window.clipboard_mode == "object"
+    finally:
+        window.close()
+
+
 def test_selected_edge_angle_display_sector_controls_measurement_angle():
     window = _window_with_edge_image()
     try:
