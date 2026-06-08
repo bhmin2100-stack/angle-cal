@@ -1349,6 +1349,21 @@ def test_reference_line_creates_main_guide_on_same_line():
         window.close()
 
 
+def test_reference_tool_returns_to_select_after_drawing():
+    window = _window_with_edge_image()
+    try:
+        window.set_current_tool("reference")
+
+        window._handle_line_created("reference", (10.0, 20.0), (120.0, 20.0), None)
+
+        assert window.current_tool == "select"
+        assert window.canvas.current_tool == "select"
+        assert window.tool_buttons["select"].isChecked()
+        assert len([record for record in window.records.values() if record.kind == "reference"]) == 1
+    finally:
+        window.close()
+
+
 def test_align_to_reference_minimizes_first_rotation_then_toggles_180(monkeypatch):
     captured: list[float] = []
 

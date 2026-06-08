@@ -4120,6 +4120,8 @@ class MainWindow(QMainWindow):
         self._refresh_table()
         self._update_search_range_overlay()
         self._apply_visibility()
+        if tool == "reference":
+            self.set_current_tool("select")
 
     def _create_scale_line(self, start: Point, end: Point) -> None:
         length_px = line_length(start, end)
