@@ -1321,6 +1321,60 @@ def test_guide_tool_creates_manual_guide_line():
         window.close()
 
 
+def test_reference_line_creates_main_guide_on_same_line():
+    window = _window_with_edge_image()
+    try:
+        window.axis_combo.setCurrentIndex(window.axis_combo.findData("horizontal"))
+        window._create_reference_line((10.0, 20.0), (120.0, 20.0))
+
+        guides = [record for record in window.records.values() if record.kind == "guide"]
+        assert len(guides) == 1
+        main_guide = guides[0]
+        assert main_guide.is_main_guide is True
+        assert main_guide.start == (10.0, 20.0)
+        assert main_guide.end == (120.0, 20.0)
+        assert main_guide.axis == "horizontal"
+
+        window.axis_combo.setCurrentIndex(window.axis_combo.findData("vertical"))
+        window._create_reference_line((40.0, 10.0), (40.0, 100.0))
+
+        guides = [record for record in window.records.values() if record.kind == "guide"]
+        assert len(guides) == 1
+        assert guides[0].id == main_guide.id
+        assert guides[0].is_main_guide is True
+        assert guides[0].start == (40.0, 10.0)
+        assert guides[0].end == (40.0, 100.0)
+        assert guides[0].axis == "vertical"
+    finally:
+        window.close()
+
+
+def test_align_to_reference_minimizes_first_rotation_then_toggles_180(monkeypatch):
+    captured: list[float] = []
+
+    def fake_rotate(image, points, angle):
+        captured.append(float(angle))
+        if len(captured) == 1:
+            return image, [(float(point[0]), 10.0) for point in points]
+        return image, list(points)
+
+    monkeypatch.setattr(app_module, "rotate_image_and_points", fake_rotate)
+    window = _window_with_edge_image()
+    try:
+        window.axis_combo.setCurrentIndex(window.axis_combo.findData("horizontal"))
+        end_y = 10.0 + math.tan(math.radians(179.0)) * 80.0
+        window._create_reference_line((10.0, 10.0), (90.0, end_y))
+
+        window.align_to_reference()
+        window.align_to_reference()
+        window.align_to_reference()
+
+        assert -1.1 <= captured[0] <= -0.9
+        assert captured[1:] == [180.0, 180.0]
+    finally:
+        window.close()
+
+
 def test_structure_template_round_trip_dict():
     template = StructureTemplate(
         name="CD pair",

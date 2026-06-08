@@ -2627,6 +2627,7 @@ class MainWindow(QMainWindow):
         self._updating_image_adjustment_controls = False
         self._expanding_object_group_selection = False
         self.last_edge_record_id: Optional[str] = None
+        self._last_align_key: Optional[tuple[str, str]] = None
         self.visibility: dict[str, bool] = {
             "scale": True,
             "reference": True,
@@ -4326,7 +4327,32 @@ class MainWindow(QMainWindow):
             label=self._reference_label(axis),
         )
         self.records[record.id] = record
-        self._set_status("기준선을 만들었습니다. 기준 토글을 바꾼 뒤 '이미지 맞춤'으로 수평/수직 전환할 수 있습니다.")
+        self._last_align_key = None
+        self._ensure_main_guide_on_reference(start, end, axis)
+        self._set_status("기준선을 만들고 같은 위치에 메인가이드를 추가했습니다. 기준 토글을 바꾼 뒤 '이미지 맞춤'으로 수평/수직 전환할 수 있습니다.")
+
+    def _ensure_main_guide_on_reference(self, start: Point, end: Point, axis: str) -> None:
+        main_guide = self._main_guide_record()
+        for record in self.records.values():
+            if record.kind == "guide":
+                record.is_main_guide = False
+        if main_guide is None:
+            main_guide = LineRecord(
+                id=self._next_id("G"),
+                kind="guide",
+                start=start,
+                end=end,
+                label=f"{axis} guide",
+                axis=axis,
+                is_main_guide=True,
+            )
+            self.records[main_guide.id] = main_guide
+            return
+        main_guide.start = start
+        main_guide.end = end
+        main_guide.axis = axis
+        main_guide.label = f"{axis} guide"
+        main_guide.is_main_guide = True
 
     def _create_edge_line(self, start: Point, end: Point, points: Optional[list[Point]] = None) -> None:
         record = LineRecord(
@@ -4428,7 +4454,10 @@ class MainWindow(QMainWindow):
         reference.label = self._reference_label(reference.axis)
         angle = line_angle_degrees(reference.start, reference.end)
         target = 0.0 if reference.axis == "horizontal" else 90.0
-        rotate_by = angle - target
+        base_rotate = self._minimal_axis_rotation(angle, target)
+        align_key = (reference.id, reference.axis)
+        rotate_by = 180.0 if self._last_align_key == align_key and abs(base_rotate) <= 0.25 else base_rotate
+        self._last_align_key = align_key
         lines = list(self.records.values())
         points: list[Point] = []
         point_counts: list[int] = []
@@ -4462,6 +4491,10 @@ class MainWindow(QMainWindow):
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status(f"이미지를 {rotate_by:.3f}도 회전해 기준을 맞췄습니다.")
+
+    @staticmethod
+    def _minimal_axis_rotation(angle: float, target: float) -> float:
+        return ((float(angle) - float(target) + 90.0) % 180.0) - 90.0
 
     def recognize_edges(self) -> None:
         if self.image_bgr is None:
