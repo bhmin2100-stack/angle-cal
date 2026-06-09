@@ -3607,6 +3607,10 @@ class MainWindow(QMainWindow):
             button.setFixedSize(thumb_width, thumb_height)
             button.setToolTip(str(path))
             button.clicked.connect(lambda checked=False, selected_path=str(path): self.load_browser_image(selected_path))
+            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda pos, selected_path=str(path), selected_button=button: self.open_thumbnail_context_menu(selected_path, selected_button, pos)
+            )
             self.thumbnail_layout.addWidget(button, row, col)
             self.thumbnail_buttons[str(path)] = button
             col += 1
@@ -3646,14 +3650,22 @@ class MainWindow(QMainWindow):
     def open_image_context_menu(self, global_pos: QPoint) -> None:
         if not self.image_path:
             return
+        menu = self._favorite_menu_for_path(self.image_path)
+        menu.exec(global_pos)
+
+    def open_thumbnail_context_menu(self, path: str, button: QPushButton, pos: QPoint) -> None:
+        menu = self._favorite_menu_for_path(path)
+        menu.exec(button.mapToGlobal(pos))
+
+    def _favorite_menu_for_path(self, path: str) -> QMenu:
         menu = QMenu(self)
-        if self.image_path in self.favorite_image_paths:
+        if path in self.favorite_image_paths:
             action = menu.addAction("즐겨찾기에서 제거")
-            action.triggered.connect(lambda checked=False, path=self.image_path: self.remove_favorite_image(path))
+            action.triggered.connect(lambda checked=False, selected_path=path: self.remove_favorite_image(selected_path))
         else:
             action = menu.addAction("즐겨찾기에 저장")
-            action.triggered.connect(lambda checked=False, path=self.image_path: self.add_favorite_image(path))
-        menu.exec(global_pos)
+            action.triggered.connect(lambda checked=False, selected_path=path: self.add_favorite_image(selected_path))
+        return menu
 
     def add_favorite_image(self, path: Optional[str] = None) -> None:
         target = path or self.image_path

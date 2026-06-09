@@ -1692,6 +1692,43 @@ def test_favorite_images_show_as_tabs_and_switch_images(tmp_path):
         window.close()
 
 
+def test_thumbnail_context_menu_adds_and_removes_favorite_without_switching_image(tmp_path):
+    path_a = tmp_path / "a.png"
+    path_b = tmp_path / "b.png"
+    cv2.imwrite(str(path_a), np.zeros((80, 120, 3), dtype=np.uint8))
+    cv2.imwrite(str(path_b), np.full((80, 120, 3), 255, dtype=np.uint8))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(path_a), str(path_b)]
+        window.current_browser_index = 0
+        window._load_image_path(str(path_a), preserve_calibration=False)
+        window._populate_thumbnails()
+
+        thumbnail = window.thumbnail_buttons[str(path_b)]
+        assert thumbnail.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+
+        menu = window._favorite_menu_for_path(str(path_b))
+        assert menu.actions()[0].text() == "즐겨찾기에 저장"
+        menu.actions()[0].trigger()
+
+        assert window.image_path == str(path_a)
+        assert window.favorite_image_paths == [str(path_b)]
+        assert window.favorite_tab_bar.count() == 1
+        assert window.favorite_tab_bar.tabData(0) == str(path_b)
+
+        menu = window._favorite_menu_for_path(str(path_b))
+        assert menu.actions()[0].text() == "즐겨찾기에서 제거"
+        menu.actions()[0].trigger()
+
+        assert window.favorite_image_paths == []
+        assert window.favorite_tab_bar.count() == 0
+    finally:
+        window.close()
+
+
 def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
     path_a = tmp_path / "a.png"
     path_b = tmp_path / "b.png"
