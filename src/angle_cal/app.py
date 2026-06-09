@@ -2734,12 +2734,6 @@ class MainWindow(QMainWindow):
         self.save_project_as_action.triggered.connect(self.save_project_as_new)
         self.open_project_action = QAction("프로젝트 열기", self)
         self.open_project_action.triggered.connect(self.open_project)
-        self.export_png_action = QAction("주석 PNG 내보내기", self)
-        self.export_png_action.triggered.connect(self.export_annotated_png)
-        self.export_csv_action = QAction("CSV 내보내기", self)
-        self.export_csv_action.triggered.connect(self.export_csv)
-        self.export_data_action = QAction("Data Export", self)
-        self.export_data_action.triggered.connect(self.export_data_xlsx)
         self.select_tool_action = QAction("선택 도구", self)
         self.select_tool_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.select_tool_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -2882,9 +2876,6 @@ class MainWindow(QMainWindow):
             self.save_project_as_action,
         ]:
             file_group.addWidget(self._button_for_action(action))
-        export_group = group(file_page, "내보내기")
-        for action in [self.export_png_action, self.export_csv_action, self.export_data_action]:
-            export_group.addWidget(self._button_for_action(action))
         self.ribbon_tabs.addTab(file_page, "파일")
 
         edge_page = page()
