@@ -1729,6 +1729,90 @@ def test_thumbnail_context_menu_adds_and_removes_favorite_without_switching_imag
         window.close()
 
 
+def test_favorite_tabs_can_be_renamed_and_grouped(tmp_path, monkeypatch):
+    path_a = tmp_path / "a.png"
+    path_b = tmp_path / "b.png"
+    cv2.imwrite(str(path_a), np.zeros((80, 120, 3), dtype=np.uint8))
+    cv2.imwrite(str(path_b), np.full((80, 120, 3), 255, dtype=np.uint8))
+    monkeypatch.setattr(app_module.QInputDialog, "getText", lambda *args, **kwargs: ("Top SEM", True))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(path_a), str(path_b)]
+        window.current_browser_index = 0
+        window._load_image_path(str(path_a), preserve_calibration=False)
+        window.add_favorite_image(str(path_a))
+        window.add_favorite_image(str(path_b))
+
+        window.rename_favorite_tab(0)
+
+        assert window.favorite_image_labels[str(path_a)] == "Top SEM"
+        assert window.favorite_tab_bar.tabText(0) == "Top SEM"
+
+        window.create_favorite_group_for_path(str(path_b), "Review")
+
+        assert window.favorite_image_groups[str(path_b)] == "Review"
+        assert not window.favorite_group_bar.isHidden()
+        assert window.current_favorite_group == "Review"
+        assert window.favorite_tab_bar.count() == 1
+        assert window.favorite_tab_bar.tabData(0) == str(path_b)
+
+        default_index = next(
+            index
+            for index in range(window.favorite_group_bar.count())
+            if window.favorite_group_bar.tabData(index) == app_module.FAVORITE_DEFAULT_GROUP
+        )
+        window.favorite_group_bar.setCurrentIndex(default_index)
+
+        assert window.current_favorite_group == app_module.FAVORITE_DEFAULT_GROUP
+        assert window.favorite_tab_bar.count() == 1
+        assert window.favorite_tab_bar.tabData(0) == str(path_a)
+        assert window.favorite_tab_bar.tabText(0) == "Top SEM"
+    finally:
+        window.close()
+
+
+def test_export_favorite_images_writes_visible_annotated_pngs(tmp_path, monkeypatch):
+    path_a = tmp_path / "a.png"
+    path_b = tmp_path / "b.png"
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    cv2.imwrite(str(path_a), np.zeros((80, 120, 3), dtype=np.uint8))
+    cv2.imwrite(str(path_b), np.full((80, 120, 3), 255, dtype=np.uint8))
+    monkeypatch.setattr(app_module.QFileDialog, "getExistingDirectory", lambda *args, **kwargs: str(export_dir))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(path_a), str(path_b)]
+        window.current_browser_index = 0
+        window._load_image_path(str(path_a), preserve_calibration=False)
+        window._create_edge_line((20.0, 20.0), (90.0, 20.0))
+        window.add_favorite_image(str(path_a))
+        window.favorite_image_labels[str(path_a)] = "First SEM"
+
+        window._load_image_path(str(path_b), preserve_calibration=True)
+        window._create_edge_line((30.0, 30.0), (100.0, 30.0))
+        window.add_favorite_image(str(path_b))
+        window.favorite_image_labels[str(path_b)] = "Second SEM"
+
+        window.export_favorite_images()
+
+        first = export_dir / "First SEM.png"
+        second = export_dir / "Second SEM.png"
+        assert first.exists()
+        assert second.exists()
+        assert first.stat().st_size > 0
+        assert second.stat().st_size > 0
+        assert window.image_path == str(path_b)
+        assert window.save_notification_label.text() == "즐겨찾기 이미지 내보내기 완료"
+    finally:
+        window.close()
+
+
 def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
     path_a = tmp_path / "a.png"
     path_b = tmp_path / "b.png"
@@ -1743,6 +1827,10 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         window.browser_root = tmp_path
         window.browser_image_paths = [str(path_a), str(path_b)]
         window.favorite_image_paths = [str(path_a)]
+        window.favorite_image_labels = {str(path_a): "Top SEM"}
+        window.favorite_image_groups = {str(path_a): "Review"}
+        window.favorite_group_order = [app_module.FAVORITE_DEFAULT_GROUP, "Review"]
+        window.current_favorite_group = "Review"
         window.scale_presets = [
             ScalePreset("50 nm", nm_per_px=1.25, bar_px=40.0, bar_nm=50.0, start=(12.0, 18.0), end=(52.0, 18.0))
         ]
@@ -1768,6 +1856,10 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         assert payload["browser_root"] == str(tmp_path)
         assert payload["browser_image_paths"] == [str(path_a), str(path_b)]
         assert payload["favorite_image_paths"] == [str(path_a)]
+        assert payload["favorite_image_labels"] == {str(path_a): "Top SEM"}
+        assert payload["favorite_image_groups"] == {str(path_a): "Review"}
+        assert payload["favorite_group_order"] == ["Review"]
+        assert payload["current_favorite_group"] == "Review"
         assert payload["scale_presets"] == [
             {"name": "50 nm", "nm_per_px": 1.25, "bar_px": 40.0, "bar_nm": 50.0, "start": [12.0, 18.0], "end": [52.0, 18.0]}
         ]
@@ -1945,6 +2037,10 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         "browser_root": str(tmp_path),
         "browser_image_paths": [str(path_a), str(path_b)],
         "favorite_image_paths": [str(path_a)],
+        "favorite_image_labels": {str(path_a): "Top SEM"},
+        "favorite_image_groups": {str(path_a): "Review"},
+        "favorite_group_order": [app_module.FAVORITE_DEFAULT_GROUP, "Review"],
+        "current_favorite_group": "Review",
         "scale_presets": [
             {"name": "50 nm", "nm_per_px": 1.25, "bar_px": 40.0, "bar_nm": 50.0, "start": [12.0, 18.0], "end": [52.0, 18.0]}
         ],
@@ -1976,8 +2072,15 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         assert window.browser_root == tmp_path
         assert window.browser_image_paths == [str(path_a), str(path_b)]
         assert window.favorite_image_paths == [str(path_a)]
+        assert window.favorite_image_labels == {str(path_a): "Top SEM"}
+        assert window.favorite_image_groups == {str(path_a): "Review"}
+        assert window.favorite_group_order == [app_module.FAVORITE_DEFAULT_GROUP, "Review"]
+        assert window.current_favorite_group == "Review"
+        assert window.favorite_group_bar.count() == 1
+        assert window.favorite_group_bar.tabText(0) == "Review"
         assert window.favorite_tab_bar.count() == 1
         assert window.favorite_tab_bar.tabData(0) == str(path_a)
+        assert window.favorite_tab_bar.tabText(0) == "Top SEM"
         assert window.current_browser_index == 1
         assert len(window.scale_presets) == 1
         assert window.scale_presets[0].name == "50 nm"
@@ -2203,7 +2306,7 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         file_group_titles = [group.title() for group in file_groups]
         assert file_group_titles == ["불러오기 / 저장", "내보내기"]
         export_group = next(group for group in file_groups if group.title() == "내보내기")
-        assert [button.text() for button in export_group.findChildren(QPushButton)] == ["Data Export"]
+        assert [button.text() for button in export_group.findChildren(QPushButton)] == ["Data Export", "즐겨찾기 이미지 내보내기"]
     finally:
         window.close()
 

@@ -146,6 +146,7 @@ GROUP_BOX_RECORD_IDS_KEY = 7
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 IMAGE_FORMAT_SUFFIX = ".anglecal.format.json"
 NATURAL_SORT_PART_RE = re.compile(r"(\d+)")
+FAVORITE_DEFAULT_GROUP = "기본"
 TOOLTIP_STYLESHEET = (
     "QToolTip { "
     "color: #f8fafc; "
@@ -163,6 +164,11 @@ def natural_sort_key(value: str) -> tuple[tuple[int, int | str], ...]:
             continue
         parts.append((0, int(part)) if part.isdigit() else (1, part))
     return tuple(parts)
+
+
+def safe_output_stem(value: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", value).strip().strip(".")
+    return cleaned[:120] or "image"
 
 
 def cosmetic_pen(color: QColor | str, width: float = 1.0, style: Qt.PenStyle = Qt.PenStyle.SolidLine) -> QPen:
@@ -2617,6 +2623,10 @@ class MainWindow(QMainWindow):
         self.browser_root: Optional[Path] = None
         self.browser_image_paths: list[str] = []
         self.favorite_image_paths: list[str] = []
+        self.favorite_image_labels: dict[str, str] = {}
+        self.favorite_image_groups: dict[str, str] = {}
+        self.favorite_group_order: list[str] = [FAVORITE_DEFAULT_GROUP]
+        self.current_favorite_group = FAVORITE_DEFAULT_GROUP
         self.current_browser_index = -1
         self.thumbnail_buttons: dict[str, QPushButton] = {}
         self.thumbnail_columns = 2
@@ -2664,11 +2674,22 @@ class MainWindow(QMainWindow):
             "point_handle": True,
         }
 
+        self.favorite_group_bar = QTabBar()
+        self.favorite_group_bar.setDrawBase(False)
+        self.favorite_group_bar.setMovable(False)
+        self.favorite_group_bar.setExpanding(False)
+        self.favorite_group_bar.currentChanged.connect(self._favorite_group_changed)
+        self.favorite_group_bar.tabBarDoubleClicked.connect(self.rename_favorite_group_tab)
+        self.favorite_group_bar.hide()
+
         self.favorite_tab_bar = QTabBar()
         self.favorite_tab_bar.setDrawBase(False)
         self.favorite_tab_bar.setMovable(False)
         self.favorite_tab_bar.setExpanding(False)
         self.favorite_tab_bar.currentChanged.connect(self._favorite_tab_changed)
+        self.favorite_tab_bar.tabBarDoubleClicked.connect(self.rename_favorite_tab)
+        self.favorite_tab_bar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.favorite_tab_bar.customContextMenuRequested.connect(self.open_favorite_tab_context_menu)
         self.favorite_tab_bar.hide()
 
         self.canvas = AngleCanvas()
@@ -2676,6 +2697,7 @@ class MainWindow(QMainWindow):
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
+        central_layout.addWidget(self.favorite_group_bar)
         central_layout.addWidget(self.favorite_tab_bar)
         central_layout.addWidget(self.canvas, 1)
         self.setCentralWidget(central)
@@ -2751,6 +2773,8 @@ class MainWindow(QMainWindow):
         self.open_project_action.triggered.connect(self.open_project)
         self.export_data_action = QAction("Data Export", self)
         self.export_data_action.triggered.connect(self.export_data_xlsx)
+        self.export_favorite_images_action = QAction("즐겨찾기 이미지 내보내기", self)
+        self.export_favorite_images_action.triggered.connect(self.export_favorite_images)
         self.select_tool_action = QAction("선택 도구", self)
         self.select_tool_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.select_tool_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -2895,6 +2919,7 @@ class MainWindow(QMainWindow):
             file_group.addWidget(self._button_for_action(action))
         export_group = group(file_page, "내보내기")
         export_group.addWidget(self._button_for_action(self.export_data_action))
+        export_group.addWidget(self._button_for_action(self.export_favorite_images_action))
         self.ribbon_tabs.addTab(file_page, "파일")
 
         edge_page = page()
@@ -3383,6 +3408,10 @@ class MainWindow(QMainWindow):
         self.browser_root = None
         self.browser_image_paths = [path]
         self.favorite_image_paths = []
+        self.favorite_image_labels = {}
+        self.favorite_image_groups = {}
+        self.favorite_group_order = [FAVORITE_DEFAULT_GROUP]
+        self.current_favorite_group = FAVORITE_DEFAULT_GROUP
         self.current_browser_index = 0
         self._refresh_favorite_tabs()
         self._populate_thumbnails()
@@ -3404,6 +3433,10 @@ class MainWindow(QMainWindow):
         self.browser_root = root
         self.browser_image_paths = [str(path) for path in image_paths]
         self.favorite_image_paths = []
+        self.favorite_image_labels = {}
+        self.favorite_image_groups = {}
+        self.favorite_group_order = [FAVORITE_DEFAULT_GROUP]
+        self.current_favorite_group = FAVORITE_DEFAULT_GROUP
         self.current_browser_index = 0
         self._refresh_favorite_tabs()
         self._populate_thumbnails()
@@ -3630,19 +3663,75 @@ class MainWindow(QMainWindow):
             if path in self.browser_image_paths and Path(path).exists() and path not in valid_paths:
                 valid_paths.append(path)
         self.favorite_image_paths = valid_paths
+        valid_set = set(valid_paths)
+        self.favorite_image_labels = {
+            path: label
+            for path, label in self.favorite_image_labels.items()
+            if path in valid_set and label
+        }
+        self.favorite_image_groups = {
+            path: group
+            for path, group in self.favorite_image_groups.items()
+            if path in valid_set and group
+        }
+        for path in self.favorite_image_paths:
+            self.favorite_image_groups.setdefault(path, FAVORITE_DEFAULT_GROUP)
+        group_names = self._favorite_group_names()
+        if self.current_favorite_group not in group_names:
+            self.current_favorite_group = group_names[0]
         self._updating_favorite_tabs = True
         try:
+            while self.favorite_group_bar.count():
+                self.favorite_group_bar.removeTab(0)
+            for group_name in group_names:
+                index = self.favorite_group_bar.addTab(group_name)
+                self.favorite_group_bar.setTabData(index, group_name)
+            group_index = group_names.index(self.current_favorite_group)
+            self.favorite_group_bar.setCurrentIndex(group_index)
+            self.favorite_group_bar.setVisible(bool(self.favorite_image_paths) and len(group_names) > 1)
+
             while self.favorite_tab_bar.count():
                 self.favorite_tab_bar.removeTab(0)
-            for path in self.favorite_image_paths:
-                index = self.favorite_tab_bar.addTab(Path(path).name)
+            visible_paths = [
+                path
+                for path in self.favorite_image_paths
+                if self.favorite_image_groups.get(path, FAVORITE_DEFAULT_GROUP) == self.current_favorite_group
+            ]
+            for path in visible_paths:
+                index = self.favorite_tab_bar.addTab(self._favorite_label(path))
                 self.favorite_tab_bar.setTabData(index, path)
                 self.favorite_tab_bar.setTabToolTip(index, path)
-            current_index = self.favorite_image_paths.index(self.image_path) if self.image_path in self.favorite_image_paths else -1
+            current_index = visible_paths.index(self.image_path) if self.image_path in visible_paths else -1
             self.favorite_tab_bar.setCurrentIndex(current_index)
             self.favorite_tab_bar.setVisible(bool(self.favorite_image_paths))
         finally:
             self._updating_favorite_tabs = False
+
+    def _favorite_label(self, path: str) -> str:
+        return self.favorite_image_labels.get(path) or Path(path).name
+
+    def _favorite_group_names(self) -> list[str]:
+        ordered: list[str] = []
+        for group_name in self.favorite_group_order:
+            if group_name and group_name not in ordered:
+                ordered.append(group_name)
+        for group_name in self.favorite_image_groups.values():
+            if group_name and group_name not in ordered:
+                ordered.append(group_name)
+        used = {self.favorite_image_groups.get(path, FAVORITE_DEFAULT_GROUP) for path in self.favorite_image_paths}
+        return [
+            group_name
+            for group_name in ordered
+            if group_name in used
+        ] or [FAVORITE_DEFAULT_GROUP]
+
+    def _favorite_group_changed(self, index: int) -> None:
+        if self._updating_favorite_tabs or index < 0:
+            return
+        group_name = self.favorite_group_bar.tabData(index)
+        if isinstance(group_name, str) and group_name and group_name != self.current_favorite_group:
+            self.current_favorite_group = group_name
+            self._refresh_favorite_tabs()
 
     def _favorite_tab_changed(self, index: int) -> None:
         if self._updating_favorite_tabs or index < 0:
@@ -3650,6 +3739,89 @@ class MainWindow(QMainWindow):
         path = self.favorite_tab_bar.tabData(index)
         if isinstance(path, str) and path and path != self.image_path:
             self.load_browser_image(path)
+
+    def rename_favorite_tab(self, index: int) -> None:
+        if index < 0:
+            return
+        path = self.favorite_tab_bar.tabData(index)
+        if not isinstance(path, str) or not path:
+            return
+        current_name = self._favorite_label(path)
+        name, ok = QInputDialog.getText(self, "즐겨찾기 이름", "이름", text=current_name)
+        if not ok:
+            return
+        name = name.strip()
+        if name and name != Path(path).name:
+            self.favorite_image_labels[path] = name
+        else:
+            self.favorite_image_labels.pop(path, None)
+        self._refresh_favorite_tabs()
+        self._set_status(f"즐겨찾기 이름 변경: {self._favorite_label(path)}")
+
+    def rename_favorite_group_tab(self, index: int) -> None:
+        if index < 0:
+            return
+        old_name = self.favorite_group_bar.tabData(index)
+        if not isinstance(old_name, str) or not old_name:
+            return
+        name, ok = QInputDialog.getText(self, "탭 그룹 이름", "그룹 이름", text=old_name)
+        if not ok:
+            return
+        self.rename_favorite_group(old_name, name.strip())
+
+    def rename_favorite_group(self, old_name: str, new_name: str) -> None:
+        if not old_name or not new_name or old_name == new_name:
+            return
+        self.favorite_group_order = [new_name if group == old_name else group for group in self.favorite_group_order]
+        for path, group in list(self.favorite_image_groups.items()):
+            if group == old_name:
+                self.favorite_image_groups[path] = new_name
+        if self.current_favorite_group == old_name:
+            self.current_favorite_group = new_name
+        self._refresh_favorite_tabs()
+        self._set_status(f"탭 그룹 이름 변경: {new_name}")
+
+    def open_favorite_tab_context_menu(self, pos: QPoint) -> None:
+        index = self.favorite_tab_bar.tabAt(pos)
+        if index < 0:
+            return
+        path = self.favorite_tab_bar.tabData(index)
+        if not isinstance(path, str) or not path:
+            return
+        menu = QMenu(self)
+        rename_action = menu.addAction("이름 변경")
+        rename_action.triggered.connect(lambda checked=False, tab_index=index: self.rename_favorite_tab(tab_index))
+        new_group_action = menu.addAction("새 탭 그룹 만들기")
+        new_group_action.triggered.connect(lambda checked=False, selected_path=path: self.create_favorite_group_for_path(selected_path))
+        group_menu = menu.addMenu("그룹으로 이동")
+        for group_name in self._favorite_group_names():
+            action = group_menu.addAction(group_name)
+            action.setCheckable(True)
+            action.setChecked(self.favorite_image_groups.get(path, FAVORITE_DEFAULT_GROUP) == group_name)
+            action.triggered.connect(lambda checked=False, selected_path=path, target_group=group_name: self.move_favorite_to_group(selected_path, target_group))
+        menu.exec(self.favorite_tab_bar.mapToGlobal(pos))
+
+    def create_favorite_group_for_path(self, path: str, group_name: Optional[str] = None) -> None:
+        if path not in self.favorite_image_paths:
+            return
+        if group_name is None:
+            group_name, ok = QInputDialog.getText(self, "새 탭 그룹", "그룹 이름", text=f"그룹 {len(self._favorite_group_names()) + 1}")
+            if not ok:
+                return
+            group_name = group_name.strip()
+        if not group_name:
+            return
+        self.move_favorite_to_group(path, group_name)
+
+    def move_favorite_to_group(self, path: str, group_name: str) -> None:
+        if path not in self.favorite_image_paths or not group_name:
+            return
+        if group_name not in self.favorite_group_order:
+            self.favorite_group_order.append(group_name)
+        self.favorite_image_groups[path] = group_name
+        self.current_favorite_group = group_name
+        self._refresh_favorite_tabs()
+        self._set_status(f"즐겨찾기 그룹 이동: {self._favorite_label(path)} -> {group_name}")
 
     def open_image_context_menu(self, global_pos: QPoint) -> None:
         if not self.image_path:
@@ -3679,6 +3851,9 @@ class MainWindow(QMainWindow):
             self.browser_image_paths.append(target)
         if target not in self.favorite_image_paths:
             self.favorite_image_paths.append(target)
+        if self.current_favorite_group not in self.favorite_group_order:
+            self.favorite_group_order.append(self.current_favorite_group)
+        self.favorite_image_groups.setdefault(target, self.current_favorite_group)
         self._refresh_favorite_tabs()
         self._set_status(f"즐겨찾기 추가: {Path(target).name}")
 
@@ -3687,6 +3862,8 @@ class MainWindow(QMainWindow):
         if not target:
             return
         self.favorite_image_paths = [favorite for favorite in self.favorite_image_paths if favorite != target]
+        self.favorite_image_labels.pop(target, None)
+        self.favorite_image_groups.pop(target, None)
         self._refresh_favorite_tabs()
         self._set_status(f"즐겨찾기 제거: {Path(target).name}")
 
@@ -3762,6 +3939,21 @@ class MainWindow(QMainWindow):
         if image_path and image_path not in browser_paths:
             browser_paths.insert(0, image_path)
         favorite_paths = [str(item) for item in (payload.get("favorite_image_paths") or []) if item]
+        favorite_labels = {
+            str(key): str(value)
+            for key, value in (payload.get("favorite_image_labels") or {}).items()
+            if key and value
+        }
+        favorite_groups = {
+            str(key): str(value)
+            for key, value in (payload.get("favorite_image_groups") or {}).items()
+            if key and value
+        }
+        favorite_group_order = [
+            str(item)
+            for item in (payload.get("favorite_group_order") or [])
+            if item
+        ]
         for favorite_path in favorite_paths:
             if favorite_path not in browser_paths and Path(favorite_path).exists():
                 browser_paths.append(favorite_path)
@@ -3783,6 +3975,21 @@ class MainWindow(QMainWindow):
             for path in favorite_paths
             if path in self.browser_image_paths and Path(path).exists()
         ]
+        valid_favorites = set(self.favorite_image_paths)
+        self.favorite_image_labels = {
+            path: label
+            for path, label in favorite_labels.items()
+            if path in valid_favorites
+        }
+        self.favorite_image_groups = {
+            path: group
+            for path, group in favorite_groups.items()
+            if path in valid_favorites
+        }
+        self.favorite_group_order = favorite_group_order or [FAVORITE_DEFAULT_GROUP]
+        if FAVORITE_DEFAULT_GROUP not in self.favorite_group_order:
+            self.favorite_group_order.insert(0, FAVORITE_DEFAULT_GROUP)
+        self.current_favorite_group = str(payload.get("current_favorite_group") or self.favorite_group_order[0])
         browser_root = payload.get("browser_root")
         self.browser_root = Path(browser_root) if browser_root else (Path(self.browser_image_paths[0]).parent if len(self.browser_image_paths) > 1 else None)
         self.current_browser_index = self.browser_image_paths.index(image_path) if image_path in self.browser_image_paths else 0
@@ -3912,6 +4119,18 @@ class MainWindow(QMainWindow):
                 for path in self.favorite_image_paths
                 if path in browser_paths and Path(path).exists()
             ],
+            "favorite_image_labels": {
+                path: label
+                for path, label in self.favorite_image_labels.items()
+                if path in browser_paths and Path(path).exists() and label
+            },
+            "favorite_image_groups": {
+                path: group
+                for path, group in self.favorite_image_groups.items()
+                if path in browser_paths and Path(path).exists() and group
+            },
+            "favorite_group_order": self._favorite_group_names(),
+            "current_favorite_group": self.current_favorite_group,
             "current_browser_index": current_index,
             "image_states": self.image_states,
             "nm_per_px": current_state.get("nm_per_px"),
@@ -4019,6 +4238,44 @@ class MainWindow(QMainWindow):
         if options.open_after_export:
             self._open_export_file(path)
         self._set_status(f"Data Export 저장: {Path(path).name}")
+
+    def export_favorite_images(self) -> None:
+        if not self.favorite_image_paths:
+            QMessageBox.information(self, "즐겨찾기 이미지 내보내기", "내보낼 즐겨찾기 이미지가 없습니다.")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "즐겨찾기 이미지 내보내기", "")
+        if not folder:
+            return
+        output_dir = Path(folder)
+        self._save_current_image_state()
+        original_path = self.image_path
+        exported = 0
+        used_names: set[str] = set()
+        for favorite_path in list(self.favorite_image_paths):
+            if not Path(favorite_path).exists():
+                continue
+            self._load_image_path(favorite_path, preserve_calibration=True)
+            stem = safe_output_stem(Path(self._favorite_label(favorite_path)).stem)
+            output_path = self._unique_export_path(output_dir, stem, used_names)
+            self.canvas.export_scene_png(str(output_path))
+            exported += 1
+        if original_path and Path(original_path).exists():
+            self._load_image_path(original_path, preserve_calibration=True)
+        if exported:
+            self._set_status(f"즐겨찾기 이미지 {exported}개 내보내기: {output_dir.name}")
+            self._show_save_notification("즐겨찾기 이미지 내보내기 완료")
+        else:
+            QMessageBox.information(self, "즐겨찾기 이미지 내보내기", "내보낼 수 있는 즐겨찾기 이미지가 없습니다.")
+
+    @staticmethod
+    def _unique_export_path(output_dir: Path, stem: str, used_names: set[str]) -> Path:
+        index = 1
+        candidate_name = f"{stem}.png"
+        while candidate_name.casefold() in used_names or (output_dir / candidate_name).exists():
+            index += 1
+            candidate_name = f"{stem}_{index}.png"
+        used_names.add(candidate_name.casefold())
+        return output_dir / candidate_name
 
     @staticmethod
     def _open_export_file(path: str) -> None:
