@@ -1689,6 +1689,16 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         window.browser_root = tmp_path
         window.browser_image_paths = [str(path_a), str(path_b)]
         window.favorite_image_paths = [str(path_a)]
+        window.scale_presets = [
+            ScalePreset("50 nm", nm_per_px=1.25, bar_px=40.0, bar_nm=50.0, start=(12.0, 18.0), end=(52.0, 18.0))
+        ]
+        window.structure_templates = [
+            StructureTemplate(
+                name="Gate CD",
+                cd_segment_mode="odd",
+                records=[LineRecord("T1", "edge", (10.0, 20.0), (80.0, 20.0), angle_sector=3)],
+            )
+        ]
         window.current_browser_index = 0
         window._load_image_path(str(path_a), preserve_calibration=False)
         window._create_edge_line((20.0, 20.0), (90.0, 20.0))
@@ -1704,6 +1714,13 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         assert payload["browser_root"] == str(tmp_path)
         assert payload["browser_image_paths"] == [str(path_a), str(path_b)]
         assert payload["favorite_image_paths"] == [str(path_a)]
+        assert payload["scale_presets"] == [
+            {"name": "50 nm", "nm_per_px": 1.25, "bar_px": 40.0, "bar_nm": 50.0, "start": [12.0, 18.0], "end": [52.0, 18.0]}
+        ]
+        assert payload["structure_templates"][0]["name"] == "Gate CD"
+        assert payload["structure_templates"][0]["cd_segment_mode"] == "odd"
+        assert payload["structure_templates"][0]["records"][0]["id"] == "T1"
+        assert payload["structure_templates"][0]["records"][0]["angle_sector"] == 3
         assert set(payload["image_states"]) == {str(path_a), str(path_b)}
         assert len(payload["image_states"][str(path_a)]["records"]) == 1
         assert len(payload["image_states"][str(path_b)]["records"]) == 1
@@ -1870,6 +1887,16 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         "browser_root": str(tmp_path),
         "browser_image_paths": [str(path_a), str(path_b)],
         "favorite_image_paths": [str(path_a)],
+        "scale_presets": [
+            {"name": "50 nm", "nm_per_px": 1.25, "bar_px": 40.0, "bar_nm": 50.0, "start": [12.0, 18.0], "end": [52.0, 18.0]}
+        ],
+        "structure_templates": [
+            {
+                "name": "Gate CD",
+                "cd_segment_mode": "even",
+                "records": [app_module.asdict(LineRecord("T1", "edge", (10.0, 20.0), (80.0, 20.0), angle_sector=3))],
+            }
+        ],
         "current_browser_index": 1,
         "image_states": {
             str(path_a): {"records": [app_module.asdict(edge_a)], "counter": 2, "nm_per_px": 1.5, "hidden_angle_measurements": [], "image_adjustments": {}},
@@ -1894,6 +1921,16 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         assert window.favorite_tab_bar.count() == 1
         assert window.favorite_tab_bar.tabData(0) == str(path_a)
         assert window.current_browser_index == 1
+        assert len(window.scale_presets) == 1
+        assert window.scale_presets[0].name == "50 nm"
+        assert window.scale_presets[0].start == (12.0, 18.0)
+        assert window.scale_presets[0].end == (52.0, 18.0)
+        assert window.scale_preset_table.rowCount() == 1
+        assert len(window.structure_templates) == 1
+        assert window.structure_templates[0].name == "Gate CD"
+        assert window.structure_templates[0].cd_segment_mode == "even"
+        assert window.structure_templates[0].records[0].angle_sector == 3
+        assert window.structure_combo.itemText(1) == "Gate CD"
         assert set(window.image_states) == {str(path_a), str(path_b)}
         assert "E_b" in window.records
         assert window.nm_per_px == 2.0
