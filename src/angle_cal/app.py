@@ -771,7 +771,7 @@ class AngleCanvas(QGraphicsView):
         text.setTextWidth(width - 28.0)
         text_rect = text.boundingRect()
         panel = QGraphicsRectItem(0, 0, width, text_rect.height() + 24.0)
-        panel.setBrush(QBrush(QColor(18, 24, 32, 205)))
+        panel.setBrush(QBrush(QColor(18, 24, 32, 150)))
         panel.setPen(cosmetic_pen(QColor(255, 255, 255, 95), 1.0))
         panel.setZValue(95)
         text.setZValue(96)

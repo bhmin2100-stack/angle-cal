@@ -807,7 +807,9 @@ def test_ctrl_tab_shows_shortcut_overlay_only_while_held():
         assert window.canvas._shortcut_overlay_visible is True
         assert len(window.canvas.shortcut_overlay_items) == 2
         text = next(item for item in window.canvas.shortcut_overlay_items if isinstance(item, QGraphicsTextItem))
+        panel = next(item for item in window.canvas.shortcut_overlay_items if not isinstance(item, QGraphicsTextItem))
         assert "Q + 드래그" in text.toPlainText()
+        assert panel.brush().color().alpha() == 150
 
         release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Tab, Qt.KeyboardModifier.ControlModifier)
         window.canvas.keyReleaseEvent(release)
