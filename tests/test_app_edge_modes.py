@@ -1861,6 +1861,8 @@ def test_smart_save_writes_image_format_without_project(tmp_path, monkeypatch):
         payload = json.loads(format_path.read_text(encoding="utf-8"))
         assert len(payload["image_state"]["records"]) == 1
         assert window.project_path is None
+        assert window.save_notification_label.text() == "이미지 저장 완료"
+        assert not window.save_notification_label.isHidden()
     finally:
         window.close()
 
@@ -1886,6 +1888,8 @@ def test_smart_save_uses_existing_project_path(tmp_path):
         assert payload["project_format_version"] == 2
         assert payload["browser_image_paths"] == [str(image_path)]
         assert len(payload["image_states"][str(image_path)]["records"]) == 1
+        assert window.save_notification_label.text() == "프로젝트 저장 완료"
+        assert not window.save_notification_label.isHidden()
     finally:
         window.close()
 

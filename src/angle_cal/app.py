@@ -2694,6 +2694,21 @@ class MainWindow(QMainWindow):
         self.detection_preview_timer = QTimer(self)
         self.detection_preview_timer.setSingleShot(True)
         self.detection_preview_timer.timeout.connect(self.clear_detection_preview)
+        self.save_notification_label = QLabel("", self)
+        self.save_notification_label.setStyleSheet(
+            "QLabel {"
+            "background: rgba(18, 90, 52, 220);"
+            "color: white;"
+            "border: 1px solid rgba(180, 255, 210, 180);"
+            "border-radius: 6px;"
+            "padding: 9px 14px;"
+            "font-weight: 700;"
+            "}"
+        )
+        self.save_notification_label.hide()
+        self.save_notification_timer = QTimer(self)
+        self.save_notification_timer.setSingleShot(True)
+        self.save_notification_timer.timeout.connect(self.save_notification_label.hide)
 
         self._build_actions()
         self._build_toolbar()
@@ -3838,6 +3853,7 @@ class MainWindow(QMainWindow):
         path = self._write_image_format_file(self.image_path, state, explicit=True)
         if path is not None:
             self._set_status(f"이미지 서식 저장: {path.name}")
+            self._show_save_notification("이미지 저장 완료")
 
     def _prompt_project_save_path(self, title: str) -> Optional[str]:
         path, _ = QFileDialog.getSaveFileName(self, title, "", "Angle Cal Project (*.anglecal.json)")
@@ -3914,6 +3930,7 @@ class MainWindow(QMainWindow):
             json.dump(payload, handle, ensure_ascii=False, indent=2)
         self.project_path = path
         self._set_status(f"프로젝트 저장: {Path(path).name}")
+        self._show_save_notification("프로젝트 저장 완료")
 
     def export_annotated_png(self) -> None:
         if self.image_bgr is None:
@@ -6340,6 +6357,18 @@ class MainWindow(QMainWindow):
 
     def _set_status(self, text: str) -> None:
         self.statusBar().showMessage(text, 8000)
+
+    def _show_save_notification(self, text: str) -> None:
+        self.save_notification_label.setText(text)
+        self.save_notification_label.adjustSize()
+        status_height = self.statusBar().height() if self.statusBar() else 0
+        margin = 18
+        x = max(margin, self.width() - self.save_notification_label.width() - margin)
+        y = max(margin, self.height() - status_height - self.save_notification_label.height() - margin)
+        self.save_notification_label.move(x, y)
+        self.save_notification_label.raise_()
+        self.save_notification_label.show()
+        self.save_notification_timer.start(1800)
 
 
 def main() -> None:
