@@ -1640,6 +1640,21 @@ def test_switching_images_restores_per_image_annotations(tmp_path):
         window.close()
 
 
+def test_scan_folder_images_uses_natural_numeric_order(tmp_path):
+    for name in ["sem1.png", "sem10.png", "sem2.png", "sem11.png", "sem3.png"]:
+        cv2.imwrite(str(tmp_path / name), np.zeros((20, 20, 3), dtype=np.uint8))
+    (tmp_path / "sem4.txt").write_text("not an image", encoding="utf-8")
+
+    _app()
+    window = MainWindow()
+    try:
+        paths = window._scan_folder_images(tmp_path)
+
+        assert [path.name for path in paths] == ["sem1.png", "sem2.png", "sem3.png", "sem10.png", "sem11.png"]
+    finally:
+        window.close()
+
+
 def test_favorite_images_show_as_tabs_and_switch_images(tmp_path):
     path_a = tmp_path / "a.png"
     path_b = tmp_path / "b.png"

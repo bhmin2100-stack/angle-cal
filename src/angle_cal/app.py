@@ -6,6 +6,7 @@ from html import escape as xml_escape
 import json
 import math
 from pathlib import Path
+import re
 import sys
 from typing import Callable, Optional
 import zipfile
@@ -144,6 +145,7 @@ GROUP_BOX_GROUP_KEY = 6
 GROUP_BOX_RECORD_IDS_KEY = 7
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 IMAGE_FORMAT_SUFFIX = ".anglecal.format.json"
+NATURAL_SORT_PART_RE = re.compile(r"(\d+)")
 TOOLTIP_STYLESHEET = (
     "QToolTip { "
     "color: #f8fafc; "
@@ -152,6 +154,15 @@ TOOLTIP_STYLESHEET = (
     "padding: 4px; "
     "}"
 )
+
+
+def natural_sort_key(value: str) -> tuple[tuple[int, int | str], ...]:
+    parts: list[tuple[int, int | str]] = []
+    for part in NATURAL_SORT_PART_RE.split(value.casefold()):
+        if not part:
+            continue
+        parts.append((0, int(part)) if part.isdigit() else (1, part))
+    return tuple(parts)
 
 
 def cosmetic_pen(color: QColor | str, width: float = 1.0, style: Qt.PenStyle = Qt.PenStyle.SolidLine) -> QPen:
@@ -3544,7 +3555,12 @@ class MainWindow(QMainWindow):
             for path in root.rglob("*")
             if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
         ]
-        return sorted(paths, key=lambda path: (str(path.parent.relative_to(root)).lower(), path.name.lower()))
+        return sorted(paths, key=lambda path: self._browser_image_sort_key(root, path))
+
+    def _browser_image_sort_key(self, root: Path, path: Path) -> tuple[object, ...]:
+        relative_parent = path.parent.relative_to(root)
+        folder_key = tuple(natural_sort_key(part) for part in relative_parent.parts)
+        return (folder_key, natural_sort_key(path.name), path.name.casefold())
 
     def _populate_thumbnails(self) -> None:
         self._clear_thumbnail_layout()
