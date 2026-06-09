@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QWheelEvent
-from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QGroupBox, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QGroupBox, QMessageBox, QPushButton
 
 import angle_cal.app as app_module
 from angle_cal.app import DataExportOptions, LineRecord, MainWindow, ScalePreset, StructureTemplate, record_points, structure_template_from_dict, structure_template_to_dict
@@ -2199,8 +2199,11 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         assert window.tool_buttons["edge"].text() == "경계선"
         assert window.edge_mode_combo.currentData() == "line"
         assert window.structure_combo.itemText(0) == "구조 선택"
-        file_group_titles = [group.title() for group in window.ribbon_tabs.widget(0).findChildren(QGroupBox)]
-        assert file_group_titles == ["불러오기 / 저장"]
+        file_groups = window.ribbon_tabs.widget(0).findChildren(QGroupBox)
+        file_group_titles = [group.title() for group in file_groups]
+        assert file_group_titles == ["불러오기 / 저장", "내보내기"]
+        export_group = next(group for group in file_groups if group.title() == "내보내기")
+        assert [button.text() for button in export_group.findChildren(QPushButton)] == ["Data Export"]
     finally:
         window.close()
 
