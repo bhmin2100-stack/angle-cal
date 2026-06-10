@@ -304,9 +304,8 @@ def segment_brightness_profile(
     if offsets.size < 3:
         return None
 
-    distances = np.arange(0.0, length + 0.5, 1.0, dtype=np.float32)
-    if distances.size < 2:
-        distances = np.array([0.0, float(length)], dtype=np.float32)
+    sample_count = max(2, int(math.ceil(length)) + 1)
+    distances = np.linspace(0.0, float(length), sample_count, dtype=np.float32)
 
     base_x = float(start[0]) + tx * distances
     base_y = float(start[1]) + ty * distances
@@ -428,7 +427,8 @@ def snap_polyline_to_gradient(
     if offsets.size < 3:
         return None
     local_half_width = float(np.clip(step_px * 0.55, 1.5, 8.0))
-    local_tangent_offsets = np.linspace(-local_half_width, local_half_width, 5, dtype=np.float32)
+    local_sample_count = max(3, int(math.ceil(step_px)) + 1)
+    local_tangent_offsets = np.linspace(-local_half_width, local_half_width, local_sample_count, dtype=np.float32)
 
     best_offsets = np.full(point_count, np.nan, dtype=np.float32)
     strengths = np.full(point_count, np.nan, dtype=np.float32)

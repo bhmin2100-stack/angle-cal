@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPat
 
 import angle_cal.app as app_module
 from angle_cal.app import DataExportOptions, LineRecord, MainWindow, ScalePreset, StructureTemplate, record_points, structure_template_from_dict, structure_template_to_dict
+from angle_cal.image_ops import segment_brightness_profile
 
 
 def _app():
@@ -691,6 +692,19 @@ def test_segment_selection_tool_shows_profile_in_measurement_dock():
         assert not window.segment_profile_label.pixmap().isNull()
     finally:
         window.close()
+
+
+def test_segment_profile_samples_every_pixel_along_segment_length():
+    gray = np.zeros((80, 80), dtype=np.float32)
+    gray[:, 32:] = 255.0
+
+    result = segment_brightness_profile(gray, (24.0, 10.0), (24.0, 33.0), 12)
+
+    assert result is not None
+    assert result.distances.size == 24
+    assert math.isclose(float(result.distances[0]), 0.0)
+    assert math.isclose(float(result.distances[-1]), 23.0)
+    assert result.sample_grid.shape[1] == 24
 
 
 def test_e_key_temporarily_activates_segment_selection_tool():
