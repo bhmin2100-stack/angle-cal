@@ -38,6 +38,17 @@ class SnapCurveResult:
         return self.points[-1]
 
 
+@dataclass(frozen=True)
+class SegmentProfileResult:
+    offsets: np.ndarray
+    distances: np.ndarray
+    sample_grid: np.ndarray
+    intensity_profile: np.ndarray
+    gradient_profile: np.ndarray
+    best_offset_px: float
+    best_gradient: float
+
+
 def line_length(start: Point, end: Point) -> float:
     return float(math.hypot(end[0] - start[0], end[1] - start[1]))
 
@@ -258,6 +269,82 @@ def snap_line_to_gradient_curve(
         segment_size_px,
         search_radius_left_px,
         search_radius_right_px,
+    )
+
+
+def segment_brightness_profile(
+    gray: np.ndarray,
+    start: Point,
+    end: Point,
+    search_radius_px: int = 30,
+    search_radius_left_px: Optional[int] = None,
+    search_radius_right_px: Optional[int] = None,
+) -> Optional[SegmentProfileResult]:
+    left_radius_px, right_radius_px = _resolve_search_radii(
+        search_radius_px,
+        search_radius_left_px,
+        search_radius_right_px,
+    )
+    if left_radius_px <= 0 and right_radius_px <= 0:
+        return None
+
+    length = line_length(start, end)
+    if length < 2:
+        return None
+
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    tx = dx / length
+    ty = dy / length
+    nx, ny = normal_for_line(start, end)
+    if nx == 0 and ny == 0:
+        return None
+
+    offsets = _search_offsets(left_radius_px, right_radius_px)
+    if offsets.size < 3:
+        return None
+
+    distances = np.arange(0.0, length + 0.5, 1.0, dtype=np.float32)
+    if distances.size < 2:
+        distances = np.array([0.0, float(length)], dtype=np.float32)
+
+    base_x = float(start[0]) + tx * distances
+    base_y = float(start[1]) + ty * distances
+    xs = base_x[None, :] + nx * offsets[:, None]
+    ys = base_y[None, :] + ny * offsets[:, None]
+    sample_grid = _bilinear_sample(gray, xs.astype(np.float32), ys.astype(np.float32))
+
+    profile = np.full(offsets.shape, np.nan, dtype=np.float32)
+    min_valid_samples = max(2, int(distances.size // 4))
+    for idx in range(offsets.size):
+        samples = sample_grid[idx]
+        valid_count = np.count_nonzero(~np.isnan(samples))
+        if valid_count >= min_valid_samples:
+            profile[idx] = float(np.nanmean(samples))
+
+    finite = np.isfinite(profile)
+    if np.count_nonzero(finite) < 5:
+        return None
+
+    filled = profile.copy()
+    if not np.all(finite):
+        filled = np.interp(offsets, offsets[finite], profile[finite]).astype(np.float32)
+
+    if filled.size >= 5:
+        kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        kernel /= kernel.sum()
+        filled = np.convolve(np.pad(filled, (2, 2), mode="edge"), kernel, mode="valid").astype(np.float32)
+
+    gradient = np.gradient(filled)
+    best_index = int(np.nanargmax(np.abs(gradient)))
+    return SegmentProfileResult(
+        offsets=offsets,
+        distances=distances,
+        sample_grid=sample_grid,
+        intensity_profile=filled,
+        gradient_profile=gradient,
+        best_offset_px=float(offsets[best_index]),
+        best_gradient=float(gradient[best_index]),
     )
 
 

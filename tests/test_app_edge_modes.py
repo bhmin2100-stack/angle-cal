@@ -652,6 +652,64 @@ def test_detection_preview_updates_measurements_dock_not_canvas():
         window.close()
 
 
+def test_segment_selection_tool_shows_profile_in_measurement_dock():
+    window = _window_with_edge_image()
+    try:
+        edge = LineRecord(
+            id="E1",
+            kind="edge",
+            start=(70.0, 20.0),
+            end=(70.0, 100.0),
+            label="edge",
+            points=[(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)],
+            recognition_points=[(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)],
+            edge_segmented=True,
+            search_radius_px=25,
+        )
+        window.records[edge.id] = edge
+        window.canvas.redraw_lines(list(window.records.values()))
+        assert "segment" in window.tool_buttons
+
+        window.set_current_tool("segment")
+        view_pos = QPointF(window.canvas.mapFromScene(QPointF(70.0, 40.0)))
+        event = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            view_pos,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        window.canvas.mousePressEvent(event)
+
+        assert window.selected_segment == ("E1", 0)
+        assert window.canvas.selected_segment_item is not None
+        assert window.measurements_dock.windowTitle() == "세그먼트 밝기"
+        assert not window.measurements_dock.isHidden()
+        assert not window.segment_profile_label.isHidden()
+        assert window.measurement_table.isHidden()
+        assert window.segment_profile_label.pixmap() is not None
+        assert not window.segment_profile_label.pixmap().isNull()
+    finally:
+        window.close()
+
+
+def test_e_key_temporarily_activates_segment_selection_tool():
+    window = _window_with_edge_image()
+    try:
+        window.set_current_tool("select")
+        press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_E, Qt.KeyboardModifier.NoModifier)
+        window.canvas.keyPressEvent(press)
+
+        assert window.canvas.current_tool == "segment"
+
+        release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_E, Qt.KeyboardModifier.NoModifier)
+        window.canvas.keyReleaseEvent(release)
+
+        assert window.canvas.current_tool == "select"
+    finally:
+        window.close()
+
+
 def test_annotation_visual_sizes_use_screen_units():
     window = _window_with_edge_image()
     try:
@@ -810,6 +868,7 @@ def test_ctrl_tab_shows_shortcut_overlay_only_while_held():
         text = next(item for item in window.canvas.shortcut_overlay_items if isinstance(item, QGraphicsTextItem))
         panel = next(item for item in window.canvas.shortcut_overlay_items if not isinstance(item, QGraphicsTextItem))
         assert "Q + 드래그" in text.toPlainText()
+        assert "E 누르고 클릭" in text.toPlainText()
         assert panel.brush().color().alpha() == 150
 
         release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Tab, Qt.KeyboardModifier.ControlModifier)

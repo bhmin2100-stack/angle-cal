@@ -68,6 +68,7 @@ from .image_ops import (
     normal_for_line,
     read_image,
     rotate_image_and_points,
+    segment_brightness_profile,
     snap_polyline_to_gradient,
     to_gray,
 )
@@ -272,6 +273,7 @@ def points_from_path_item(item: QGraphicsPathItem | QGraphicsLineItem) -> list[P
 class AngleCanvas(QGraphicsView):
     line_created = Signal(str, tuple, tuple, object)
     segment_split_requested = Signal(str, int)
+    segment_selected = Signal(str, int)
     scene_changed = Signal()
     scale_requested = Signal(float)
     search_range_wheel_requested = Signal(int, object)
@@ -305,6 +307,7 @@ class AngleCanvas(QGraphicsView):
         self.detection_preview_items: list[QGraphicsItem] = []
         self.shortcut_overlay_items: list[QGraphicsItem] = []
         self.point_handle_items: list[PointHandleItem] = []
+        self.selected_segment_item: Optional[QGraphicsLineItem] = None
         self.angle_groups: dict[str, list[QGraphicsItem]] = {}
         self.angle_group_parents: dict[str, str] = {}
         self.angle_group_measurements: dict[str, str] = {}
@@ -334,6 +337,7 @@ class AngleCanvas(QGraphicsView):
         self._refreshing_point_handles = False
         self._updating_from_point_handle = False
         self._space_edge_previous_tool: Optional[str] = None
+        self._segment_select_previous_tool: Optional[str] = None
         self._additive_rubberband_items: Optional[set[QGraphicsItem]] = None
         self._shortcut_overlay_visible = False
         self._object_drag_items: list[AnnotationLineItem | AnnotationCurveItem] = []
@@ -366,6 +370,9 @@ class AngleCanvas(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
         elif tool == "resize":
             self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        elif tool == "segment":
+            self.setCursor(Qt.CursorShape.CrossCursor)
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
         else:
             self.unsetCursor()
@@ -408,6 +415,7 @@ class AngleCanvas(QGraphicsView):
         self.detection_preview_items.clear()
         self.shortcut_overlay_items.clear()
         self.point_handle_items.clear()
+        self.selected_segment_item = None
         self._hide_scale_magnifier()
         self.angle_groups.clear()
         self.angle_group_parents.clear()
@@ -428,6 +436,7 @@ class AngleCanvas(QGraphicsView):
         self.scene.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
 
     def redraw_lines(self, records: list[LineRecord]) -> None:
+        self.clear_selected_segment()
         self.clear_point_handles()
         for item in list(self.line_items.values()):
             self.scene.removeItem(item)
@@ -441,6 +450,20 @@ class AngleCanvas(QGraphicsView):
             self.line_items[record.id] = item
         self.update_group_boxes(records)
         self.refresh_point_handles()
+
+    def clear_selected_segment(self) -> None:
+        if self.selected_segment_item is not None and self.selected_segment_item.scene() is self.scene:
+            self.scene.removeItem(self.selected_segment_item)
+        self.selected_segment_item = None
+
+    def highlight_segment(self, start: Point, end: Point) -> None:
+        self.clear_selected_segment()
+        item = QGraphicsLineItem(start[0], start[1], end[0], end[1])
+        item.setPen(cosmetic_pen(QColor("#ffd166"), 3.0))
+        item.setZValue(58)
+        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.scene.addItem(item)
+        self.selected_segment_item = item
 
     def clear_group_boxes(self) -> None:
         for item in self.group_box_items:
@@ -762,7 +785,7 @@ class AngleCanvas(QGraphicsView):
             "<b>단축키</b><br>"
             "Q + 드래그: 경계선만 선택<br>"
             "W + 드래그: 각도 호만 선택<br>"
-            "E + 드래그: 각도 숫자만 선택<br>"
+            "E 누르고 클릭: 세그먼트 하나 선택<br>"
             "선택 개체 Ctrl + 드래그: 복사 이동<br>"
             "선택 개체 Shift + 드래그: 수평/수직 이동 고정<br>"
             "좌우 분리 범위: 드래그=좌측, Shift+드래그=우측<br>"
@@ -1375,6 +1398,15 @@ class AngleCanvas(QGraphicsView):
             event.accept()
             return
 
+        if event.button() == Qt.MouseButton.LeftButton and self.current_tool == "segment":
+            segment = self._segment_at(event.pos())
+            if segment is not None:
+                self.segment_selected.emit(segment[0], segment[1])
+            else:
+                self.clear_selected_segment()
+            event.accept()
+            return
+
         if (
             event.button() == Qt.MouseButton.LeftButton
             and self.current_tool == "select"
@@ -1588,7 +1620,7 @@ class AngleCanvas(QGraphicsView):
         tolerance = max(6.0, 7.0 / max(0.2, self.transform().m11()))
         best: Optional[tuple[float, str, int]] = None
         for item in self.items(view_pos):
-            if not isinstance(item, AnnotationCurveItem) or item.kind != "edge":
+            if not isinstance(item, (AnnotationLineItem, AnnotationCurveItem)) or item.kind != "edge":
                 continue
             points = points_from_path_item(item)
             for idx, (start, end) in enumerate(zip(points, points[1:])):
@@ -1638,11 +1670,18 @@ class AngleCanvas(QGraphicsView):
             if self._nudge_selected_items(event.key(), event.modifiers()):
                 event.accept()
                 return
-        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W, Qt.Key.Key_E):
+        if not event.isAutoRepeat() and event.key() == Qt.Key.Key_E:
+            if self.current_tool != "segment":
+                self._segment_select_previous_tool = self.current_tool
+                self.set_tool("segment")
+            else:
+                self._segment_select_previous_tool = None
+            event.accept()
+            return
+        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W):
             self._selection_filter = {
                 Qt.Key.Key_Q: "edge",
                 Qt.Key.Key_W: "angle_arc",
-                Qt.Key.Key_E: "angle_label",
             }[event.key()]
             self._apply_selection_filter()
             event.accept()
@@ -1675,7 +1714,14 @@ class AngleCanvas(QGraphicsView):
             self.temporary_edge_tool_changed.emit(False)
             event.accept()
             return
-        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W, Qt.Key.Key_E):
+        if not event.isAutoRepeat() and event.key() == Qt.Key.Key_E:
+            previous_tool = self._segment_select_previous_tool
+            self._segment_select_previous_tool = None
+            if previous_tool is not None:
+                self.set_tool(previous_tool)
+            event.accept()
+            return
+        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W):
             self._selection_filter = None
             event.accept()
             return
@@ -2659,6 +2705,7 @@ class MainWindow(QMainWindow):
         self._updating_image_adjustment_controls = False
         self._expanding_object_group_selection = False
         self.last_edge_record_id: Optional[str] = None
+        self.selected_segment: Optional[tuple[str, int]] = None
         self._last_align_key: Optional[tuple[str, str]] = None
         self.visibility: dict[str, bool] = {
             "scale": True,
@@ -2703,6 +2750,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.canvas.line_created.connect(self._handle_line_created)
         self.canvas.segment_split_requested.connect(self.split_edge_segment_for_selection)
+        self.canvas.segment_selected.connect(self.handle_segment_selected)
         self.canvas.scene_changed.connect(self._handle_scene_changed)
         self.canvas.scale_requested.connect(self.scale_selected_objects)
         self.canvas.search_range_wheel_requested.connect(self.adjust_search_range_by_wheel)
@@ -2880,6 +2928,7 @@ class MainWindow(QMainWindow):
             ("스케일바", "scale"),
             ("기준선", "reference"),
             ("경계선", "edge"),
+            ("세그먼트 선택", "segment"),
             ("가이드선", "guide"),
         ]:
             button = QPushButton(label)
@@ -3248,8 +3297,22 @@ class MainWindow(QMainWindow):
         self.measurement_table = QTableWidget(0, 5)
         self.measurement_table.setHorizontalHeaderLabels(["ID", "종류", "길이(px)", "길이(nm)", "각도"])
         self.measurement_table.verticalHeader().setVisible(False)
+        self.segment_profile_label = QLabel("세그먼트를 선택하면 밝기 그래프가 표시됩니다.")
+        self.segment_profile_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        self.segment_profile_label.setMinimumSize(360, 220)
+        self.segment_profile_label.setStyleSheet(
+            "QLabel {"
+            "background: #111827;"
+            "border: 1px solid #334155;"
+            "border-radius: 4px;"
+            "padding: 6px;"
+            "color: #e5e7eb;"
+            "}"
+        )
+        self.segment_profile_label.hide()
         layout.addWidget(self.calibration_label)
         layout.addWidget(self.detection_preview_label)
+        layout.addWidget(self.segment_profile_label)
         layout.addWidget(self.measurement_table)
 
         controls = QHBoxLayout()
@@ -3264,6 +3327,20 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.measurements_dock = dock
         dock.hide()
+
+    def _show_measurements_mode(self) -> None:
+        self.measurements_dock.setWindowTitle("측정값")
+        self.calibration_label.show()
+        self.detection_preview_label.show()
+        self.segment_profile_label.hide()
+        self.measurement_table.show()
+
+    def _show_segment_profile_mode(self) -> None:
+        self.measurements_dock.setWindowTitle("세그먼트 밝기")
+        self.calibration_label.hide()
+        self.detection_preview_label.hide()
+        self.measurement_table.hide()
+        self.segment_profile_label.show()
 
     def _build_visibility_dock(self) -> None:
         dock = QDockWidget("표시", self)
@@ -4840,6 +4917,143 @@ class MainWindow(QMainWindow):
         self._update_search_range_overlay()
         self._apply_visibility()
         self._set_status("선택한 세그먼트를 별도 경계선으로 잘라 선택했습니다.")
+
+    def handle_segment_selected(self, record_id: str, segment_index: int) -> None:
+        if self.image_bgr is None:
+            return
+        self._sync_records_from_canvas()
+        record = self.records.get(record_id)
+        if record is None or record.kind != "edge":
+            self.selected_segment = None
+            self.canvas.clear_selected_segment()
+            return
+        points = record_points(record)
+        if len(points) < 2 or not (0 <= segment_index < len(points) - 1):
+            self.selected_segment = None
+            self.canvas.clear_selected_segment()
+            self._set_status("선택할 수 있는 세그먼트가 아닙니다.")
+            return
+
+        start = points[segment_index]
+        end = points[segment_index + 1]
+        self.selected_segment = (record_id, segment_index)
+        self.canvas.scene.clearSelection()
+        self.canvas.highlight_segment(start, end)
+
+        left_radius, right_radius = self._edge_search_radii(record)
+        radius = max(left_radius, right_radius)
+        result = segment_brightness_profile(
+            to_gray(self._adjusted_image_bgr()),
+            start,
+            end,
+            radius,
+            left_radius,
+            right_radius,
+        )
+        self._show_segment_profile_mode()
+        if result is None:
+            self.segment_profile_label.setPixmap(QPixmap())
+            self.segment_profile_label.setText("선택한 세그먼트에서 충분한 밝기 샘플을 얻지 못했습니다.")
+        else:
+            pixmap = self._segment_profile_pixmap(record_id, segment_index, start, end, result)
+            self.segment_profile_label.setText("")
+            self.segment_profile_label.setPixmap(pixmap)
+            self.segment_profile_label.setToolTip(
+                f"{record_id} 세그먼트 {segment_index + 1}: 최강 변화 위치 {result.best_offset_px:.1f}px"
+            )
+        self.measurements_dock.show()
+        self.measurements_dock.raise_()
+        self._set_status(f"{record_id} 세그먼트 {segment_index + 1} 밝기 프로파일을 표시했습니다.")
+
+    def _segment_profile_pixmap(
+        self,
+        record_id: str,
+        segment_index: int,
+        start: Point,
+        end: Point,
+        result,
+    ) -> QPixmap:
+        width = 430
+        height = 240
+        image = QImage(width, height, QImage.Format.Format_RGB32)
+        image.fill(QColor("#0f172a"))
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        title_flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        painter.setPen(QColor("#e5e7eb"))
+        length_px = line_length(start, end)
+        painter.drawText(
+            QRectF(12, 8, width - 24, 22),
+            title_flags,
+            f"{record_id} seg {segment_index + 1}  L {length_px:.1f}px  peak {result.best_offset_px:.1f}px",
+        )
+
+        graph_rect = QRectF(38, 38, width - 58, 92)
+        painter.setPen(QPen(QColor("#475569"), 1))
+        painter.drawRect(graph_rect)
+        painter.drawText(QRectF(12, graph_rect.top() - 2, 24, 16), title_flags, "255")
+        painter.drawText(QRectF(16, graph_rect.bottom() - 14, 20, 16), title_flags, "0")
+
+        profile = np.asarray(result.intensity_profile, dtype=np.float32)
+        finite = np.isfinite(profile)
+        if np.count_nonzero(finite) >= 2:
+            min_value = float(np.nanmin(profile[finite]))
+            max_value = float(np.nanmax(profile[finite]))
+            span = max(1.0, max_value - min_value)
+            path = QPainterPath()
+            for idx, value in enumerate(profile):
+                ratio_x = idx / max(1, profile.size - 1)
+                ratio_y = 0.0 if not np.isfinite(value) else (float(value) - min_value) / span
+                x = graph_rect.left() + ratio_x * graph_rect.width()
+                y = graph_rect.bottom() - ratio_y * graph_rect.height()
+                if idx == 0:
+                    path.moveTo(x, y)
+                else:
+                    path.lineTo(x, y)
+            painter.setPen(QPen(QColor("#34d399"), 2))
+            painter.drawPath(path)
+
+            best_index = int(np.nanargmin(np.abs(np.asarray(result.offsets) - result.best_offset_px)))
+            best_x = graph_rect.left() + best_index / max(1, profile.size - 1) * graph_rect.width()
+            painter.setPen(QPen(QColor("#fbbf24"), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(best_x, graph_rect.top()), QPointF(best_x, graph_rect.bottom()))
+
+        painter.setPen(QColor("#cbd5e1"))
+        painter.drawText(
+            QRectF(38, 132, width - 58, 18),
+            title_flags,
+            f"수직 오프셋 {float(result.offsets[0]):.0f}px ~ {float(result.offsets[-1]):.0f}px",
+        )
+
+        bar_rect = QRectF(38, 162, width - 58, 26)
+        painter.setPen(QPen(QColor("#475569"), 1))
+        painter.drawRect(bar_rect)
+        sample_grid = np.asarray(result.sample_grid, dtype=np.float32)
+        best_row = int(np.nanargmin(np.abs(np.asarray(result.offsets) - result.best_offset_px)))
+        row = sample_grid[best_row] if 0 <= best_row < sample_grid.shape[0] else np.asarray([], dtype=np.float32)
+        row_finite = np.isfinite(row)
+        if np.count_nonzero(row_finite) >= 2:
+            row_min = float(np.nanmin(row[row_finite]))
+            row_max = float(np.nanmax(row[row_finite]))
+            row_span = max(1.0, row_max - row_min)
+            bar_width = max(1, int(bar_rect.width()))
+            for x_idx in range(bar_width):
+                sample_idx = int(round(x_idx / max(1, bar_width - 1) * (row.size - 1)))
+                value = row[sample_idx]
+                gray = 45 if not np.isfinite(value) else int(np.clip((float(value) - row_min) / row_span * 255.0, 0, 255))
+                painter.setPen(QColor(gray, gray, gray))
+                x = int(bar_rect.left()) + x_idx
+                painter.drawLine(x, int(bar_rect.top()) + 1, x, int(bar_rect.bottom()) - 1)
+
+        painter.setPen(QColor("#cbd5e1"))
+        painter.drawText(
+            QRectF(38, 194, width - 58, 18),
+            title_flags,
+            f"길이 방향 1px 샘플 {int(result.distances.size)}개 / 밝기 변화량 {result.best_gradient:.2f}",
+        )
+        painter.end()
+        return QPixmap.fromImage(image)
 
     def _create_guide_line(self, start: Point, end: Point) -> None:
         axis = "horizontal" if abs(end[0] - start[0]) >= abs(end[1] - start[1]) else "vertical"
@@ -6512,6 +6726,7 @@ class MainWindow(QMainWindow):
 
     def _show_detection_preview(self) -> None:
         self.canvas.clear_detection_preview()
+        self._show_measurements_mode()
         segment_size_px = self.curve_sensitivity_spin.value()
         self.detection_preview_label.setText(
             f"경계인식 범위: {self._search_range_label()}\n세그먼트 크기: {segment_size_px}px"
