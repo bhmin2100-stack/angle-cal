@@ -1,6 +1,7 @@
 import os
 import json
 import math
+from pathlib import Path
 import zipfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1657,6 +1658,30 @@ def test_scan_folder_images_uses_natural_numeric_order(tmp_path):
         window.close()
 
 
+def test_scan_folder_images_uses_natural_numeric_order_for_nested_folders(tmp_path):
+    paths = [
+        tmp_path / "000" / "1" / "a.png",
+        tmp_path / "000" / "10" / "a.png",
+        tmp_path / "000" / "2" / "a.png",
+    ]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(path), np.zeros((20, 20, 3), dtype=np.uint8))
+
+    _app()
+    window = MainWindow()
+    try:
+        scanned = window._scan_folder_images(tmp_path)
+
+        assert [str(path.relative_to(tmp_path)) for path in scanned] == [
+            "000/1/a.png",
+            "000/2/a.png",
+            "000/10/a.png",
+        ]
+    finally:
+        window.close()
+
+
 def test_favorite_images_show_as_tabs_and_switch_images(tmp_path):
     path_a = tmp_path / "a.png"
     path_b = tmp_path / "b.png"
@@ -2102,6 +2127,48 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         assert window.current_browser_index == 0
         assert "E_a" in window.records
         assert window.nm_per_px == 1.5
+    finally:
+        window.close()
+
+
+def test_open_project_sorts_nested_browser_paths_naturally(tmp_path, monkeypatch):
+    path_1 = tmp_path / "000" / "1" / "a.png"
+    path_10 = tmp_path / "000" / "10" / "a.png"
+    path_2 = tmp_path / "000" / "2" / "a.png"
+    for path in [path_1, path_10, path_2]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(path), np.zeros((30, 30, 3), dtype=np.uint8))
+    project_path = tmp_path / "folder_project.anglecal.json"
+    payload = {
+        "project_format_version": 2,
+        "image_path": str(path_10),
+        "browser_root": str(tmp_path),
+        "browser_image_paths": [str(path_1), str(path_10), str(path_2)],
+        "current_browser_index": 1,
+        "image_states": {
+            str(path_1): {"records": [], "counter": 1, "nm_per_px": None, "hidden_angle_measurements": [], "image_adjustments": {}},
+            str(path_10): {"records": [], "counter": 1, "nm_per_px": None, "hidden_angle_measurements": [], "image_adjustments": {}},
+            str(path_2): {"records": [], "counter": 1, "nm_per_px": None, "hidden_angle_measurements": [], "image_adjustments": {}},
+        },
+        "records": [],
+        "counter": 1,
+        "nm_per_px": None,
+    }
+    project_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(app_module.QFileDialog, "getOpenFileName", lambda *args, **kwargs: (str(project_path), "Angle Cal Project (*.anglecal.json)"))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.open_project()
+
+        assert [str(Path(path).relative_to(tmp_path)) for path in window.browser_image_paths] == [
+            "000/1/a.png",
+            "000/2/a.png",
+            "000/10/a.png",
+        ]
+        assert window.image_path == str(path_10)
+        assert window.current_browser_index == 2
     finally:
         window.close()
 

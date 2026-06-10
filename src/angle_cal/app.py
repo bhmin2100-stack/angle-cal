@@ -3600,10 +3600,18 @@ class MainWindow(QMainWindow):
         ]
         return sorted(paths, key=lambda path: self._browser_image_sort_key(root, path))
 
-    def _browser_image_sort_key(self, root: Path, path: Path) -> tuple[object, ...]:
-        relative_parent = path.parent.relative_to(root)
-        folder_key = tuple(natural_sort_key(part) for part in relative_parent.parts)
+    @staticmethod
+    def _browser_image_sort_key(root: Optional[Path], path: Path) -> tuple[object, ...]:
+        try:
+            relative_path = path.relative_to(root) if root is not None else path
+        except ValueError:
+            relative_path = path
+        folder_key = tuple(natural_sort_key(part) for part in relative_path.parent.parts)
         return (folder_key, natural_sort_key(path.name), path.name.casefold())
+
+    @classmethod
+    def _sort_browser_paths(cls, root: Optional[Path], paths: list[str]) -> list[str]:
+        return sorted(paths, key=lambda item: cls._browser_image_sort_key(root, Path(item)))
 
     def _populate_thumbnails(self) -> None:
         self._clear_thumbnail_layout()
@@ -3957,6 +3965,9 @@ class MainWindow(QMainWindow):
         for favorite_path in favorite_paths:
             if favorite_path not in browser_paths and Path(favorite_path).exists():
                 browser_paths.append(favorite_path)
+        browser_root = payload.get("browser_root")
+        browser_root_path = Path(browser_root) if browser_root else None
+        browser_paths = self._sort_browser_paths(browser_root_path, browser_paths)
         if not image_path or not Path(image_path).exists():
             QMessageBox.warning(self, "프로젝트 열기", "프로젝트에 기록된 이미지 경로를 찾을 수 없습니다.")
             return
@@ -3990,8 +4001,7 @@ class MainWindow(QMainWindow):
         if FAVORITE_DEFAULT_GROUP not in self.favorite_group_order:
             self.favorite_group_order.insert(0, FAVORITE_DEFAULT_GROUP)
         self.current_favorite_group = str(payload.get("current_favorite_group") or self.favorite_group_order[0])
-        browser_root = payload.get("browser_root")
-        self.browser_root = Path(browser_root) if browser_root else (Path(self.browser_image_paths[0]).parent if len(self.browser_image_paths) > 1 else None)
+        self.browser_root = browser_root_path if browser_root_path else (Path(self.browser_image_paths[0]).parent if len(self.browser_image_paths) > 1 else None)
         self.current_browser_index = self.browser_image_paths.index(image_path) if image_path in self.browser_image_paths else 0
         self.project_path = path
         self.nm_per_px = payload.get("nm_per_px")
@@ -4108,6 +4118,7 @@ class MainWindow(QMainWindow):
         browser_paths = list(self.browser_image_paths)
         if self.image_path and self.image_path not in browser_paths:
             browser_paths.insert(0, self.image_path)
+        browser_paths = self._sort_browser_paths(self.browser_root, browser_paths)
         current_index = browser_paths.index(self.image_path) if self.image_path in browser_paths else 0
         payload = {
             "project_format_version": 2,
