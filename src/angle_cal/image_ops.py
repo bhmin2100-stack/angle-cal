@@ -89,6 +89,16 @@ def to_gray(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
 
 
+def _scalar_intensity(image: np.ndarray) -> np.ndarray:
+    return to_gray(image)
+
+
+def _normal_intensity_change(intensity: np.ndarray, nx: float, ny: float) -> np.ndarray:
+    gy, gx = np.gradient(intensity.astype(np.float32))
+    directional_change = gx * float(nx) + gy * float(ny)
+    return np.abs(directional_change).astype(np.float32)
+
+
 def ensure_bgr(image: np.ndarray) -> np.ndarray:
     if image.ndim == 2:
         return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
@@ -273,7 +283,7 @@ def snap_line_to_gradient_curve(
 
 
 def segment_brightness_profile(
-    gray: np.ndarray,
+    image: np.ndarray,
     start: Point,
     end: Point,
     search_radius_px: int = 30,
@@ -306,35 +316,25 @@ def segment_brightness_profile(
 
     sample_count = max(2, int(math.ceil(length)) + 1)
     distances = np.linspace(0.0, float(length), sample_count, dtype=np.float32)
-
-    base_x = float(start[0]) + tx * distances
-    base_y = float(start[1]) + ty * distances
-    xs = base_x[None, :] + nx * offsets[:, None]
-    ys = base_y[None, :] + ny * offsets[:, None]
-    sample_grid = _bilinear_sample(gray, xs.astype(np.float32), ys.astype(np.float32))
-
-    profile = np.full(offsets.shape, np.nan, dtype=np.float32)
     min_valid_samples = max(2, int(distances.size // 4))
-    for idx in range(offsets.size):
-        samples = sample_grid[idx]
-        valid_count = np.count_nonzero(~np.isnan(samples))
-        if valid_count >= min_valid_samples:
-            profile[idx] = float(np.nanmean(samples))
 
-    finite = np.isfinite(profile)
-    if np.count_nonzero(finite) < 5:
+    patch = _segment_pixel_patch(
+        image,
+        start,
+        end,
+        offsets,
+        distances,
+        left_radius_px,
+        right_radius_px,
+    )
+    if patch is None:
         return None
+    sample_grid, counts, gradient_grid = patch
 
-    filled = profile.copy()
-    if not np.all(finite):
-        filled = np.interp(offsets, offsets[finite], profile[finite]).astype(np.float32)
-
-    if filled.size >= 5:
-        kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
-        kernel /= kernel.sum()
-        filled = np.convolve(np.pad(filled, (2, 2), mode="edge"), kernel, mode="valid").astype(np.float32)
-
-    gradient = _area_gradient_profile(sample_grid, offsets, min_valid_samples)
+    filled = _row_mean_profile(sample_grid, counts, offsets, min_valid_samples)
+    if filled is None:
+        return None
+    gradient = _area_gradient_profile(gradient_grid, counts, offsets, min_valid_samples)
     if gradient is None:
         gradient = np.abs(np.gradient(filled)).astype(np.float32)
     best_index = int(np.nanargmax(gradient))
@@ -349,32 +349,121 @@ def segment_brightness_profile(
     )
 
 
-def _area_gradient_profile(
+def _segment_pixel_patch(
+    image: np.ndarray,
+    start: Point,
+    end: Point,
+    offsets: np.ndarray,
+    distances: np.ndarray,
+    left_radius_px: int,
+    right_radius_px: int,
+) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    intensity = _scalar_intensity(image)
+    h, w = intensity.shape[:2]
+    length = line_length(start, end)
+    if length < 2:
+        return None
+
+    tx = (end[0] - start[0]) / length
+    ty = (end[1] - start[1]) / length
+    nx, ny = normal_for_line(start, end)
+    if nx == 0 and ny == 0:
+        return None
+
+    corners = np.array(
+        [
+            (start[0] + nx * left_radius_px, start[1] + ny * left_radius_px),
+            (end[0] + nx * left_radius_px, end[1] + ny * left_radius_px),
+            (end[0] - nx * right_radius_px, end[1] - ny * right_radius_px),
+            (start[0] - nx * right_radius_px, start[1] - ny * right_radius_px),
+        ],
+        dtype=np.float32,
+    )
+    min_x = max(0, int(math.floor(float(np.min(corners[:, 0])))) - 1)
+    max_x = min(w - 1, int(math.ceil(float(np.max(corners[:, 0])))) + 1)
+    min_y = max(0, int(math.floor(float(np.min(corners[:, 1])))) - 1)
+    max_y = min(h - 1, int(math.ceil(float(np.max(corners[:, 1])))) + 1)
+    if min_x > max_x or min_y > max_y:
+        return None
+
+    xs = np.arange(min_x, max_x + 1, dtype=np.float32)
+    ys = np.arange(min_y, max_y + 1, dtype=np.float32)
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    rel_x = grid_x - float(start[0])
+    rel_y = grid_y - float(start[1])
+    along = rel_x * tx + rel_y * ty
+    signed_offset = rel_x * nx + rel_y * ny
+    mask = (
+        (along >= 0.0)
+        & (along <= float(length))
+        & (signed_offset >= -float(right_radius_px))
+        & (signed_offset <= float(left_radius_px))
+    )
+    if not np.any(mask):
+        return None
+
+    offset_indexes = np.rint(signed_offset[mask]).astype(np.int32) - int(offsets[0])
+    distance_indexes = np.rint(along[mask]).astype(np.int32)
+    valid = (
+        (offset_indexes >= 0)
+        & (offset_indexes < offsets.size)
+        & (distance_indexes >= 0)
+        & (distance_indexes < distances.size)
+    )
+    if not np.any(valid):
+        return None
+
+    offset_indexes = offset_indexes[valid]
+    distance_indexes = distance_indexes[valid]
+    pixel_x = grid_x[mask].astype(np.int32)[valid]
+    pixel_y = grid_y[mask].astype(np.int32)[valid]
+
+    sample_sums = np.zeros((offsets.size, distances.size), dtype=np.float32)
+    counts = np.zeros((offsets.size, distances.size), dtype=np.float32)
+    np.add.at(sample_sums, (offset_indexes, distance_indexes), intensity[pixel_y, pixel_x])
+    np.add.at(counts, (offset_indexes, distance_indexes), 1.0)
+    sample_grid = np.divide(sample_sums, counts, out=np.full_like(sample_sums, np.nan), where=counts > 0)
+
+    intensity_change = _normal_intensity_change(intensity, nx, ny)
+    gradient_sums = np.zeros((offsets.size, distances.size), dtype=np.float32)
+    np.add.at(gradient_sums, (offset_indexes, distance_indexes), intensity_change[pixel_y, pixel_x])
+    gradient_grid = np.divide(gradient_sums, counts, out=np.full_like(gradient_sums, np.nan), where=counts > 0)
+    return sample_grid, counts, gradient_grid
+
+
+def _row_mean_profile(
     sample_grid: np.ndarray,
+    counts: np.ndarray,
     offsets: np.ndarray,
     min_valid_samples: int,
 ) -> Optional[np.ndarray]:
-    if sample_grid.ndim != 2 or sample_grid.shape[0] < 3:
+    row_counts = counts.sum(axis=1)
+    row_sums = np.nansum(sample_grid * counts, axis=1)
+    profile = np.divide(row_sums, row_counts, out=np.full(offsets.shape, np.nan, dtype=np.float32), where=row_counts >= min_valid_samples)
+    finite = np.isfinite(profile)
+    if np.count_nonzero(finite) < 5:
+        return None
+    if not np.all(finite):
+        profile = np.interp(offsets, offsets[finite], profile[finite]).astype(np.float32)
+    if profile.size >= 5:
+        kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        kernel /= kernel.sum()
+        profile = np.convolve(np.pad(profile, (2, 2), mode="edge"), kernel, mode="valid").astype(np.float32)
+    return profile
+
+
+def _area_gradient_profile(
+    gradient_grid: np.ndarray,
+    counts: np.ndarray,
+    offsets: np.ndarray,
+    min_valid_samples: int,
+) -> Optional[np.ndarray]:
+    if gradient_grid.ndim != 2 or gradient_grid.shape[0] < 3:
         return None
 
-    filled_grid = sample_grid.astype(np.float32, copy=True)
-    for col_idx in range(filled_grid.shape[1]):
-        column = filled_grid[:, col_idx]
-        finite = np.isfinite(column)
-        finite_count = np.count_nonzero(finite)
-        if finite_count >= 2:
-            filled_grid[:, col_idx] = np.interp(offsets, offsets[finite], column[finite]).astype(np.float32)
-        elif finite_count == 1:
-            filled_grid[:, col_idx] = float(column[finite][0])
-
-    gradient_grid = np.gradient(filled_grid, axis=0)
-    profile = np.full(offsets.shape, np.nan, dtype=np.float32)
-    for row_idx in range(gradient_grid.shape[0]):
-        row = gradient_grid[row_idx]
-        finite = np.isfinite(row)
-        if np.count_nonzero(finite) >= min_valid_samples:
-            profile[row_idx] = float(np.nanmean(np.abs(row[finite])))
-
+    row_counts = counts.sum(axis=1)
+    row_sums = np.nansum(gradient_grid * counts, axis=1)
+    profile = np.divide(row_sums, row_counts, out=np.full(offsets.shape, np.nan, dtype=np.float32), where=row_counts >= min_valid_samples)
     finite_profile = np.isfinite(profile)
     if np.count_nonzero(finite_profile) < 5:
         return None

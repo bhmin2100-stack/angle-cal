@@ -743,6 +743,17 @@ def test_segment_profile_samples_every_pixel_along_segment_length():
     assert math.isclose(result.best_offset_px, -7.0, abs_tol=1.5)
 
 
+def test_segment_profile_uses_actual_bgr_image_pixels_as_luma():
+    image = np.zeros((80, 80, 3), dtype=np.uint8)
+    image[:, 32:] = (255, 255, 255)
+
+    result = segment_brightness_profile(image, (24.0, 10.0), (24.0, 33.0), 12)
+
+    assert result is not None
+    assert result.sample_grid.shape == (25, 24)
+    assert math.isclose(result.best_offset_px, -7.0, abs_tol=1.5)
+
+
 def test_snap_polyline_uses_full_segment_area_pixels():
     gray = np.zeros((80, 80), dtype=np.float32)
     gray[:, 32:] = 255.0

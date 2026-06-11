@@ -4967,7 +4967,7 @@ class MainWindow(QMainWindow):
         left_radius, right_radius = self._edge_search_radii(record)
         radius = max(left_radius, right_radius)
         result = segment_brightness_profile(
-            to_gray(self._adjusted_image_bgr()),
+            self._adjusted_image_bgr(),
             start,
             end,
             radius,
@@ -5171,7 +5171,7 @@ class MainWindow(QMainWindow):
                 if result != QMessageBox.StandardButton.Yes:
                     return
         self.save_undo_snapshot()
-        gray = to_gray(self._adjusted_image_bgr())
+        recognition_image = self._adjusted_image_bgr()
         moved = 0
         for record in edge_records:
             source_points = list(recognition_points(record))
@@ -5179,7 +5179,7 @@ class MainWindow(QMainWindow):
             radius = max(left_radius, right_radius)
             segment_size_px = self._edge_segment_size(record)
             result = snap_polyline_to_gradient(
-                gray,
+                recognition_image,
                 source_points,
                 radius,
                 segment_size_px,
