@@ -334,8 +334,10 @@ def segment_brightness_profile(
         kernel /= kernel.sum()
         filled = np.convolve(np.pad(filled, (2, 2), mode="edge"), kernel, mode="valid").astype(np.float32)
 
-    gradient = np.gradient(filled)
-    best_index = int(np.nanargmax(np.abs(gradient)))
+    gradient = _area_gradient_profile(sample_grid, offsets, min_valid_samples)
+    if gradient is None:
+        gradient = np.abs(np.gradient(filled)).astype(np.float32)
+    best_index = int(np.nanargmax(gradient))
     return SegmentProfileResult(
         offsets=offsets,
         distances=distances,
@@ -345,6 +347,44 @@ def segment_brightness_profile(
         best_offset_px=float(offsets[best_index]),
         best_gradient=float(gradient[best_index]),
     )
+
+
+def _area_gradient_profile(
+    sample_grid: np.ndarray,
+    offsets: np.ndarray,
+    min_valid_samples: int,
+) -> Optional[np.ndarray]:
+    if sample_grid.ndim != 2 or sample_grid.shape[0] < 3:
+        return None
+
+    filled_grid = sample_grid.astype(np.float32, copy=True)
+    for col_idx in range(filled_grid.shape[1]):
+        column = filled_grid[:, col_idx]
+        finite = np.isfinite(column)
+        finite_count = np.count_nonzero(finite)
+        if finite_count >= 2:
+            filled_grid[:, col_idx] = np.interp(offsets, offsets[finite], column[finite]).astype(np.float32)
+        elif finite_count == 1:
+            filled_grid[:, col_idx] = float(column[finite][0])
+
+    gradient_grid = np.gradient(filled_grid, axis=0)
+    profile = np.full(offsets.shape, np.nan, dtype=np.float32)
+    for row_idx in range(gradient_grid.shape[0]):
+        row = gradient_grid[row_idx]
+        finite = np.isfinite(row)
+        if np.count_nonzero(finite) >= min_valid_samples:
+            profile[row_idx] = float(np.nanmean(np.abs(row[finite])))
+
+    finite_profile = np.isfinite(profile)
+    if np.count_nonzero(finite_profile) < 5:
+        return None
+    if not np.all(finite_profile):
+        profile = np.interp(offsets, offsets[finite_profile], profile[finite_profile]).astype(np.float32)
+    if profile.size >= 5:
+        kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+        kernel /= kernel.sum()
+        profile = np.convolve(np.pad(profile, (2, 2), mode="edge"), kernel, mode="valid").astype(np.float32)
+    return profile
 
 
 def _resolve_search_radii(
@@ -426,76 +466,71 @@ def snap_polyline_to_gradient(
     offsets = _search_offsets(left_radius_px, right_radius_px)
     if offsets.size < 3:
         return None
-    local_half_width = float(np.clip(step_px * 0.55, 1.5, 8.0))
-    local_sample_count = max(3, int(math.ceil(step_px)) + 1)
-    local_tangent_offsets = np.linspace(-local_half_width, local_half_width, local_sample_count, dtype=np.float32)
 
-    best_offsets = np.full(point_count, np.nan, dtype=np.float32)
-    strengths = np.full(point_count, np.nan, dtype=np.float32)
-    tangents: list[Point] = []
-    normals: list[Point] = []
-    for idx, point in enumerate(sampled_points):
-        prev_point = sampled_points[max(0, idx - 1)]
-        next_point = sampled_points[min(point_count - 1, idx + 1)]
-        tangent_length = line_length(prev_point, next_point)
-        if tangent_length <= 0:
-            tangents.append((0.0, 0.0))
-            normals.append((0.0, 0.0))
-            continue
-        tx = (next_point[0] - prev_point[0]) / tangent_length
-        ty = (next_point[1] - prev_point[1]) / tangent_length
-        tangents.append((tx, ty))
-        normals.append((-ty, tx))
-
-    for idx, point in enumerate(sampled_points):
-        tx, ty = tangents[idx]
-        nx, ny = normals[idx]
+    segment_count = point_count - 1
+    segment_offsets = np.full(segment_count, np.nan, dtype=np.float32)
+    segment_strengths = np.full(segment_count, np.nan, dtype=np.float32)
+    segment_normals: list[Point] = []
+    for idx, (start, end) in enumerate(zip(sampled_points, sampled_points[1:])):
+        nx, ny = normal_for_line(start, end)
+        segment_normals.append((nx, ny))
         if nx == 0 and ny == 0:
             continue
-        bx, by = point
-        profile = np.empty(offsets.shape, dtype=np.float32)
-        for offset_idx, offset in enumerate(offsets):
-            xs = bx + tx * local_tangent_offsets + nx * offset
-            ys = by + ty * local_tangent_offsets + ny * offset
-            samples = _bilinear_sample(gray, xs, ys)
-            valid_count = np.count_nonzero(~np.isnan(samples))
-            profile[offset_idx] = float(np.nanmean(samples)) if valid_count >= 2 else np.nan
-
-        finite = np.isfinite(profile)
-        if np.count_nonzero(finite) < 5:
+        profile = segment_brightness_profile(
+            gray,
+            start,
+            end,
+            search_radius_px,
+            left_radius_px,
+            right_radius_px,
+        )
+        if profile is None:
             continue
-        filled = profile.copy()
-        if not np.all(finite):
-            filled = np.interp(offsets, offsets[finite], profile[finite]).astype(np.float32)
-        if filled.size >= 5:
-            kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
-            kernel /= kernel.sum()
-            filled = np.convolve(np.pad(filled, (2, 2), mode="edge"), kernel, mode="valid").astype(np.float32)
-        gradient = np.gradient(filled)
-        best_idx = int(np.nanargmax(np.abs(gradient)))
-        best_offsets[idx] = offsets[best_idx]
-        strengths[idx] = abs(float(gradient[best_idx]))
+        segment_offsets[idx] = profile.best_offset_px
+        segment_strengths[idx] = profile.best_gradient
 
-    finite_offsets = np.isfinite(best_offsets)
-    if np.count_nonzero(finite_offsets) < 3:
+    finite_offsets = np.isfinite(segment_offsets)
+    if np.count_nonzero(finite_offsets) < 1:
         return None
     if not np.all(finite_offsets):
         valid_x = np.flatnonzero(finite_offsets)
-        best_offsets = np.interp(np.arange(point_count), valid_x, best_offsets[finite_offsets]).astype(np.float32)
-        strengths = np.interp(np.arange(point_count), valid_x, strengths[finite_offsets]).astype(np.float32)
+        segment_offsets = np.interp(np.arange(segment_count), valid_x, segment_offsets[finite_offsets]).astype(np.float32)
+        segment_strengths = np.interp(np.arange(segment_count), valid_x, segment_strengths[finite_offsets]).astype(np.float32)
 
     smoothing_window = int(round(step_px / 4.0)) * 2 + 1
     smoothing_window = int(np.clip(smoothing_window, 1, 15))
-    if smoothing_window > 1:
+    if smoothing_window > 1 and segment_offsets.size > 1:
         kernel = np.ones(smoothing_window, dtype=np.float32) / smoothing_window
         pad = smoothing_window // 2
-        best_offsets = np.convolve(np.pad(best_offsets, (pad, pad), mode="edge"), kernel, mode="valid").astype(np.float32)
+        segment_offsets = np.convolve(np.pad(segment_offsets, (pad, pad), mode="edge"), kernel, mode="valid").astype(np.float32)
 
-    points = []
-    for (bx, by), (nx, ny), offset in zip(sampled_points, normals, best_offsets):
-        points.append((float(bx + nx * offset), float(by + ny * offset)))
+    shifted_segments: list[Line] = []
+    for (start, end), (nx, ny), offset in zip(zip(sampled_points, sampled_points[1:]), segment_normals, segment_offsets):
+        shifted_segments.append(
+            (
+                (float(start[0] + nx * offset), float(start[1] + ny * offset)),
+                (float(end[0] + nx * offset), float(end[1] + ny * offset)),
+            )
+        )
 
-    return SnapCurveResult(points=points, offsets=best_offsets, gradient_strength=strengths)
+    points = [shifted_segments[0][0]]
+    for idx in range(1, point_count - 1):
+        prev_end = shifted_segments[idx - 1][1]
+        next_start = shifted_segments[idx][0]
+        points.append(((prev_end[0] + next_start[0]) / 2.0, (prev_end[1] + next_start[1]) / 2.0))
+    points.append(shifted_segments[-1][1])
+
+    vertex_offsets = np.empty(point_count, dtype=np.float32)
+    vertex_strengths = np.empty(point_count, dtype=np.float32)
+    vertex_offsets[0] = segment_offsets[0]
+    vertex_strengths[0] = segment_strengths[0]
+    vertex_offsets[-1] = segment_offsets[-1]
+    vertex_strengths[-1] = segment_strengths[-1]
+    for idx in range(1, point_count - 1):
+        vertex_offsets[idx] = (segment_offsets[idx - 1] + segment_offsets[idx]) / 2.0
+        vertex_strengths[idx] = (segment_strengths[idx - 1] + segment_strengths[idx]) / 2.0
+
+    return SnapCurveResult(points=points, offsets=vertex_offsets, gradient_strength=vertex_strengths)
 
 
 def rotate_image_and_points(

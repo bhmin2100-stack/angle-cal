@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPat
 
 import angle_cal.app as app_module
 from angle_cal.app import DataExportOptions, LineRecord, MainWindow, ScalePreset, StructureTemplate, record_points, structure_template_from_dict, structure_template_to_dict
-from angle_cal.image_ops import segment_brightness_profile
+from angle_cal.image_ops import segment_brightness_profile, snap_polyline_to_gradient
 
 
 def _app():
@@ -740,6 +740,19 @@ def test_segment_profile_samples_every_pixel_along_segment_length():
     assert math.isclose(float(result.distances[0]), 0.0)
     assert math.isclose(float(result.distances[-1]), 23.0)
     assert result.sample_grid.shape[1] == 24
+    assert math.isclose(result.best_offset_px, -7.0, abs_tol=1.5)
+
+
+def test_snap_polyline_uses_full_segment_area_pixels():
+    gray = np.zeros((80, 80), dtype=np.float32)
+    gray[:, 32:] = 255.0
+
+    result = snap_polyline_to_gradient(gray, [(24.0, 10.0), (24.0, 33.0)], 12, 30)
+
+    assert result is not None
+    assert len(result.points) == 2
+    assert 30.0 <= result.points[0][0] <= 33.5
+    assert 30.0 <= result.points[1][0] <= 33.5
 
 
 def test_r_key_temporarily_activates_segment_selection_tool():
