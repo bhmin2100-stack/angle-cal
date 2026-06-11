@@ -144,6 +144,8 @@ LENGTH_PARENT_KEY = 4
 ANGLE_TYPE_KEY = 5
 GROUP_BOX_GROUP_KEY = 6
 GROUP_BOX_RECORD_IDS_KEY = 7
+SEARCH_RANGE_RECORD_KEY = 8
+SEARCH_RANGE_SEGMENT_KEY = 9
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 IMAGE_FORMAT_SUFFIX = ".anglecal.format.json"
 NATURAL_SORT_PART_RE = re.compile(r"(\d+)")
@@ -785,7 +787,8 @@ class AngleCanvas(QGraphicsView):
             "<b>단축키</b><br>"
             "Q + 드래그: 경계선만 선택<br>"
             "W + 드래그: 각도 호만 선택<br>"
-            "E 누르고 클릭: 세그먼트 하나 선택<br>"
+            "E + 드래그: 각도 숫자만 선택<br>"
+            "R 누르고 클릭: 세그먼트 하나 선택<br>"
             "선택 개체 Ctrl + 드래그: 복사 이동<br>"
             "선택 개체 Shift + 드래그: 수평/수직 이동 고정<br>"
             "좌우 분리 범위: 드래그=좌측, Shift+드래그=우측<br>"
@@ -835,12 +838,14 @@ class AngleCanvas(QGraphicsView):
                 continue
             polygons = self._search_range_polygons(record, left_radius, right_radius)
             if self.show_search_range_band and record.show_range:
-                for polygon in polygons:
+                for segment_index, polygon in enumerate(polygons):
                     item = QGraphicsPolygonItem(polygon)
                     item.setPen(cosmetic_pen(QColor(0, 220, 110, self._search_range_pen_alpha()), 1.2, Qt.PenStyle.DashLine))
                     item.setBrush(QBrush(QColor(0, 220, 110, self._search_range_fill_alpha())))
                     item.setZValue(3)
                     item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+                    item.setData(SEARCH_RANGE_RECORD_KEY, record.id)
+                    item.setData(SEARCH_RANGE_SEGMENT_KEY, segment_index)
                     self.scene.addItem(item)
                     self.search_range_band_items.append(item)
 
@@ -1628,7 +1633,25 @@ class AngleCanvas(QGraphicsView):
                 if distance <= tolerance and (best is None or distance < best[0]):
                     best = (distance, item.record_id, idx)
         if best is None:
-            return None
+            range_best: Optional[tuple[float, str, int]] = None
+            for item in self.items(view_pos):
+                record_id = item.data(SEARCH_RANGE_RECORD_KEY)
+                segment_index = item.data(SEARCH_RANGE_SEGMENT_KEY)
+                if record_id is None or segment_index is None:
+                    continue
+                line_item = self.line_items.get(str(record_id))
+                if line_item is None:
+                    continue
+                points = points_from_path_item(line_item)
+                idx = int(segment_index)
+                if not (0 <= idx < len(points) - 1):
+                    continue
+                distance = point_to_segment_distance(click, points[idx], points[idx + 1])
+                if range_best is None or distance < range_best[0]:
+                    range_best = (distance, str(record_id), idx)
+            if range_best is None:
+                return None
+            return (range_best[1], range_best[2])
         return (best[1], best[2])
 
     def mouseDoubleClickEvent(self, event):  # noqa: N802
@@ -1670,7 +1693,7 @@ class AngleCanvas(QGraphicsView):
             if self._nudge_selected_items(event.key(), event.modifiers()):
                 event.accept()
                 return
-        if not event.isAutoRepeat() and event.key() == Qt.Key.Key_E:
+        if not event.isAutoRepeat() and event.key() == Qt.Key.Key_R:
             if self.current_tool != "segment":
                 self._segment_select_previous_tool = self.current_tool
                 self.set_tool("segment")
@@ -1678,10 +1701,11 @@ class AngleCanvas(QGraphicsView):
                 self._segment_select_previous_tool = None
             event.accept()
             return
-        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W):
+        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W, Qt.Key.Key_E):
             self._selection_filter = {
                 Qt.Key.Key_Q: "edge",
                 Qt.Key.Key_W: "angle_arc",
+                Qt.Key.Key_E: "angle_label",
             }[event.key()]
             self._apply_selection_filter()
             event.accept()
@@ -1714,14 +1738,14 @@ class AngleCanvas(QGraphicsView):
             self.temporary_edge_tool_changed.emit(False)
             event.accept()
             return
-        if not event.isAutoRepeat() and event.key() == Qt.Key.Key_E:
+        if not event.isAutoRepeat() and event.key() == Qt.Key.Key_R:
             previous_tool = self._segment_select_previous_tool
             self._segment_select_previous_tool = None
             if previous_tool is not None:
                 self.set_tool(previous_tool)
             event.accept()
             return
-        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W):
+        if not event.isAutoRepeat() and event.key() in (Qt.Key.Key_Q, Qt.Key.Key_W, Qt.Key.Key_E):
             self._selection_filter = None
             event.accept()
             return

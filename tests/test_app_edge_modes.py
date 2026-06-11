@@ -694,6 +694,41 @@ def test_segment_selection_tool_shows_profile_in_measurement_dock():
         window.close()
 
 
+def test_segment_selection_accepts_search_range_band_click():
+    window = _window_with_edge_image()
+    try:
+        edge = LineRecord(
+            id="E1",
+            kind="edge",
+            start=(70.0, 20.0),
+            end=(70.0, 100.0),
+            label="edge",
+            points=[(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)],
+            recognition_points=[(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)],
+            edge_segmented=True,
+            search_radius_px=25,
+        )
+        window.records[edge.id] = edge
+        window.canvas.redraw_lines(list(window.records.values()))
+        window._update_search_range_overlay()
+
+        window.set_current_tool("segment")
+        view_pos = QPointF(window.canvas.mapFromScene(QPointF(90.0, 40.0)))
+        event = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            view_pos,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        window.canvas.mousePressEvent(event)
+
+        assert window.selected_segment == ("E1", 0)
+        assert window.canvas.selected_segment_item is not None
+    finally:
+        window.close()
+
+
 def test_segment_profile_samples_every_pixel_along_segment_length():
     gray = np.zeros((80, 80), dtype=np.float32)
     gray[:, 32:] = 255.0
@@ -707,18 +742,35 @@ def test_segment_profile_samples_every_pixel_along_segment_length():
     assert result.sample_grid.shape[1] == 24
 
 
-def test_e_key_temporarily_activates_segment_selection_tool():
+def test_r_key_temporarily_activates_segment_selection_tool():
     window = _window_with_edge_image()
     try:
         window.set_current_tool("select")
-        press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_E, Qt.KeyboardModifier.NoModifier)
+        press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_R, Qt.KeyboardModifier.NoModifier)
         window.canvas.keyPressEvent(press)
 
         assert window.canvas.current_tool == "segment"
 
+        release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_R, Qt.KeyboardModifier.NoModifier)
+        window.canvas.keyReleaseEvent(release)
+
+        assert window.canvas.current_tool == "select"
+    finally:
+        window.close()
+
+
+def test_e_key_restores_angle_label_selection_filter():
+    window = _window_with_edge_image()
+    try:
+        press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_E, Qt.KeyboardModifier.NoModifier)
+        window.canvas.keyPressEvent(press)
+
+        assert window.canvas._selection_filter == "angle_label"
+
         release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_E, Qt.KeyboardModifier.NoModifier)
         window.canvas.keyReleaseEvent(release)
 
+        assert window.canvas._selection_filter is None
         assert window.canvas.current_tool == "select"
     finally:
         window.close()
@@ -882,7 +934,8 @@ def test_ctrl_tab_shows_shortcut_overlay_only_while_held():
         text = next(item for item in window.canvas.shortcut_overlay_items if isinstance(item, QGraphicsTextItem))
         panel = next(item for item in window.canvas.shortcut_overlay_items if not isinstance(item, QGraphicsTextItem))
         assert "Q + 드래그" in text.toPlainText()
-        assert "E 누르고 클릭" in text.toPlainText()
+        assert "E + 드래그" in text.toPlainText()
+        assert "R 누르고 클릭" in text.toPlainText()
         assert panel.brush().color().alpha() == 150
 
         release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Tab, Qt.KeyboardModifier.ControlModifier)
