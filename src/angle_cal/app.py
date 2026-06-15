@@ -5050,31 +5050,39 @@ class MainWindow(QMainWindow):
             f"수직 오프셋 {float(result.offsets[0]):.0f}px ~ {float(result.offsets[-1]):.0f}px",
         )
 
-        bar_rect = QRectF(38, 162, width - 58, 26)
+        bar_rect = QRectF(38, 154, width - 58, 50)
         painter.setPen(QPen(QColor("#475569"), 1))
         painter.drawRect(bar_rect)
         sample_grid = np.asarray(result.sample_grid, dtype=np.float32)
-        best_row = int(np.nanargmin(np.abs(np.asarray(result.offsets) - result.best_offset_px)))
-        row = sample_grid[best_row] if 0 <= best_row < sample_grid.shape[0] else np.asarray([], dtype=np.float32)
-        row_finite = np.isfinite(row)
-        if np.count_nonzero(row_finite) >= 2:
-            row_min = float(np.nanmin(row[row_finite]))
-            row_max = float(np.nanmax(row[row_finite]))
-            row_span = max(1.0, row_max - row_min)
+        grid_finite = np.isfinite(sample_grid)
+        if sample_grid.ndim == 2 and np.count_nonzero(grid_finite) >= 2:
+            grid_min = float(np.nanmin(sample_grid[grid_finite]))
+            grid_max = float(np.nanmax(sample_grid[grid_finite]))
+            grid_span = max(1.0, grid_max - grid_min)
             bar_width = max(1, int(bar_rect.width()))
-            for x_idx in range(bar_width):
-                sample_idx = int(round(x_idx / max(1, bar_width - 1) * (row.size - 1)))
-                value = row[sample_idx]
-                gray = 45 if not np.isfinite(value) else int(np.clip((float(value) - row_min) / row_span * 255.0, 0, 255))
-                painter.setPen(QColor(gray, gray, gray))
-                x = int(bar_rect.left()) + x_idx
-                painter.drawLine(x, int(bar_rect.top()) + 1, x, int(bar_rect.bottom()) - 1)
+            bar_height = max(1, int(bar_rect.height()))
+            for y_idx in range(bar_height):
+                source_row = int(round((1.0 - y_idx / max(1, bar_height - 1)) * (sample_grid.shape[0] - 1)))
+                for x_idx in range(bar_width):
+                    source_col = int(round(x_idx / max(1, bar_width - 1) * (sample_grid.shape[1] - 1)))
+                    value = sample_grid[source_row, source_col]
+                    gray = 35 if not np.isfinite(value) else int(np.clip((float(value) - grid_min) / grid_span * 255.0, 0, 255))
+                    painter.setPen(QColor(gray, gray, gray))
+                    painter.drawPoint(int(bar_rect.left()) + x_idx, int(bar_rect.top()) + y_idx)
+
+            best_row = int(np.nanargmin(np.abs(np.asarray(result.offsets) - result.best_offset_px)))
+            best_ratio = 1.0 - best_row / max(1, sample_grid.shape[0] - 1)
+            best_y = bar_rect.top() + best_ratio * bar_rect.height()
+            painter.setPen(QPen(QColor("#fbbf24"), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(bar_rect.left(), best_y), QPointF(bar_rect.right(), best_y))
 
         painter.setPen(QColor("#cbd5e1"))
+        sample_counts = np.asarray(getattr(result, "sample_counts", np.zeros_like(sample_grid)), dtype=np.float32)
+        actual_pixels = int(np.nansum(sample_counts))
         painter.drawText(
-            QRectF(38, 194, width - 58, 18),
+            QRectF(38, 208, width - 58, 18),
             title_flags,
-            f"길이 방향 1px 샘플 {int(result.distances.size)}개 / 밝기 변화량 {result.best_gradient:.2f}",
+            f"샘플 영역 {sample_grid.shape[1]}x{sample_grid.shape[0]} / 실제 픽셀 {actual_pixels}개 / 변화량 {result.best_gradient:.2f}",
         )
         painter.end()
         return QPixmap.fromImage(image)

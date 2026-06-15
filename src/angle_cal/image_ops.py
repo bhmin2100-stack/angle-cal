@@ -43,6 +43,7 @@ class SegmentProfileResult:
     offsets: np.ndarray
     distances: np.ndarray
     sample_grid: np.ndarray
+    sample_counts: np.ndarray
     intensity_profile: np.ndarray
     gradient_profile: np.ndarray
     best_offset_px: float
@@ -342,6 +343,7 @@ def segment_brightness_profile(
         offsets=offsets,
         distances=distances,
         sample_grid=sample_grid,
+        sample_counts=counts,
         intensity_profile=filled,
         gradient_profile=gradient,
         best_offset_px=float(offsets[best_index]),

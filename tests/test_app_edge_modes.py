@@ -740,6 +740,8 @@ def test_segment_profile_samples_every_pixel_along_segment_length():
     assert math.isclose(float(result.distances[0]), 0.0)
     assert math.isclose(float(result.distances[-1]), 23.0)
     assert result.sample_grid.shape[1] == 24
+    assert result.sample_counts.shape == result.sample_grid.shape
+    assert int(np.nansum(result.sample_counts)) > result.distances.size
     assert math.isclose(result.best_offset_px, -7.0, abs_tol=1.5)
 
 
@@ -751,6 +753,7 @@ def test_segment_profile_uses_actual_bgr_image_pixels_as_luma():
 
     assert result is not None
     assert result.sample_grid.shape == (25, 24)
+    assert int(np.nansum(result.sample_counts)) > 300
     assert math.isclose(result.best_offset_px, -7.0, abs_tol=1.5)
 
 
