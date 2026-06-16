@@ -5062,19 +5062,19 @@ class MainWindow(QMainWindow):
             bar_width = max(1, int(bar_rect.width()))
             bar_height = max(1, int(bar_rect.height()))
             for y_idx in range(bar_height):
-                source_row = int(round((1.0 - y_idx / max(1, bar_height - 1)) * (sample_grid.shape[0] - 1)))
+                source_col = int(round(y_idx / max(1, bar_height - 1) * (sample_grid.shape[1] - 1)))
                 for x_idx in range(bar_width):
-                    source_col = int(round(x_idx / max(1, bar_width - 1) * (sample_grid.shape[1] - 1)))
+                    source_row = int(round(x_idx / max(1, bar_width - 1) * (sample_grid.shape[0] - 1)))
                     value = sample_grid[source_row, source_col]
                     gray = 35 if not np.isfinite(value) else int(np.clip((float(value) - grid_min) / grid_span * 255.0, 0, 255))
                     painter.setPen(QColor(gray, gray, gray))
                     painter.drawPoint(int(bar_rect.left()) + x_idx, int(bar_rect.top()) + y_idx)
 
             best_row = int(np.nanargmin(np.abs(np.asarray(result.offsets) - result.best_offset_px)))
-            best_ratio = 1.0 - best_row / max(1, sample_grid.shape[0] - 1)
-            best_y = bar_rect.top() + best_ratio * bar_rect.height()
+            best_ratio = best_row / max(1, sample_grid.shape[0] - 1)
+            best_x = bar_rect.left() + best_ratio * bar_rect.width()
             painter.setPen(QPen(QColor("#fbbf24"), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(QPointF(bar_rect.left(), best_y), QPointF(bar_rect.right(), best_y))
+            painter.drawLine(QPointF(best_x, bar_rect.top()), QPointF(best_x, bar_rect.bottom()))
 
         painter.setPen(QColor("#cbd5e1"))
         sample_counts = np.asarray(getattr(result, "sample_counts", np.zeros_like(sample_grid)), dtype=np.float32)
@@ -5082,7 +5082,7 @@ class MainWindow(QMainWindow):
         painter.drawText(
             QRectF(38, 208, width - 58, 18),
             title_flags,
-            f"샘플 영역 {sample_grid.shape[1]}x{sample_grid.shape[0]} / 실제 픽셀 {actual_pixels}개 / 변화량 {result.best_gradient:.2f}",
+            f"샘플 영역 범위 {sample_grid.shape[0]}px x 길이 {sample_grid.shape[1]}px / 실제 픽셀 {actual_pixels}개",
         )
         painter.end()
         return QPixmap.fromImage(image)
