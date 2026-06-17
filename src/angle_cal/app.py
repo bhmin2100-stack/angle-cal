@@ -6781,7 +6781,7 @@ class MainWindow(QMainWindow):
             apply_left = force_all or sender is self.search_radius_left_spin
             apply_right = force_all or sender is self.search_radius_right_spin
             apply_segment = force_all or sender is self.curve_sensitivity_spin
-            apply_boundary_mode = force_all or sender is self.boundary_snap_combo
+            apply_boundary_mode = sender is self.boundary_snap_combo
             for edge in selected_edges:
                 if apply_radius:
                     edge.search_radius_px = radius

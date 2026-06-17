@@ -409,6 +409,27 @@ def test_recognition_passes_selected_boundary_snap_mode(monkeypatch):
         window.close()
 
 
+def test_segment_size_bulk_change_does_not_overwrite_boundary_snap_modes():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        window._create_edge_line((45.0, 20.0), (45.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        edges[0].boundary_snap_mode = "brightest"
+        edges[1].boundary_snap_mode = "darkest"
+        for edge in edges:
+            window.canvas.line_items[edge.id].setSelected(True)
+
+        window.curve_sensitivity_spin.setValue(17)
+        window._edge_detection_settings_changed(force_all=True)
+
+        assert [edge.segment_size_px for edge in edges] == [17, 17]
+        assert [edge.boundary_snap_mode for edge in edges] == ["brightest", "darkest"]
+    finally:
+        window.close()
+
+
 def test_mouse_wheel_adjusts_search_range_for_selected_edge():
     window = _window_with_edge_image()
     try:
