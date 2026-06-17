@@ -3360,11 +3360,36 @@ class MainWindow(QMainWindow):
         if len(self.undo_stack) > 30:
             self.undo_stack.pop(0)
 
+    def _canvas_view_state(self) -> dict[str, object]:
+        return {
+            "transform": self.canvas.transform(),
+            "center": self.canvas.mapToScene(self.canvas.viewport().rect().center()),
+            "h_scroll": self.canvas.horizontalScrollBar().value(),
+            "v_scroll": self.canvas.verticalScrollBar().value(),
+        }
+
+    def _restore_canvas_view_state(self, state: Optional[dict[str, object]]) -> None:
+        if not state:
+            return
+        transform = state.get("transform")
+        center = state.get("center")
+        if transform is not None:
+            self.canvas.setTransform(transform)
+        if isinstance(center, QPointF):
+            self.canvas.centerOn(center)
+        h_scroll = state.get("h_scroll")
+        v_scroll = state.get("v_scroll")
+        if isinstance(h_scroll, int):
+            self.canvas.horizontalScrollBar().setValue(h_scroll)
+        if isinstance(v_scroll, int):
+            self.canvas.verticalScrollBar().setValue(v_scroll)
+
     def undo(self) -> None:
         if not self.undo_stack:
             self._set_status("되돌릴 작업이 없습니다.")
             return
         snapshot = self.undo_stack.pop()
+        view_state = self._canvas_view_state()
         self._restoring_undo = True
         try:
             image = snapshot.get("image_bgr")
@@ -3384,6 +3409,7 @@ class MainWindow(QMainWindow):
             self._update_edge_length_overlay(sync=False)
             self._apply_visibility()
             self._refresh_table()
+            self._restore_canvas_view_state(view_state)
             if self.image_path:
                 state = self._current_image_state_dict()
                 self.image_states[self.image_path] = state
@@ -6770,10 +6796,9 @@ class MainWindow(QMainWindow):
     def _show_image(self, keep_view: bool = False) -> None:
         if self.image_bgr is None:
             return
-        transform = self.canvas.transform() if keep_view else None
+        view_state = self._canvas_view_state() if keep_view else None
         self.canvas.set_image(self._pixmap_from_bgr(self._adjusted_image_bgr()))
-        if keep_view and transform is not None:
-            self.canvas.setTransform(transform)
+        self._restore_canvas_view_state(view_state)
 
     def set_current_tool(self, tool: str) -> None:
         self.current_tool = tool

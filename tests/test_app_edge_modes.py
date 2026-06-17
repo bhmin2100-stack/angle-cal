@@ -3339,6 +3339,42 @@ def test_undo_restores_keyboard_move_and_delete():
         window.close()
 
 
+def test_undo_preserves_current_view_transform_and_center():
+    _app()
+    window = MainWindow()
+    try:
+        window.resize(420, 320)
+        window.show()
+        image = np.zeros((800, 1000, 3), dtype=np.uint8)
+        image[:, 500:] = 255
+        window.image_bgr = image
+        window._show_image()
+        QApplication.processEvents()
+
+        window.canvas.scale(3.0, 3.0)
+        target_center = QPointF(420.0, 360.0)
+        window.canvas.centerOn(target_center)
+        QApplication.processEvents()
+        before_transform = window.canvas.transform()
+        before_center = window.canvas.mapToScene(window.canvas.viewport().rect().center())
+
+        window.save_undo_snapshot()
+        window._create_edge_line((20.0, 20.0), (80.0, 20.0))
+        assert window.records
+
+        window.undo()
+        after_transform = window.canvas.transform()
+        after_center = window.canvas.mapToScene(window.canvas.viewport().rect().center())
+
+        assert not window.records
+        assert math.isclose(after_transform.m11(), before_transform.m11(), rel_tol=1e-6)
+        assert math.isclose(after_transform.m22(), before_transform.m22(), rel_tol=1e-6)
+        assert math.isclose(after_center.x(), before_center.x(), abs_tol=1.0)
+        assert math.isclose(after_center.y(), before_center.y(), abs_tol=1.0)
+    finally:
+        window.close()
+
+
 def test_point_handle_drag_undo_is_coalesced_to_one_step():
     window = _window_with_edge_image()
     try:
