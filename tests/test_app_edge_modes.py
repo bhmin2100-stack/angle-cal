@@ -1605,6 +1605,70 @@ def test_align_to_reference_minimizes_first_rotation_then_toggles_180(monkeypatc
         window.close()
 
 
+def test_rotate_current_image_saves_rotation_state(tmp_path):
+    image_path = tmp_path / "a.png"
+    cv2.imwrite(str(image_path), np.zeros((20, 40, 3), dtype=np.uint8))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(image_path)]
+        window._load_image_path(str(image_path), preserve_calibration=False)
+        window._create_edge_line((5.0, 5.0), (30.0, 5.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+
+        window.rotate_current_image(90.0, "테스트 회전")
+
+        assert window.image_bgr.shape[:2] == (40, 20)
+        assert window.image_rotation_degrees == 90.0
+        assert window.image_states[str(image_path)]["image_rotation_degrees"] == 90.0
+        assert window.records[edge.id].start != (5.0, 5.0)
+        assert "테스트 회전: 90.000°" in window.rotation_status_label.text()
+
+        window._load_image_path(str(image_path), preserve_calibration=True)
+
+        assert window.image_bgr.shape[:2] == (40, 20)
+        assert window.image_rotation_degrees == 90.0
+        assert window.records[edge.id].start != (5.0, 5.0)
+    finally:
+        window.close()
+
+
+def test_rotate_selected_thumbnails_updates_per_image_state_without_overwriting_files(tmp_path):
+    path_a = tmp_path / "a.png"
+    path_b = tmp_path / "b.png"
+    cv2.imwrite(str(path_a), np.zeros((20, 40, 3), dtype=np.uint8))
+    cv2.imwrite(str(path_b), np.full((30, 50, 3), 255, dtype=np.uint8))
+
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(path_a), str(path_b)]
+        window.selected_thumbnail_paths = {str(path_a), str(path_b)}
+        edge = LineRecord("E1", "edge", (5.0, 5.0), (25.0, 5.0))
+        window.image_states[str(path_b)] = {
+            "records": [app_module.asdict(edge)],
+            "counter": 2,
+            "nm_per_px": None,
+            "hidden_angle_measurements": [],
+            "image_adjustments": {},
+            "image_rotation_degrees": 0.0,
+        }
+
+        window.rotate_selected_thumbnails(90.0)
+
+        assert window.image_states[str(path_a)]["image_rotation_degrees"] == 90.0
+        assert window.image_states[str(path_b)]["image_rotation_degrees"] == 90.0
+        rotated_edge = app_module.line_record_from_dict(window.image_states[str(path_b)]["records"][0])
+        assert rotated_edge.start != edge.start
+        assert cv2.imread(str(path_a)).shape[:2] == (20, 40)
+        assert cv2.imread(str(path_b)).shape[:2] == (30, 50)
+    finally:
+        window.close()
+
+
 def test_structure_template_round_trip_dict():
     template = StructureTemplate(
         name="CD pair",
@@ -2515,13 +2579,18 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
     window = _window_with_edge_image()
     try:
         assert window.ribbon_tabs.count() == 5
-        assert [window.ribbon_tabs.tabText(idx) for idx in range(window.ribbon_tabs.count())] == ["파일", "경계", "가이드/측정", "표시/서식", "구조"]
+        assert [window.ribbon_tabs.tabText(idx) for idx in range(window.ribbon_tabs.count())] == ["파일", "경계", "가이드/측정", "이미지/표시/서식", "구조"]
         ribbon_layout = window.menuWidget().layout()
         assert ribbon_layout.itemAt(0).widget() is window.ribbon_tabs
         assert ribbon_layout.itemAt(1).layout() is not None
         assert window.tool_buttons["edge"].text() == "경계선"
         assert window.edge_mode_combo.currentData() == "line"
         assert window.structure_combo.itemText(0) == "구조 선택"
+        edge_groups = window.ribbon_tabs.widget(1).findChildren(QGroupBox)
+        assert [group.title() for group in edge_groups] == ["경계 인식"]
+        display_groups = window.ribbon_tabs.widget(3).findChildren(QGroupBox)
+        assert [group.title() for group in display_groups][:2] == ["기준선", "이미지 회전"]
+        assert window.thumbnail_columns_combo.findData(3) >= 0
         file_groups = window.ribbon_tabs.widget(0).findChildren(QGroupBox)
         file_group_titles = [group.title() for group in file_groups]
         assert file_group_titles == ["불러오기 / 저장", "내보내기"]

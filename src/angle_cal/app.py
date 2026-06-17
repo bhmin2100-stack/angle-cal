@@ -12,7 +12,7 @@ from typing import Callable, Optional
 import zipfile
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QDoubleSpinBox,
     QPushButton,
+    QRubberBand,
     QScrollArea,
     QSpinBox,
     QStatusBar,
@@ -2699,6 +2700,11 @@ class MainWindow(QMainWindow):
         self.current_favorite_group = FAVORITE_DEFAULT_GROUP
         self.current_browser_index = -1
         self.thumbnail_buttons: dict[str, QPushButton] = {}
+        self.selected_thumbnail_paths: set[str] = set()
+        self._thumbnail_anchor_path: Optional[str] = None
+        self._thumbnail_drag_origin: Optional[QPoint] = None
+        self._thumbnail_drag_active = False
+        self._thumbnail_drag_base_selection: set[str] = set()
         self.thumbnail_columns = 2
         self._updating_favorite_tabs = False
         self.current_tool = "select"
@@ -2721,6 +2727,7 @@ class MainWindow(QMainWindow):
         self.image_brightness = 0
         self.image_contrast = 100
         self.image_sharpness = 0
+        self.image_rotation_degrees = 0.0
         self.hidden_angle_measurements: set[str] = set()
         self.undo_stack: list[dict] = []
         self._restoring_undo = False
@@ -2996,18 +3003,6 @@ class MainWindow(QMainWindow):
         self.ribbon_tabs.addTab(file_page, "파일")
 
         edge_page = page()
-        reference_group = group(edge_page, "기준선")
-
-        self.axis_combo = QComboBox()
-        self.axis_combo.addItem("수평기준선", "horizontal")
-        self.axis_combo.addItem("수직기준선", "vertical")
-        self.axis_combo.currentIndexChanged.connect(self._axis_changed)
-        reference_group.addWidget(self.axis_combo)
-
-        align_button = QPushButton("이미지 맞춤")
-        align_button.clicked.connect(self.align_to_reference)
-        reference_group.addWidget(align_button)
-
         detect_group = group(edge_page, "경계 인식")
 
         self.edge_mode_combo = QComboBox()
@@ -3119,6 +3114,49 @@ class MainWindow(QMainWindow):
         self.ribbon_tabs.addTab(guide_page, "가이드/측정")
 
         display_page = page()
+        reference_group = group(display_page, "기준선")
+
+        self.axis_combo = QComboBox()
+        self.axis_combo.addItem("수평기준선", "horizontal")
+        self.axis_combo.addItem("수직기준선", "vertical")
+        self.axis_combo.currentIndexChanged.connect(self._axis_changed)
+        reference_group.addWidget(self.axis_combo)
+
+        align_button = QPushButton("이미지 맞춤")
+        align_button.clicked.connect(self.align_to_reference)
+        reference_group.addWidget(align_button)
+
+        rotation_group = group(display_page, "이미지 회전")
+        rotate_left_button = QPushButton("좌 90°")
+        rotate_left_button.clicked.connect(lambda: self.rotate_current_image(90.0, "현재 이미지 좌 90°"))
+        rotate_right_button = QPushButton("우 90°")
+        rotate_right_button.clicked.connect(lambda: self.rotate_current_image(-90.0, "현재 이미지 우 90°"))
+        self.rotation_angle_spin = QDoubleSpinBox()
+        self.rotation_angle_spin.setRange(-360.0, 360.0)
+        self.rotation_angle_spin.setDecimals(3)
+        self.rotation_angle_spin.setSingleStep(0.1)
+        self.rotation_angle_spin.setSuffix("°")
+        current_rotate_button = QPushButton("현재 적용")
+        current_rotate_button.clicked.connect(lambda: self.rotate_current_image(float(self.rotation_angle_spin.value()), "현재 이미지 값 회전"))
+        selected_rotate_button = QPushButton("썸네일 적용")
+        selected_rotate_button.clicked.connect(lambda: self.rotate_selected_thumbnails(float(self.rotation_angle_spin.value())))
+        selected_left_button = QPushButton("선택 좌90")
+        selected_left_button.clicked.connect(lambda: self.rotate_selected_thumbnails(90.0))
+        selected_right_button = QPushButton("선택 우90")
+        selected_right_button.clicked.connect(lambda: self.rotate_selected_thumbnails(-90.0))
+        self.rotation_status_label = QLabel("회전: -")
+        for widget in [
+            rotate_left_button,
+            rotate_right_button,
+            self.rotation_angle_spin,
+            current_rotate_button,
+            selected_left_button,
+            selected_right_button,
+            selected_rotate_button,
+            self.rotation_status_label,
+        ]:
+            rotation_group.addWidget(widget)
+
         style_group = group(display_page, "선 서식")
         self.stroke_color_combo = QComboBox()
         for label, color in [
@@ -3175,7 +3213,7 @@ class MainWindow(QMainWindow):
         image_adjust_group.addWidget(QLabel("선명도"))
         image_adjust_group.addWidget(self.image_sharpness_spin)
         image_adjust_group.addWidget(reset_adjust_button)
-        self.ribbon_tabs.addTab(display_page, "표시/서식")
+        self.ribbon_tabs.addTab(display_page, "이미지/표시/서식")
 
         structure_page = page()
         structure_group = group(structure_page, "구조")
@@ -3226,6 +3264,7 @@ class MainWindow(QMainWindow):
             "nm_per_px": self.nm_per_px,
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "angle_item_states": self._angle_item_states(),
+            "image_rotation_degrees": self.image_rotation_degrees,
         }
         self.undo_stack.append(snapshot)
         if len(self.undo_stack) > 30:
@@ -3245,6 +3284,7 @@ class MainWindow(QMainWindow):
             self._counter = int(snapshot.get("counter", len(self.records) + 1))
             self.nm_per_px = snapshot.get("nm_per_px")
             self.hidden_angle_measurements = set(snapshot.get("hidden_angle_measurements", []))
+            self.image_rotation_degrees = float(snapshot.get("image_rotation_degrees", 0.0) or 0.0)
             self.canvas.clear_point_handles()
             self._show_image(keep_view=True)
             self.canvas.redraw_lines(list(self.records.values()))
@@ -3254,6 +3294,10 @@ class MainWindow(QMainWindow):
             self._update_edge_length_overlay(sync=False)
             self._apply_visibility()
             self._refresh_table()
+            if self.image_path:
+                state = self._current_image_state_dict()
+                self.image_states[self.image_path] = state
+                self._write_image_format_file(self.image_path, state, explicit=False)
             self._set_status("되돌렸습니다.")
         finally:
             self._restoring_undo = False
@@ -3474,6 +3518,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_columns_combo = QComboBox()
         self.thumbnail_columns_combo.addItem("1열", 1)
         self.thumbnail_columns_combo.addItem("2열", 2)
+        self.thumbnail_columns_combo.addItem("3열", 3)
         self.thumbnail_columns_combo.setCurrentIndex(1)
         self.thumbnail_columns_combo.currentIndexChanged.connect(self._thumbnail_columns_changed)
         controls.addWidget(self.thumbnail_columns_combo)
@@ -3481,13 +3526,18 @@ class MainWindow(QMainWindow):
         container_layout.addLayout(controls)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        self.thumbnail_scroll = scroll
         self.thumbnail_container = QWidget()
         self.thumbnail_layout = QGridLayout(self.thumbnail_container)
         self.thumbnail_layout.setContentsMargins(6, 6, 6, 6)
         self.thumbnail_layout.setHorizontalSpacing(6)
         self.thumbnail_layout.setVerticalSpacing(8)
+        self.thumbnail_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.thumbnail_empty_label = QLabel("폴더를 열면 이미지가 표시됩니다.")
         self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, self.thumbnail_columns)
+        self.thumbnail_rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.thumbnail_container)
+        self.thumbnail_container.installEventFilter(self)
+        scroll.viewport().installEventFilter(self)
         scroll.setWidget(self.thumbnail_container)
         container_layout.addWidget(scroll)
         dock.setWidget(container)
@@ -3508,6 +3558,8 @@ class MainWindow(QMainWindow):
         self.image_path = None
         self.browser_root = None
         self.browser_image_paths = [path]
+        self.selected_thumbnail_paths.clear()
+        self._thumbnail_anchor_path = None
         self.favorite_image_paths = []
         self.favorite_image_labels = {}
         self.favorite_image_groups = {}
@@ -3533,6 +3585,8 @@ class MainWindow(QMainWindow):
         self.image_path = None
         self.browser_root = root
         self.browser_image_paths = [str(path) for path in image_paths]
+        self.selected_thumbnail_paths.clear()
+        self._thumbnail_anchor_path = None
         self.favorite_image_paths = []
         self.favorite_image_labels = {}
         self.favorite_image_groups = {}
@@ -3561,8 +3615,10 @@ class MainWindow(QMainWindow):
         self.image_path = path
         if state is not None:
             self._restore_image_state(state)
+            self.image_bgr = self._image_with_rotation(image, self.image_rotation_degrees)
         else:
             self.nm_per_px = previous_nm_per_px if preserve_calibration else None
+            self.image_rotation_degrees = 0.0
             self.records.clear()
             self._counter = 1
         self.undo_stack.clear()
@@ -3574,8 +3630,11 @@ class MainWindow(QMainWindow):
         self._update_search_range_overlay()
         self._apply_visibility()
         self._select_thumbnail(path)
+        display_h, display_w = self.image_bgr.shape[:2]
         calibration_text = f", calibration 유지: {self.nm_per_px:.6g} nm/px" if self.nm_per_px else ""
-        self._set_status(f"이미지 로드: {Path(path).name} ({image.shape[1]} x {image.shape[0]} px){calibration_text}")
+        rotation_text = f", 회전 {self.image_rotation_degrees:.3f}°" if self._is_effective_rotation(self.image_rotation_degrees) else ""
+        self._set_rotation_status(self.image_rotation_degrees, "누적 회전")
+        self._set_status(f"이미지 로드: {Path(path).name} ({display_w} x {display_h} px){calibration_text}{rotation_text}")
 
     def _save_current_image_state(self) -> None:
         if not self.image_path:
@@ -3587,6 +3646,7 @@ class MainWindow(QMainWindow):
             "nm_per_px": self.nm_per_px,
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "image_adjustments": self._image_adjustment_state(),
+            "image_rotation_degrees": self.image_rotation_degrees,
         }
         self.image_states[self.image_path] = state
         self._write_image_format_file(self.image_path, state, explicit=False)
@@ -3596,6 +3656,7 @@ class MainWindow(QMainWindow):
         self._counter = int(state.get("counter", len(self.records) + 1))
         self.nm_per_px = state.get("nm_per_px")
         self.hidden_angle_measurements = set(state.get("hidden_angle_measurements", []))
+        self.image_rotation_degrees = float(state.get("image_rotation_degrees", 0.0) or 0.0)
         self._restore_image_adjustments(state.get("image_adjustments"), refresh=False)
 
     def _current_image_state_dict(self) -> dict:
@@ -3606,6 +3667,7 @@ class MainWindow(QMainWindow):
             "nm_per_px": self.nm_per_px,
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "image_adjustments": self._image_adjustment_state(),
+            "image_rotation_degrees": self.image_rotation_degrees,
         }
 
     @staticmethod
@@ -3655,7 +3717,70 @@ class MainWindow(QMainWindow):
             "nm_per_px": state.get("nm_per_px"),
             "hidden_angle_measurements": list(state.get("hidden_angle_measurements", [])),
             "image_adjustments": dict(state.get("image_adjustments", {})),
+            "image_rotation_degrees": float(state.get("image_rotation_degrees", 0.0) or 0.0),
         }
+
+    @staticmethod
+    def _normalized_image_rotation(angle_degrees: float) -> float:
+        return float(angle_degrees) % 360.0
+
+    @staticmethod
+    def _is_effective_rotation(angle_degrees: float) -> bool:
+        return abs(float(angle_degrees)) % 360.0 > 1e-9
+
+    def _image_with_rotation(self, image: np.ndarray, angle_degrees: float) -> np.ndarray:
+        if not self._is_effective_rotation(angle_degrees):
+            return image
+        rotated, _ = rotate_image_and_points(image, [], float(angle_degrees))
+        return rotated
+
+    def _rotate_image_and_records(self, image: np.ndarray, records: list[LineRecord], angle_degrees: float) -> np.ndarray:
+        points: list[Point] = []
+        descriptors: list[tuple[LineRecord, str, int]] = []
+        for record in records:
+            current_points = record_points(record)
+            points.extend(current_points)
+            descriptors.append((record, "shape", len(current_points)))
+            if record.recognition_points:
+                points.extend(record.recognition_points)
+                descriptors.append((record, "recognition", len(record.recognition_points)))
+            if record.edge_length_label_pos is not None:
+                points.append(record.edge_length_label_pos)
+                descriptors.append((record, "edge_length_label", 1))
+
+        rotated, transformed = rotate_image_and_points(image, points, float(angle_degrees))
+        cursor = 0
+        for record, item_kind, count in descriptors:
+            chunk = transformed[cursor:cursor + count]
+            cursor += count
+            if item_kind == "shape":
+                if not chunk:
+                    continue
+                record.start = chunk[0]
+                record.end = chunk[-1]
+                if record.points:
+                    record.points = chunk
+            elif item_kind == "recognition":
+                record.recognition_points = chunk
+            elif item_kind == "edge_length_label" and chunk:
+                record.edge_length_label_pos = chunk[0]
+        return rotated
+
+    def _set_rotation_status(self, angle_degrees: float, reason: str) -> None:
+        text = f"{reason}: {float(angle_degrees):.3f}°"
+        if hasattr(self, "rotation_status_label"):
+            self.rotation_status_label.setText(text)
+
+    def _refresh_current_thumbnail_icon(self) -> None:
+        if not self.image_path:
+            return
+        button = self.thumbnail_buttons.get(self.image_path)
+        if button is None:
+            return
+        thumb_width, thumb_height, icon_width, icon_height = self._thumbnail_dimensions()
+        button.setFixedSize(thumb_width, thumb_height)
+        button.setIcon(self._thumbnail_icon(Path(self.image_path)))
+        button.setIconSize(QSize(icon_width, icon_height))
 
     def _project_image_states_from_payload(self, payload: dict, current_image_path: str) -> dict[str, dict]:
         states: dict[str, dict] = {}
@@ -3672,6 +3797,7 @@ class MainWindow(QMainWindow):
                     "nm_per_px": payload.get("nm_per_px"),
                     "hidden_angle_measurements": payload.get("hidden_angle_measurements", []),
                     "image_adjustments": payload.get("image_adjustments", {}),
+                    "image_rotation_degrees": payload.get("image_rotation_degrees", 0.0),
                 }
             )
         return states
@@ -3717,6 +3843,12 @@ class MainWindow(QMainWindow):
     def _populate_thumbnails(self) -> None:
         self._clear_thumbnail_layout()
         self.thumbnail_buttons.clear()
+        self.selected_thumbnail_paths = {
+            path for path in self.selected_thumbnail_paths if path in self.browser_image_paths
+        }
+        for col_idx in range(8):
+            self.thumbnail_layout.setColumnStretch(col_idx, 0)
+        self.thumbnail_layout.setColumnStretch(self.thumbnail_columns, 1)
         if not self.browser_image_paths:
             self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, self.thumbnail_columns)
             self.thumbnail_empty_label.show()
@@ -3752,11 +3884,12 @@ class MainWindow(QMainWindow):
             button.setIconSize(QSize(icon_width, icon_height))
             button.setFixedSize(thumb_width, thumb_height)
             button.setToolTip(str(path))
-            button.clicked.connect(lambda checked=False, selected_path=str(path): self.load_browser_image(selected_path))
+            button.clicked.connect(lambda checked=False, selected_path=str(path): self._thumbnail_clicked(selected_path))
             button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             button.customContextMenuRequested.connect(
                 lambda pos, selected_path=str(path), selected_button=button: self.open_thumbnail_context_menu(selected_path, selected_button, pos)
             )
+            button.installEventFilter(self)
             self.thumbnail_layout.addWidget(button, row, col)
             self.thumbnail_buttons[str(path)] = button
             col += 1
@@ -3983,6 +4116,8 @@ class MainWindow(QMainWindow):
     def _thumbnail_dimensions(self) -> tuple[int, int, int, int]:
         if self.thumbnail_columns == 1:
             return (188, 136, 176, 124)
+        if self.thumbnail_columns >= 3:
+            return (76, 66, 68, 56)
         return (92, 78, 84, 66)
 
     def _clear_thumbnail_layout(self) -> None:
@@ -4010,6 +4145,12 @@ class MainWindow(QMainWindow):
             pixmap = QPixmap(icon_width, icon_height)
             pixmap.fill(QColor("#333333"))
             return QIcon(pixmap)
+        state = self.image_states.get(str(path))
+        if state is None:
+            state = self._load_image_format_state(str(path))
+        if state is not None:
+            rotation = float(state.get("image_rotation_degrees", 0.0) or 0.0)
+            image = self._image_with_rotation(image, rotation)
         rgb = bgr_to_rgb8_for_display(image)
         h, w = rgb.shape[:2]
         qimage = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
@@ -4023,15 +4164,130 @@ class MainWindow(QMainWindow):
         return QIcon(pixmap)
 
     def _select_thumbnail(self, path: Optional[str]) -> None:
-        for button_path, button in self.thumbnail_buttons.items():
-            checked = path is not None and button_path == path
-            button.setChecked(checked)
-            button.setStyleSheet(
-                "border:2px solid #4cc9f0; background:#263642;"
-                if checked
-                else ""
-            )
+        if path and path in self.thumbnail_buttons and path not in self.selected_thumbnail_paths:
+            self.selected_thumbnail_paths = {path}
+            self._thumbnail_anchor_path = path
+        self._refresh_thumbnail_selection_styles(path)
         self._refresh_favorite_tabs()
+
+    def _refresh_thumbnail_selection_styles(self, current_path: Optional[str] = None) -> None:
+        current_path = current_path or self.image_path
+        for button_path, button in self.thumbnail_buttons.items():
+            is_current = current_path is not None and button_path == current_path
+            is_selected = button_path in self.selected_thumbnail_paths
+            button.setChecked(is_current or is_selected)
+            if is_current and is_selected:
+                button.setStyleSheet("border:2px solid #4cc9f0; background:#263642;")
+            elif is_current:
+                button.setStyleSheet("border:2px solid #4cc9f0; background:#1f2933;")
+            elif is_selected:
+                button.setStyleSheet("border:2px solid #f59e0b; background:#332915;")
+            else:
+                button.setStyleSheet("")
+
+    def _thumbnail_clicked(self, path: str) -> None:
+        modifiers = QApplication.keyboardModifiers()
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            self._select_thumbnail_range(path)
+            return
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            if path in self.selected_thumbnail_paths and len(self.selected_thumbnail_paths) > 1:
+                self.selected_thumbnail_paths.remove(path)
+            else:
+                self.selected_thumbnail_paths.add(path)
+                self._thumbnail_anchor_path = path
+            self._refresh_thumbnail_selection_styles()
+            self._set_status(f"썸네일 {len(self.selected_thumbnail_paths)}개 선택")
+            return
+        self.selected_thumbnail_paths = {path}
+        self._thumbnail_anchor_path = path
+        self.load_browser_image(path)
+
+    def _select_thumbnail_range(self, path: str) -> None:
+        if path not in self.browser_image_paths:
+            return
+        anchor = self._thumbnail_anchor_path if self._thumbnail_anchor_path in self.browser_image_paths else self.image_path
+        if anchor not in self.browser_image_paths:
+            anchor = path
+        start = self.browser_image_paths.index(anchor)
+        end = self.browser_image_paths.index(path)
+        if start > end:
+            start, end = end, start
+        self.selected_thumbnail_paths = set(self.browser_image_paths[start:end + 1])
+        self._thumbnail_anchor_path = path
+        self._refresh_thumbnail_selection_styles()
+        self._set_status(f"썸네일 {len(self.selected_thumbnail_paths)}개 선택")
+
+    def eventFilter(self, watched, event) -> bool:
+        if self._is_thumbnail_event_source(watched) and self._handle_thumbnail_event(watched, event):
+            return True
+        return super().eventFilter(watched, event)
+
+    def _is_thumbnail_event_source(self, watched) -> bool:
+        if not hasattr(self, "thumbnail_container"):
+            return False
+        if watched is self.thumbnail_container:
+            return True
+        if hasattr(self, "thumbnail_scroll") and watched is self.thumbnail_scroll.viewport():
+            return True
+        return watched in self.thumbnail_buttons.values()
+
+    def _thumbnail_event_pos(self, watched, event) -> QPoint:
+        raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        if watched is self.thumbnail_container:
+            return raw_pos
+        return watched.mapTo(self.thumbnail_container, raw_pos)
+
+    def _handle_thumbnail_event(self, watched, event) -> bool:
+        event_type = event.type()
+        if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            self._thumbnail_drag_origin = self._thumbnail_event_pos(watched, event)
+            self._thumbnail_drag_active = False
+            self._thumbnail_drag_base_selection = set(self.selected_thumbnail_paths)
+            return False
+        if event_type == QEvent.Type.MouseMove and self._thumbnail_drag_origin is not None:
+            if not (event.buttons() & Qt.MouseButton.LeftButton):
+                return False
+            pos = self._thumbnail_event_pos(watched, event)
+            if not self._thumbnail_drag_active:
+                distance = (pos - self._thumbnail_drag_origin).manhattanLength()
+                if distance < QApplication.startDragDistance():
+                    return False
+                self._thumbnail_drag_active = True
+            rect = QRect(self._thumbnail_drag_origin, pos).normalized()
+            self.thumbnail_rubber_band.setGeometry(rect)
+            self.thumbnail_rubber_band.show()
+            self._select_thumbnails_in_rect(rect, add_to_existing=bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier))
+            return True
+        if event_type == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            if not self._thumbnail_drag_active:
+                self._thumbnail_drag_origin = None
+                self._thumbnail_drag_base_selection.clear()
+                return False
+            pos = self._thumbnail_event_pos(watched, event)
+            rect = QRect(self._thumbnail_drag_origin, pos).normalized()
+            self._select_thumbnails_in_rect(rect, add_to_existing=bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier))
+            self.thumbnail_rubber_band.hide()
+            self._thumbnail_drag_origin = None
+            self._thumbnail_drag_active = False
+            self._thumbnail_drag_base_selection.clear()
+            return True
+        return False
+
+    def _select_thumbnails_in_rect(self, rect: QRect, add_to_existing: bool = False) -> None:
+        selected = {
+            path
+            for path, button in self.thumbnail_buttons.items()
+            if rect.intersects(button.geometry())
+        }
+        if add_to_existing:
+            selected |= self._thumbnail_drag_base_selection
+        self.selected_thumbnail_paths = selected
+        if selected:
+            ordered = [path for path in self.browser_image_paths if path in selected]
+            self._thumbnail_anchor_path = ordered[-1] if ordered else None
+        self._refresh_thumbnail_selection_styles()
+        self._set_status(f"썸네일 {len(self.selected_thumbnail_paths)}개 선택")
 
     def open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", "", "Angle Cal Project (*.anglecal.json)")
@@ -4082,6 +4338,8 @@ class MainWindow(QMainWindow):
         self.records.clear()
         self.image_states = self._project_image_states_from_payload(payload, image_path)
         self.browser_image_paths = browser_paths or [image_path]
+        self.selected_thumbnail_paths.clear()
+        self._thumbnail_anchor_path = None
         self.favorite_image_paths = [
             path
             for path in favorite_paths
@@ -4247,6 +4505,7 @@ class MainWindow(QMainWindow):
             "image_states": self.image_states,
             "nm_per_px": current_state.get("nm_per_px"),
             "image_adjustments": current_state.get("image_adjustments", self._image_adjustment_state()),
+            "image_rotation_degrees": current_state.get("image_rotation_degrees", self.image_rotation_degrees),
             "edge_detection": {
                 "edge_mode": "line",
                 "search_radius_px": self.search_radius_spin.value(),
@@ -5117,43 +5376,95 @@ class MainWindow(QMainWindow):
         align_key = (reference.id, reference.axis)
         rotate_by = 180.0 if self._last_align_key == align_key and abs(base_rotate) <= 0.25 else base_rotate
         self._last_align_key = align_key
-        lines = list(self.records.values())
-        points: list[Point] = []
-        point_counts: list[int] = []
-        for record in lines:
-            current_points = record_points(record)
-            points.extend(current_points)
-            point_counts.append(len(current_points))
-            if record.recognition_points:
-                points.extend(record.recognition_points)
-                point_counts.append(-len(record.recognition_points))
-        rotated, transformed = rotate_image_and_points(self.image_bgr, points, rotate_by)
-        cursor = 0
-        for record in lines:
-            count = point_counts.pop(0)
-            next_cursor = cursor + count
-            record_transformed = transformed[cursor:next_cursor]
-            record.start = record_transformed[0]
-            record.end = record_transformed[-1]
-            if record.points:
-                record.points = record_transformed
-            cursor = next_cursor
-            if point_counts and point_counts[0] < 0:
-                recognition_count = -point_counts.pop(0)
-                next_cursor = cursor + recognition_count
-                record.recognition_points = transformed[cursor:next_cursor]
-                cursor = next_cursor
-        self.image_bgr = rotated
+        self.image_bgr = self._rotate_image_and_records(self.image_bgr, list(self.records.values()), rotate_by)
+        self.image_rotation_degrees = self._normalized_image_rotation(self.image_rotation_degrees + rotate_by)
         self._show_image(keep_view=False)
         self.canvas.redraw_lines(list(self.records.values()))
         self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
+        self._set_rotation_status(rotate_by, "기준선 맞춤")
+        self._save_current_image_state()
+        self._refresh_current_thumbnail_icon()
         self._set_status(f"이미지를 {rotate_by:.3f}도 회전해 기준을 맞췄습니다.")
 
     @staticmethod
     def _minimal_axis_rotation(angle: float, target: float) -> float:
         return ((float(angle) - float(target) + 90.0) % 180.0) - 90.0
+
+    def rotate_current_image(self, angle_degrees: float, reason: str = "현재 이미지 회전") -> None:
+        if self.image_bgr is None:
+            return
+        if not self._is_effective_rotation(angle_degrees):
+            self._set_rotation_status(0.0, reason)
+            self._set_status("회전 각도가 0도입니다.")
+            return
+        self._sync_records_from_canvas()
+        self.save_undo_snapshot()
+        self.image_bgr = self._rotate_image_and_records(self.image_bgr, list(self.records.values()), float(angle_degrees))
+        self.image_rotation_degrees = self._normalized_image_rotation(self.image_rotation_degrees + float(angle_degrees))
+        self._show_image(keep_view=False)
+        self.canvas.redraw_lines(list(self.records.values()))
+        self.calculate_angles(reset_hidden=False)
+        self._update_search_range_overlay()
+        self._apply_visibility()
+        self._set_rotation_status(float(angle_degrees), reason)
+        self._save_current_image_state()
+        self._refresh_current_thumbnail_icon()
+        self._set_status(f"{reason}: {float(angle_degrees):.3f}도 회전했습니다.")
+
+    def rotate_selected_thumbnails(self, angle_degrees: float) -> None:
+        if not self._is_effective_rotation(angle_degrees):
+            self._set_rotation_status(0.0, "썸네일 회전")
+            self._set_status("회전 각도가 0도입니다.")
+            return
+        paths = [path for path in self.browser_image_paths if path in self.selected_thumbnail_paths]
+        if not paths and self.image_path:
+            paths = [self.image_path]
+        if not paths:
+            return
+
+        self._save_current_image_state()
+        changed = 0
+        failed: list[str] = []
+        for path in paths:
+            if self._rotate_image_state_for_path(path, float(angle_degrees)):
+                changed += 1
+            else:
+                failed.append(Path(path).name)
+
+        current_path = self.image_path
+        if current_path and current_path in paths:
+            self._load_image_path(current_path, preserve_calibration=True)
+        else:
+            self._populate_thumbnails()
+        self._set_rotation_status(float(angle_degrees), f"썸네일 {changed}개 회전")
+        if failed:
+            self._set_status(f"썸네일 {changed}개 회전, 실패 {len(failed)}개: {', '.join(failed[:3])}")
+        else:
+            self._set_status(f"선택 썸네일 {changed}개를 {float(angle_degrees):.3f}도 회전했습니다.")
+
+    def _rotate_image_state_for_path(self, path: str, angle_degrees: float) -> bool:
+        image = read_image(path)
+        if image is None:
+            return False
+        state = self.image_states.get(path)
+        if state is None:
+            state = self._load_image_format_state(path)
+        if state is None:
+            state = self._normalize_image_state({})
+        else:
+            state = self._normalize_image_state(state)
+
+        records = [line_record_from_dict(item) for item in state.get("records", [])]
+        current_rotation = float(state.get("image_rotation_degrees", 0.0) or 0.0)
+        current_image = self._image_with_rotation(image, current_rotation)
+        self._rotate_image_and_records(current_image, records, angle_degrees)
+        state["records"] = [asdict(record) for record in records]
+        state["image_rotation_degrees"] = self._normalized_image_rotation(current_rotation + angle_degrees)
+        self.image_states[path] = state
+        self._write_image_format_file(path, state, explicit=False)
+        return True
 
     def recognize_edges(self) -> None:
         if self.image_bgr is None:
