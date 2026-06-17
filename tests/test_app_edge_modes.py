@@ -382,6 +382,33 @@ def test_recognition_uses_adjusted_image(monkeypatch):
         window.close()
 
 
+def test_recognition_passes_selected_boundary_snap_mode(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class Result:
+        points = [(81.0, 20.0), (81.0, 100.0)]
+
+    def fake_snap(_gray, points, radius, segment_size, left_radius, right_radius, boundary_mode):
+        captured["boundary_mode"] = boundary_mode
+        return Result()
+
+    monkeypatch.setattr(app_module, "snap_polyline_to_gradient", fake_snap)
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.boundary_snap_combo.setCurrentIndex(window.boundary_snap_combo.findData("darkest"))
+
+        window.recognize_edges()
+
+        assert edge.boundary_snap_mode == "darkest"
+        assert captured["boundary_mode"] == "darkest"
+    finally:
+        window.close()
+
+
 def test_mouse_wheel_adjusts_search_range_for_selected_edge():
     window = _window_with_edge_image()
     try:
@@ -755,6 +782,27 @@ def test_segment_profile_uses_actual_bgr_image_pixels_as_luma():
     assert result.sample_grid.shape == (25, 24)
     assert int(np.nansum(result.sample_counts)) > 300
     assert math.isclose(result.best_offset_px, -7.0, abs_tol=1.5)
+
+
+def test_segment_profile_boundary_modes_pick_peak_valley_and_side_gradients():
+    bright_peak = np.zeros((80, 80), dtype=np.float32)
+    for x in range(80):
+        bright_peak[:, x] = max(0.0, 255.0 - abs(x - 40) * 35.0)
+    dark_valley = np.full((80, 80), 255.0, dtype=np.float32) - bright_peak
+
+    brightest = segment_brightness_profile(bright_peak, (40.0, 10.0), (40.0, 40.0), 12, boundary_mode="brightest")
+    darkest = segment_brightness_profile(dark_valley, (40.0, 10.0), (40.0, 40.0), 12, boundary_mode="darkest")
+    left = segment_brightness_profile(bright_peak, (40.0, 10.0), (40.0, 40.0), 12, boundary_mode="left_gradient")
+    right = segment_brightness_profile(bright_peak, (40.0, 10.0), (40.0, 40.0), 12, boundary_mode="right_gradient")
+
+    assert brightest is not None
+    assert darkest is not None
+    assert left is not None
+    assert right is not None
+    assert math.isclose(brightest.best_offset_px, 0.0, abs_tol=1.0)
+    assert math.isclose(darkest.best_offset_px, 0.0, abs_tol=1.0)
+    assert left.best_offset_px < 0.0
+    assert right.best_offset_px > 0.0
 
 
 def test_snap_polyline_uses_full_segment_area_pixels():
@@ -2588,6 +2636,14 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         assert window.structure_combo.itemText(0) == "구조 선택"
         edge_groups = window.ribbon_tabs.widget(1).findChildren(QGroupBox)
         assert [group.title() for group in edge_groups] == ["경계 인식"]
+        assert [window.boundary_snap_combo.itemText(idx) for idx in range(window.boundary_snap_combo.count())] == [
+            "기울기 최대",
+            "밝은 꼭대기",
+            "어두운 골",
+            "좌측 급경사",
+            "우측 급경사",
+        ]
+        assert window.boundary_snap_combo.currentData() == "max_gradient"
         display_groups = window.ribbon_tabs.widget(3).findChildren(QGroupBox)
         assert [group.title() for group in display_groups][:2] == ["기준선", "이미지 회전"]
         rotation_group = next(group for group in display_groups if group.title() == "이미지 회전")

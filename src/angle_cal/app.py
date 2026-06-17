@@ -92,6 +92,7 @@ class LineRecord:
     search_radius_left_px: Optional[int] = None
     search_radius_right_px: Optional[int] = None
     segment_size_px: Optional[int] = None
+    boundary_snap_mode: str = "max_gradient"
     angle_sector: int = 0
     angle_arc_radius: float = 28.0
     angle_label_side: str = "45"
@@ -151,6 +152,13 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 IMAGE_FORMAT_SUFFIX = ".anglecal.format.json"
 NATURAL_SORT_PART_RE = re.compile(r"(\d+)")
 FAVORITE_DEFAULT_GROUP = "기본"
+BOUNDARY_SNAP_MODE_ITEMS = [
+    ("기울기 최대", "max_gradient"),
+    ("밝은 꼭대기", "brightest"),
+    ("어두운 골", "darkest"),
+    ("좌측 급경사", "left_gradient"),
+    ("우측 급경사", "right_gradient"),
+]
 TOOLTIP_STYLESHEET = (
     "QToolTip { "
     "color: #f8fafc; "
@@ -159,6 +167,17 @@ TOOLTIP_STYLESHEET = (
     "padding: 4px; "
     "}"
 )
+
+
+def normalize_boundary_snap_mode(value: object) -> str:
+    mode = str(value or "max_gradient")
+    valid_modes = {item[1] for item in BOUNDARY_SNAP_MODE_ITEMS}
+    return mode if mode in valid_modes else "max_gradient"
+
+
+def boundary_snap_mode_label(value: object) -> str:
+    mode = normalize_boundary_snap_mode(value)
+    return next(label for label, item_mode in BOUNDARY_SNAP_MODE_ITEMS if item_mode == mode)
 
 
 def natural_sort_key(value: str) -> tuple[tuple[int, int | str], ...]:
@@ -2084,6 +2103,7 @@ def clone_record(record: LineRecord) -> LineRecord:
         search_radius_left_px=record.search_radius_left_px,
         search_radius_right_px=record.search_radius_right_px,
         segment_size_px=record.segment_size_px,
+        boundary_snap_mode=normalize_boundary_snap_mode(record.boundary_snap_mode),
         angle_sector=record.angle_sector,
         angle_arc_radius=record.angle_arc_radius,
         angle_label_side=normalize_angle_label_side(record.angle_label_side),
@@ -2126,6 +2146,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         search_radius_left_px=int(item["search_radius_left_px"]) if item.get("search_radius_left_px") is not None else None,
         search_radius_right_px=int(item["search_radius_right_px"]) if item.get("search_radius_right_px") is not None else None,
         segment_size_px=int(item["segment_size_px"]) if item.get("segment_size_px") is not None else None,
+        boundary_snap_mode=normalize_boundary_snap_mode(item.get("boundary_snap_mode")),
         angle_sector=int(item.get("angle_sector", 0)),
         angle_arc_radius=float(item.get("angle_arc_radius", 28.0)),
         angle_label_side=normalize_angle_label_side(str(item.get("angle_label_side", "top_right"))),
@@ -3047,6 +3068,13 @@ class MainWindow(QMainWindow):
         self.curve_sensitivity_spin.valueChanged.connect(self._edge_detection_settings_changed)
         detect_group.addWidget(QLabel("세그먼트 크기"))
         detect_group.addWidget(self.curve_sensitivity_spin)
+
+        self.boundary_snap_combo = QComboBox()
+        for label, mode in BOUNDARY_SNAP_MODE_ITEMS:
+            self.boundary_snap_combo.addItem(label, mode)
+        self.boundary_snap_combo.currentIndexChanged.connect(self._edge_detection_settings_changed)
+        detect_group.addWidget(QLabel("경계 기준"))
+        detect_group.addWidget(self.boundary_snap_combo)
 
         self.show_search_range_checkbox = QCheckBox("범위 표시")
         self.show_search_range_checkbox.setChecked(True)
@@ -4366,6 +4394,9 @@ class MainWindow(QMainWindow):
         if segment_size_px is None and "curve_sensitivity" in edge_detection:
             segment_size_px = legacy_sensitivity_to_segment_size_px(edge_detection["curve_sensitivity"])
         self.curve_sensitivity_spin.setValue(int(segment_size_px or self.curve_sensitivity_spin.value()))
+        boundary_mode_index = self.boundary_snap_combo.findData(normalize_boundary_snap_mode(edge_detection.get("boundary_snap_mode")))
+        if boundary_mode_index >= 0:
+            self.boundary_snap_combo.setCurrentIndex(boundary_mode_index)
         self.show_search_range_checkbox.setChecked(bool(edge_detection.get("show_search_range", True)))
         cd_mode = payload.get("cd_segment_mode")
         cd_index = self.cd_segment_combo.findData(cd_mode)
@@ -4502,6 +4533,7 @@ class MainWindow(QMainWindow):
                 "search_radius_left_px": self.search_radius_left_spin.value(),
                 "search_radius_right_px": self.search_radius_right_spin.value(),
                 "segment_size_px": self.curve_sensitivity_spin.value(),
+                "boundary_snap_mode": self.boundary_snap_combo.currentData(),
                 "show_search_range": self.show_search_range_checkbox.isChecked(),
             },
             "visibility": self.visibility,
@@ -5132,6 +5164,7 @@ class MainWindow(QMainWindow):
             search_radius_left_px=self.search_radius_left_spin.value() if hasattr(self, "search_radius_left_spin") else None,
             search_radius_right_px=self.search_radius_right_spin.value() if hasattr(self, "search_radius_right_spin") else None,
             segment_size_px=self.curve_sensitivity_spin.value() if hasattr(self, "curve_sensitivity_spin") else None,
+            boundary_snap_mode=self.boundary_snap_combo.currentData() if hasattr(self, "boundary_snap_combo") else "max_gradient",
             edge_segmented=False,
             angle_sector=self.default_angle_sector,
             angle_arc_radius=self.default_angle_arc_radius,
@@ -5221,6 +5254,7 @@ class MainWindow(QMainWindow):
             radius,
             left_radius,
             right_radius,
+            normalize_boundary_snap_mode(record.boundary_snap_mode),
         )
         self._show_segment_profile_mode()
         if result is None:
@@ -5231,7 +5265,7 @@ class MainWindow(QMainWindow):
             self.segment_profile_label.setText("")
             self.segment_profile_label.setPixmap(pixmap)
             self.segment_profile_label.setToolTip(
-                f"{record_id} 세그먼트 {segment_index + 1}: 최강 변화 위치 {result.best_offset_px:.1f}px"
+                f"{record_id} 세그먼트 {segment_index + 1}: {boundary_snap_mode_label(record.boundary_snap_mode)} 위치 {result.best_offset_px:.1f}px"
             )
         self.measurements_dock.show()
         self.measurements_dock.raise_()
@@ -5255,10 +5289,11 @@ class MainWindow(QMainWindow):
         title_flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         painter.setPen(QColor("#e5e7eb"))
         length_px = line_length(start, end)
+        mode_label = boundary_snap_mode_label(self.records[record_id].boundary_snap_mode) if record_id in self.records else "경계 기준"
         painter.drawText(
             QRectF(12, 8, width - 24, 22),
             title_flags,
-            f"{record_id} seg {segment_index + 1}  L {length_px:.1f}px  peak {result.best_offset_px:.1f}px",
+            f"{record_id} seg {segment_index + 1}  L {length_px:.1f}px  {mode_label} {result.best_offset_px:.1f}px",
         )
 
         graph_rect = QRectF(38, 38, width - 58, 92)
@@ -5505,6 +5540,7 @@ class MainWindow(QMainWindow):
                 segment_size_px,
                 left_radius,
                 right_radius,
+                normalize_boundary_snap_mode(record.boundary_snap_mode),
             )
             if result is None:
                 continue
@@ -5516,7 +5552,7 @@ class MainWindow(QMainWindow):
         self._update_search_range_overlay()
         self._apply_visibility()
         target_text = "선택한" if selected_edge_ids else "전체"
-        self._set_status(f"{moved}/{len(edge_records)}개 {target_text} 경계선을 선택한 형태로 명도 변화 최대 위치에 맞췄습니다.")
+        self._set_status(f"{moved}/{len(edge_records)}개 {target_text} 경계선을 선택한 경계 기준으로 맞췄습니다.")
 
     def _edge_search_radius(self, record: LineRecord) -> int:
         return int(record.search_radius_px or self.search_radius_spin.value())
@@ -6327,6 +6363,7 @@ class MainWindow(QMainWindow):
                 "search_radius_split": record.search_radius_split,
                 "search_radius_left_px": record.search_radius_left_px,
                 "search_radius_right_px": record.search_radius_right_px,
+                "boundary_snap_mode": record.boundary_snap_mode,
                 "angle_sector": record.angle_sector,
                 "angle_arc_radius": record.angle_arc_radius,
                 "angle_label_side": record.angle_label_side,
@@ -6376,6 +6413,7 @@ class MainWindow(QMainWindow):
             right_radius = self.format_clipboard.get("search_radius_right_px")
             record.search_radius_left_px = int(left_radius) if left_radius is not None else None
             record.search_radius_right_px = int(right_radius) if right_radius is not None else None
+            record.boundary_snap_mode = normalize_boundary_snap_mode(self.format_clipboard.get("boundary_snap_mode", record.boundary_snap_mode))
             if record.kind == "edge":
                 record.angle_sector = int(self.format_clipboard.get("angle_sector", record.angle_sector))
                 record.angle_arc_radius = float(self.format_clipboard.get("angle_arc_radius", record.angle_arc_radius))
@@ -6737,11 +6775,13 @@ class MainWindow(QMainWindow):
             left_radius = self.search_radius_left_spin.value()
             right_radius = self.search_radius_right_spin.value()
             segment_size_px = self.curve_sensitivity_spin.value()
+            boundary_mode = normalize_boundary_snap_mode(self.boundary_snap_combo.currentData())
             apply_radius = force_all or sender is self.search_radius_spin
             apply_split = force_all or sender is self.split_search_range_checkbox
             apply_left = force_all or sender is self.search_radius_left_spin
             apply_right = force_all or sender is self.search_radius_right_spin
             apply_segment = force_all or sender is self.curve_sensitivity_spin
+            apply_boundary_mode = force_all or sender is self.boundary_snap_combo
             for edge in selected_edges:
                 if apply_radius:
                     edge.search_radius_px = radius
@@ -6758,6 +6798,8 @@ class MainWindow(QMainWindow):
                     edge.search_radius_right_px = right_radius
                 if apply_segment:
                     edge.segment_size_px = segment_size_px
+                if apply_boundary_mode:
+                    edge.boundary_snap_mode = boundary_mode
         self._update_search_range_overlay()
         if sender in {
             self.search_radius_spin,
@@ -6765,6 +6807,7 @@ class MainWindow(QMainWindow):
             self.search_radius_left_spin,
             self.search_radius_right_spin,
             self.curve_sensitivity_spin,
+            self.boundary_snap_combo,
             None,
         }:
             self._show_detection_preview()
@@ -6773,12 +6816,13 @@ class MainWindow(QMainWindow):
         left_radius = self.search_radius_left_spin.value()
         right_radius = self.search_radius_right_spin.value()
         segment_size_px = self.curve_sensitivity_spin.value()
+        boundary_label = boundary_snap_mode_label(self.boundary_snap_combo.currentData())
         target_text = f"선택 경계선 {len(selected_edges)}개" if selected_edges else "기본값"
         range_text = f"좌 {left_radius}px / 우 {right_radius}px" if split else f"양쪽 {radius}px"
         if self.show_search_range_checkbox.isChecked():
-            self._set_status(f"{target_text} 경계인식 범위: {range_text}, 세그먼트 크기 {segment_size_px}px")
+            self._set_status(f"{target_text} 경계인식 범위: {range_text}, 세그먼트 {segment_size_px}px, 기준 {boundary_label}")
         else:
-            self._set_status(f"{target_text} 경계인식 범위: {range_text}, 세그먼트 크기 {segment_size_px}px, 표시 꺼짐")
+            self._set_status(f"{target_text} 경계인식 범위: {range_text}, 세그먼트 {segment_size_px}px, 기준 {boundary_label}, 표시 꺼짐")
 
     def _update_split_search_controls_enabled(self) -> None:
         if not hasattr(self, "split_search_range_checkbox"):
@@ -7011,11 +7055,13 @@ class MainWindow(QMainWindow):
         left_values = [self._edge_search_radii(edge)[0] for edge in selected_edges]
         right_values = [self._edge_search_radii(edge)[1] for edge in selected_edges]
         segment_values = [self._edge_segment_size(edge) for edge in selected_edges]
+        boundary_values = [normalize_boundary_snap_mode(edge.boundary_snap_mode) for edge in selected_edges]
         first_radius = radius_values[0]
         first_split = split_values[0]
         first_left = left_values[0]
         first_right = right_values[0]
         first_segment = segment_values[0]
+        first_boundary = boundary_values[0]
         self._updating_detection_controls = True
         try:
             if all(value == first_radius for value in radius_values):
@@ -7028,6 +7074,10 @@ class MainWindow(QMainWindow):
                 self.search_radius_right_spin.setValue(first_right)
             if all(value == first_segment for value in segment_values):
                 self.curve_sensitivity_spin.setValue(first_segment)
+            if all(value == first_boundary for value in boundary_values):
+                boundary_index = self.boundary_snap_combo.findData(first_boundary)
+                if boundary_index >= 0:
+                    self.boundary_snap_combo.setCurrentIndex(boundary_index)
             mode_values = ["line" for _edge in selected_edges]
             if all(value == mode_values[0] for value in mode_values):
                 mode_index = self.edge_mode_combo.findData(mode_values[0])
@@ -7073,7 +7123,9 @@ class MainWindow(QMainWindow):
         self._show_measurements_mode()
         segment_size_px = self.curve_sensitivity_spin.value()
         self.detection_preview_label.setText(
-            f"경계인식 범위: {self._search_range_label()}\n세그먼트 크기: {segment_size_px}px"
+            f"경계인식 범위: {self._search_range_label()}\n"
+            f"세그먼트 크기: {segment_size_px}px\n"
+            f"경계 기준: {boundary_snap_mode_label(self.boundary_snap_combo.currentData())}"
         )
         self.measurements_dock.show()
         self.measurements_dock.raise_()

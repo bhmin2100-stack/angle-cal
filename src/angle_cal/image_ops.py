@@ -290,6 +290,7 @@ def segment_brightness_profile(
     search_radius_px: int = 30,
     search_radius_left_px: Optional[int] = None,
     search_radius_right_px: Optional[int] = None,
+    boundary_mode: str = "max_gradient",
 ) -> Optional[SegmentProfileResult]:
     left_radius_px, right_radius_px = _resolve_search_radii(
         search_radius_px,
@@ -338,7 +339,7 @@ def segment_brightness_profile(
     gradient = _area_gradient_profile(gradient_grid, counts, offsets, min_valid_samples)
     if gradient is None:
         gradient = np.abs(np.gradient(filled)).astype(np.float32)
-    best_index = int(np.nanargmax(gradient))
+    best_index = _boundary_profile_index(offsets, filled, gradient, boundary_mode)
     return SegmentProfileResult(
         offsets=offsets,
         distances=distances,
@@ -349,6 +350,38 @@ def segment_brightness_profile(
         best_offset_px=float(offsets[best_index]),
         best_gradient=float(gradient[best_index]),
     )
+
+
+def _boundary_profile_index(
+    offsets: np.ndarray,
+    intensity_profile: np.ndarray,
+    gradient_profile: np.ndarray,
+    boundary_mode: str,
+) -> int:
+    mode = str(boundary_mode or "max_gradient")
+    if mode == "brightest":
+        return _nanarg_profile(intensity_profile, maximize=True)
+    if mode == "darkest":
+        return _nanarg_profile(intensity_profile, maximize=False)
+    if mode == "left_gradient":
+        return _nanarg_profile(gradient_profile, maximize=True, mask=offsets < 0)
+    if mode == "right_gradient":
+        return _nanarg_profile(gradient_profile, maximize=True, mask=offsets > 0)
+    return _nanarg_profile(gradient_profile, maximize=True)
+
+
+def _nanarg_profile(values: np.ndarray, maximize: bool, mask: Optional[np.ndarray] = None) -> int:
+    valid = np.isfinite(values)
+    if mask is not None:
+        valid &= mask
+    if not np.any(valid):
+        valid = np.isfinite(values)
+    if not np.any(valid):
+        return 0
+    indexes = np.flatnonzero(valid)
+    subset = values[indexes]
+    selected = int(np.nanargmax(subset) if maximize else np.nanargmin(subset))
+    return int(indexes[selected])
 
 
 def _segment_pixel_patch(
@@ -530,6 +563,7 @@ def snap_polyline_to_gradient(
     segment_size_px: float = 9.0,
     search_radius_left_px: Optional[int] = None,
     search_radius_right_px: Optional[int] = None,
+    boundary_mode: str = "max_gradient",
 ) -> Optional[SnapCurveResult]:
     """Trace a connected polyline boundary near user-drawn connected segments.
 
@@ -574,6 +608,7 @@ def snap_polyline_to_gradient(
             search_radius_px,
             left_radius_px,
             right_radius_px,
+            boundary_mode,
         )
         if profile is None:
             continue
