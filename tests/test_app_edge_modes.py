@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QWheelEvent
-from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QGroupBox, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QGroupBox, QLabel, QMessageBox, QPushButton
 
 import angle_cal.app as app_module
 from angle_cal.app import DataExportOptions, LineRecord, MainWindow, ScalePreset, StructureTemplate, record_points, structure_template_from_dict, structure_template_to_dict
@@ -67,7 +67,6 @@ def test_tooltips_use_readable_contrast():
 def test_recognize_segments_line_mode_by_segment_size():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window.curve_sensitivity_spin.setValue(10)
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         _select_edges(window)
@@ -87,7 +86,6 @@ def test_recognize_segments_line_mode_by_segment_size():
 def test_repeated_recognition_uses_stable_original_edge_path():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window.curve_sensitivity_spin.setValue(10)
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         _select_edges(window)
@@ -108,7 +106,6 @@ def test_repeated_recognition_uses_stable_original_edge_path():
 def test_moving_segmented_edge_shifts_recognition_path():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window.curve_sensitivity_spin.setValue(10)
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         _select_edges(window)
@@ -141,7 +138,6 @@ def test_connected_line_edges_recognize_independently(monkeypatch):
     monkeypatch.setattr(app_module, "snap_polyline_to_gradient", fake_snap)
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window._create_edge_line((70.0, 20.0), (70.0, 60.0))
         window._create_edge_line((70.0, 60.0), (70.0, 100.0))
         _select_edges(window)
@@ -165,7 +161,6 @@ def test_connected_line_edges_recognize_independently(monkeypatch):
 def test_recognize_only_selected_edges():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         window._create_edge_line((45.0, 20.0), (45.0, 100.0))
         window.canvas.redraw_lines(list(window.records.values()))
@@ -183,7 +178,6 @@ def test_recognize_only_selected_edges():
 def test_recognize_all_edges_when_no_edge_is_selected():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         window._create_edge_line((45.0, 20.0), (45.0, 100.0))
         window.canvas.redraw_lines(list(window.records.values()))
@@ -199,7 +193,6 @@ def test_recognize_all_edges_when_no_edge_is_selected():
 def test_enter_recognizes_selected_edge_only():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         window._create_edge_line((45.0, 20.0), (45.0, 100.0))
         window.canvas.redraw_lines(list(window.records.values()))
@@ -218,7 +211,6 @@ def test_enter_recognizes_selected_edge_only():
 def test_enter_without_selection_recognizes_all_edges():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         window._create_edge_line((75.0, 20.0), (75.0, 100.0))
         window.canvas.redraw_lines(list(window.records.values()))
@@ -242,7 +234,6 @@ def test_recognize_all_edges_over_ten_requires_confirmation(monkeypatch):
     monkeypatch.setattr(app_module.QMessageBox, "question", _question)
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         for idx in range(10):
             window._create_edge_line((30.0 + idx, 20.0), (30.0 + idx, 100.0))
         window.canvas.redraw_lines(list(window.records.values()))
@@ -530,11 +521,10 @@ def test_mouse_wheel_adjusts_last_edge_and_next_edge_default_when_none_selected(
         window.close()
 
 
-def test_edge_mode_combo_keeps_only_straight_edge_mode():
+def test_edge_shape_control_is_removed_and_edges_stay_straight():
     window = _window_with_edge_image()
     try:
-        assert window.edge_mode_combo.findData("polyline") == -1
-        assert window.edge_mode_combo.currentData() == "line"
+        assert not hasattr(window, "edge_mode_combo")
 
         window._create_edge_line((70.0, 20.0), (70.0, 100.0), [(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)])
 
@@ -596,7 +586,6 @@ def test_straight_edge_still_shows_single_reference_angle():
     window = _window_with_edge_image()
     try:
         window._create_reference_line((10.0, 10.0), (100.0, 10.0))
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window._create_edge_line((70.0, 20.0), (70.0, 100.0))
         window.canvas.redraw_lines(list(window.records.values()))
 
@@ -2653,10 +2642,11 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         assert ribbon_layout.itemAt(0).widget() is window.ribbon_tabs
         assert ribbon_layout.itemAt(1).layout() is not None
         assert window.tool_buttons["edge"].text() == "경계선"
-        assert window.edge_mode_combo.currentData() == "line"
         assert window.structure_combo.itemText(0) == "구조 선택"
         edge_groups = window.ribbon_tabs.widget(1).findChildren(QGroupBox)
         assert [group.title() for group in edge_groups] == ["경계 인식"]
+        edge_labels = [label.text() for label in edge_groups[0].findChildren(QLabel)]
+        assert "경계 형태" not in edge_labels
         assert [window.boundary_snap_combo.itemText(idx) for idx in range(window.boundary_snap_combo.count())] == [
             "기울기 최대",
             "밝은 꼭대기",
@@ -2966,7 +2956,6 @@ def test_split_segmented_edge_selects_independent_edge_for_detection_settings():
 def test_point_handles_edit_line_endpoints_and_delete_segmented_edge_points():
     window = _window_with_edge_image()
     try:
-        window.edge_mode_combo.setCurrentIndex(window.edge_mode_combo.findData("line"))
         window._create_edge_line((20.0, 60.0), (120.0, 60.0))
         line_edge = next(record for record in window.records.values() if record.kind == "edge")
         window.canvas.redraw_lines(list(window.records.values()))

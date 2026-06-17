@@ -3025,13 +3025,7 @@ class MainWindow(QMainWindow):
 
         edge_page = page()
         detect_group = group(edge_page, "경계 인식")
-
-        self.edge_mode_combo = QComboBox()
-        self.edge_mode_combo.addItem("직선", "line")
-        self.edge_mode_combo.currentIndexChanged.connect(self._edge_mode_changed)
-        detect_group.addWidget(QLabel("경계 형태"))
-        detect_group.addWidget(self.edge_mode_combo)
-        self.canvas.set_edge_draw_mode(self.edge_mode_combo.currentData())
+        self.canvas.set_edge_draw_mode("line")
 
         self.search_radius_spin = QSpinBox()
         self.search_radius_spin.setRange(2, 300)
@@ -4383,9 +4377,6 @@ class MainWindow(QMainWindow):
         self.nm_per_px = payload.get("nm_per_px")
         self._restore_image_adjustments(payload.get("image_adjustments"), refresh=False)
         edge_detection = payload.get("edge_detection", {})
-        mode_index = self.edge_mode_combo.findData("line")
-        if mode_index >= 0:
-            self.edge_mode_combo.setCurrentIndex(mode_index)
         self.search_radius_spin.setValue(int(edge_detection.get("search_radius_px", self.search_radius_spin.value())))
         self.split_search_range_checkbox.setChecked(bool(edge_detection.get("search_radius_split", False)))
         self.search_radius_left_spin.setValue(int(edge_detection.get("search_radius_left_px", self.search_radius_left_spin.value())))
@@ -6621,38 +6612,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "tool_buttons") and tool in self.tool_buttons:
             self.tool_buttons[tool].setChecked(True)
 
-    def _edge_mode_changed(self) -> None:
-        mode = "line"
-        if self._updating_detection_controls:
-            self.canvas.set_edge_draw_mode(mode)
-            return
-        self.canvas.set_edge_draw_mode(mode)
-        selected_ids = set(self.canvas.selected_line_ids())
-        changed = 0
-        if selected_ids:
-            self._sync_records_from_canvas()
-            self.save_undo_snapshot()
-            for record_id in selected_ids:
-                record = self.records.get(record_id)
-                if record is None or record.kind != "edge":
-                    continue
-                if record.edge_mode != "line":
-                    record.edge_mode = "line"
-                    changed += 1
-            if changed:
-                self.canvas.redraw_lines(list(self.records.values()))
-                for record_id in selected_ids:
-                    item = self.canvas.line_items.get(record_id)
-                    if item is not None:
-                        item.setSelected(True)
-                self.calculate_angles(reset_hidden=False)
-                self._update_search_range_overlay()
-                self._apply_visibility()
-        if changed:
-            self._set_status(f"선택한 경계선 {changed}개를 직선 모드로 바꿨습니다.")
-        else:
-            self._set_status("경계 형태: 직선. 경계선 도구에서 드래그로 선분을 긋습니다.")
-
     def apply_selected_style(self) -> None:
         if not hasattr(self, "stroke_color_combo"):
             return
@@ -7078,11 +7037,6 @@ class MainWindow(QMainWindow):
                 boundary_index = self.boundary_snap_combo.findData(first_boundary)
                 if boundary_index >= 0:
                     self.boundary_snap_combo.setCurrentIndex(boundary_index)
-            mode_values = ["line" for _edge in selected_edges]
-            if all(value == mode_values[0] for value in mode_values):
-                mode_index = self.edge_mode_combo.findData(mode_values[0])
-                if mode_index >= 0:
-                    self.edge_mode_combo.setCurrentIndex(mode_index)
         finally:
             self._updating_detection_controls = False
         self._update_split_search_controls_enabled()
