@@ -400,6 +400,47 @@ def test_recognition_passes_selected_boundary_snap_mode(monkeypatch):
         window.close()
 
 
+def test_boundary_offset_uses_image_axis_direction():
+    vertical_top_down = MainWindow._apply_boundary_offset([(70.0, 20.0), (70.0, 100.0)], 5)
+    vertical_bottom_up = MainWindow._apply_boundary_offset([(70.0, 100.0), (70.0, 20.0)], 5)
+    horizontal_left_right = MainWindow._apply_boundary_offset([(20.0, 60.0), (120.0, 60.0)], 5)
+    horizontal_right_left = MainWindow._apply_boundary_offset([(120.0, 60.0), (20.0, 60.0)], 5)
+    vertical_negative = MainWindow._apply_boundary_offset([(70.0, 20.0), (70.0, 100.0)], -5)
+    horizontal_negative = MainWindow._apply_boundary_offset([(20.0, 60.0), (120.0, 60.0)], -5)
+
+    assert vertical_top_down == [(75.0, 20.0), (75.0, 100.0)]
+    assert vertical_bottom_up == [(75.0, 100.0), (75.0, 20.0)]
+    assert horizontal_left_right == [(20.0, 55.0), (120.0, 55.0)]
+    assert horizontal_right_left == [(120.0, 55.0), (20.0, 55.0)]
+    assert vertical_negative == [(65.0, 20.0), (65.0, 100.0)]
+    assert horizontal_negative == [(20.0, 65.0), (120.0, 65.0)]
+
+
+def test_recognition_applies_boundary_offset_after_snap(monkeypatch):
+    class Result:
+        points = [(81.0, 20.0), (81.0, 100.0)]
+
+    def fake_snap(_gray, _points, _radius, _segment_size, _left_radius, _right_radius, _boundary_mode):
+        return Result()
+
+    monkeypatch.setattr(app_module, "snap_polyline_to_gradient", fake_snap)
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((70.0, 20.0), (70.0, 100.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.boundary_offset_spin.setValue(4)
+
+        window.recognize_edges()
+
+        assert edge.boundary_offset_px == 4
+        assert edge.start == (85.0, 20.0)
+        assert edge.end == (85.0, 100.0)
+    finally:
+        window.close()
+
+
 def test_segment_size_bulk_change_does_not_overwrite_boundary_snap_modes():
     window = _window_with_edge_image()
     try:
@@ -409,6 +450,8 @@ def test_segment_size_bulk_change_does_not_overwrite_boundary_snap_modes():
         edges = [record for record in window.records.values() if record.kind == "edge"]
         edges[0].boundary_snap_mode = "brightest"
         edges[1].boundary_snap_mode = "darkest"
+        edges[0].boundary_offset_px = 2
+        edges[1].boundary_offset_px = -3
         for edge in edges:
             window.canvas.line_items[edge.id].setSelected(True)
 
@@ -417,6 +460,7 @@ def test_segment_size_bulk_change_does_not_overwrite_boundary_snap_modes():
 
         assert [edge.segment_size_px for edge in edges] == [17, 17]
         assert [edge.boundary_snap_mode for edge in edges] == ["brightest", "darkest"]
+        assert [edge.boundary_offset_px for edge in edges] == [2, -3]
     finally:
         window.close()
 
