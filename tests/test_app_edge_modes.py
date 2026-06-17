@@ -1482,6 +1482,38 @@ def test_data_export_rows_use_signed_main_guide_display_ids():
         window.close()
 
 
+def test_data_export_left_to_right_sorts_by_objects_before_guides():
+    window = _window_with_edge_image()
+    try:
+        left_edge = LineRecord("E_left", "edge", (40.0, 10.0), (40.0, 110.0))
+        right_edge = LineRecord("E_right", "edge", (100.0, 10.0), (100.0, 110.0))
+        top = LineRecord("G_top", "guide", (0.0, 30.0), (150.0, 30.0), axis="horizontal")
+        main = LineRecord("G_main", "guide", (0.0, 60.0), (150.0, 60.0), axis="horizontal", is_main_guide=True)
+        bottom = LineRecord("G_bottom", "guide", (0.0, 90.0), (150.0, 90.0), axis="horizontal")
+        records = [right_edge, left_edge, bottom, main, top]
+
+        rows = window._export_rows_for_records(
+            "image.png",
+            records,
+            None,
+            window._export_group_info(records, "x"),
+            "x",
+        )["intersection_angle"]
+
+        assert [row["경계ID"] for row in rows] == ["E_left", "E_left", "E_left", "E_right", "E_right", "E_right"]
+        assert [row["가이드번호"] for row in rows] == [-1, 0, 1, -1, 0, 1]
+        assert [row["개체"] for row in rows] == [
+            "E_left|G-1",
+            "E_left|G0",
+            "E_left|G1",
+            "E_right|G-1",
+            "E_right|G0",
+            "E_right|G1",
+        ]
+    finally:
+        window.close()
+
+
 def test_cd_label_text_and_position_can_be_edited(monkeypatch):
     observed_live_values: list[str] = []
 
@@ -1568,6 +1600,9 @@ def test_data_export_sorts_by_group_item_and_position(tmp_path):
         assert list(sheets) == ["선각도", "교점각도", "CD길이", "경계길이"]
         assert [row["그룹"] for row in sheets["선각도"]] == ["G1", "G2"]
         assert [row["경계ID"] for row in sheets["선각도"]] == [edges[1].id, edges[0].id]
+        assert [row["개체"] for row in sheets["선각도"]] == [edges[1].id, edges[0].id]
+        assert sheets["교점각도"][0]["개체"] == f"{edges[1].id}|G1"
+        assert sheets["CD길이"][0]["개체"] == f"{edges[1].id}|{edges[0].id}|G1"
         assert len(sheets["교점각도"]) == 2
         assert len(sheets["CD길이"]) == 1
         assert sheets["CD길이"][0]["길이_px"] == 60.0
@@ -1578,6 +1613,7 @@ def test_data_export_sorts_by_group_item_and_position(tmp_path):
             names = set(archive.namelist())
             assert "xl/workbook.xml" in names
             assert "xl/worksheets/sheet1.xml" in names
+            assert "<t>개체</t>" in archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
     finally:
         window.close()
 

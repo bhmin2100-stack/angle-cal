@@ -2428,6 +2428,7 @@ EXPORT_COLUMNS = [
     "순서",
     "항목",
     "측정ID",
+    "개체",
     "경계ID",
     "가이드ID",
     "가이드번호",
@@ -4828,6 +4829,33 @@ class MainWindow(QMainWindow):
             "항목": item_type,
         }
 
+    @staticmethod
+    def _guide_is_vertical(guide: LineRecord) -> bool:
+        return abs(guide.end[1] - guide.start[1]) > abs(guide.end[0] - guide.start[0])
+
+    @staticmethod
+    def _intersection_object_point(edge: LineRecord, guide: LineRecord) -> Point:
+        edge_center = record_center(edge)
+        guide_center = record_center(guide)
+        if MainWindow._guide_is_vertical(guide):
+            return (guide_center[0], edge_center[1])
+        return (edge_center[0], guide_center[1])
+
+    @staticmethod
+    def _cd_object_point(edge_a: LineRecord, edge_b: LineRecord, guide: LineRecord) -> Point:
+        edge_a_center = record_center(edge_a)
+        edge_b_center = record_center(edge_b)
+        guide_center = record_center(guide)
+        if MainWindow._guide_is_vertical(guide):
+            return (guide_center[0], (edge_a_center[1] + edge_b_center[1]) / 2.0)
+        return ((edge_a_center[0] + edge_b_center[0]) / 2.0, guide_center[1])
+
+    @staticmethod
+    def _set_export_object(row: dict[str, object], object_label: str, object_point: Point) -> None:
+        row["개체"] = object_label
+        row["_object_x_px"] = float(object_point[0])
+        row["_object_y_px"] = float(object_point[1])
+
     def _export_rows_for_records(
         self,
         image_name: str,
@@ -4855,6 +4883,7 @@ class MainWindow(QMainWindow):
                 row.update(
                     {
                         "측정ID": f"{edge.id}_to_{reference_id}",
+                        "개체": edge.id,
                         "경계ID": edge.id,
                         "가이드ID": "",
                         "가이드번호": "",
@@ -4865,11 +4894,13 @@ class MainWindow(QMainWindow):
                         "길이_nm": "",
                     }
                 )
+                self._set_export_object(row, edge.id, center)
                 rows["line_angle"].append(row)
             length_row = self._export_base_row(image_name, "경계길이", [edge], group_info)
             length_row.update(
                 {
                     "측정ID": f"{edge.id}_length",
+                    "개체": edge.id,
                     "경계ID": edge.id,
                     "가이드ID": "",
                     "가이드번호": "",
@@ -4880,6 +4911,7 @@ class MainWindow(QMainWindow):
                     "길이_nm": length_px * nm_per_px if nm_per_px else "",
                 }
             )
+            self._set_export_object(length_row, edge.id, center)
             rows["edge_length"].append(length_row)
 
         for edge in edges:
@@ -4895,6 +4927,7 @@ class MainWindow(QMainWindow):
                     row.update(
                         {
                             "측정ID": f"{edge.id}_x_{display_guide_id}{suffix}",
+                            "개체": f"{edge.id}|{display_guide_id}",
                             "경계ID": edge.id,
                             "가이드ID": display_guide_id,
                             "가이드번호": display_guide_number,
@@ -4905,6 +4938,7 @@ class MainWindow(QMainWindow):
                             "길이_nm": "",
                         }
                     )
+                    self._set_export_object(row, f"{edge.id}|{display_guide_id}", self._intersection_object_point(edge, guide))
                     rows["intersection_angle"].append(row)
 
         mode = str(self.cd_segment_combo.currentData())
@@ -4937,6 +4971,7 @@ class MainWindow(QMainWindow):
                 row.update(
                     {
                         "측정ID": f"CD_{display_guide_id}_{idx + 1}_{edge_a_id}_{edge_b_id}",
+                        "개체": f"{edge_a_id}|{edge_b_id}|{display_guide_id}",
                         "경계ID": f"{edge_a_id}|{edge_b_id}",
                         "가이드ID": display_guide_id,
                         "가이드번호": display_guide_number,
@@ -4947,6 +4982,7 @@ class MainWindow(QMainWindow):
                         "길이_nm": length_px * nm_per_px if nm_per_px else "",
                     }
                 )
+                self._set_export_object(row, f"{edge_a_id}|{edge_b_id}|{display_guide_id}", self._cd_object_point(edge_a, edge_b, guide))
                 rows["cd_length"].append(row)
 
         for item_rows in rows.values():
@@ -4957,15 +4993,12 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _export_row_sort_key(row: dict[str, object], priority: str) -> tuple[object, ...]:
-        guide_number = row.get("가이드번호")
-        has_guide_number = isinstance(guide_number, (int, float)) and not isinstance(guide_number, bool)
-        guide_sort = int(guide_number) if has_guide_number else 0
-        guide_bucket = 0 if has_guide_number else 1
+        object_x = float(row.get("_object_x_px", row["x_px"]))
+        object_y = float(row.get("_object_y_px", row["y_px"]))
         return (
             int(row["그룹번호"]),
-            guide_bucket,
-            guide_sort,
-            *position_key((float(row["x_px"]), float(row["y_px"])), priority),
+            *position_key((object_x, object_y), priority),
+            str(row.get("개체", "")),
             str(row["측정ID"]),
         )
 
