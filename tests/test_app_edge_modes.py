@@ -1657,7 +1657,7 @@ def test_rotate_selected_thumbnails_updates_per_image_state_without_overwriting_
             "image_rotation_degrees": 0.0,
         }
 
-        window.rotate_selected_thumbnails(90.0)
+        window.apply_image_rotation(90.0, "90° 회전")
 
         assert window.image_states[str(path_a)]["image_rotation_degrees"] == 90.0
         assert window.image_states[str(path_b)]["image_rotation_degrees"] == 90.0
@@ -2590,6 +2590,8 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         assert [group.title() for group in edge_groups] == ["경계 인식"]
         display_groups = window.ribbon_tabs.widget(3).findChildren(QGroupBox)
         assert [group.title() for group in display_groups][:2] == ["기준선", "이미지 회전"]
+        rotation_group = next(group for group in display_groups if group.title() == "이미지 회전")
+        assert [button.text() for button in rotation_group.findChildren(QPushButton)] == ["90° 회전", "회전"]
         assert window.thumbnail_columns_combo.findData(3) >= 0
         file_groups = window.ribbon_tabs.widget(0).findChildren(QGroupBox)
         file_group_titles = [group.title() for group in file_groups]

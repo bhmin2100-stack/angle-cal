@@ -3127,32 +3127,21 @@ class MainWindow(QMainWindow):
         reference_group.addWidget(align_button)
 
         rotation_group = group(display_page, "이미지 회전")
-        rotate_left_button = QPushButton("좌 90°")
-        rotate_left_button.clicked.connect(lambda: self.rotate_current_image(90.0, "현재 이미지 좌 90°"))
-        rotate_right_button = QPushButton("우 90°")
-        rotate_right_button.clicked.connect(lambda: self.rotate_current_image(-90.0, "현재 이미지 우 90°"))
+        rotate_90_button = QPushButton("90° 회전")
+        rotate_90_button.clicked.connect(lambda: self.apply_image_rotation(90.0, "90° 회전"))
         self.rotation_angle_spin = QDoubleSpinBox()
         self.rotation_angle_spin.setRange(-360.0, 360.0)
         self.rotation_angle_spin.setDecimals(3)
         self.rotation_angle_spin.setSingleStep(0.1)
         self.rotation_angle_spin.setSuffix("°")
-        current_rotate_button = QPushButton("현재 적용")
-        current_rotate_button.clicked.connect(lambda: self.rotate_current_image(float(self.rotation_angle_spin.value()), "현재 이미지 값 회전"))
-        selected_rotate_button = QPushButton("썸네일 적용")
-        selected_rotate_button.clicked.connect(lambda: self.rotate_selected_thumbnails(float(self.rotation_angle_spin.value())))
-        selected_left_button = QPushButton("선택 좌90")
-        selected_left_button.clicked.connect(lambda: self.rotate_selected_thumbnails(90.0))
-        selected_right_button = QPushButton("선택 우90")
-        selected_right_button.clicked.connect(lambda: self.rotate_selected_thumbnails(-90.0))
+        rotate_angle_button = QPushButton("회전")
+        rotate_angle_button.clicked.connect(lambda: self.apply_image_rotation(float(self.rotation_angle_spin.value()), "각도 회전"))
         self.rotation_status_label = QLabel("회전: -")
         for widget in [
-            rotate_left_button,
-            rotate_right_button,
+            rotate_90_button,
+            QLabel("각도"),
             self.rotation_angle_spin,
-            current_rotate_button,
-            selected_left_button,
-            selected_right_button,
-            selected_rotate_button,
+            rotate_angle_button,
             self.rotation_status_label,
         ]:
             rotation_group.addWidget(widget)
@@ -5391,6 +5380,18 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _minimal_axis_rotation(angle: float, target: float) -> float:
         return ((float(angle) - float(target) + 90.0) % 180.0) - 90.0
+
+    def apply_image_rotation(self, angle_degrees: float, reason: str = "이미지 회전") -> None:
+        selected_paths = [
+            path
+            for path in self.browser_image_paths
+            if path in self.selected_thumbnail_paths
+        ]
+        applies_to_thumbnails = bool(selected_paths) and selected_paths != [self.image_path]
+        if applies_to_thumbnails:
+            self.rotate_selected_thumbnails(angle_degrees)
+            return
+        self.rotate_current_image(angle_degrees, reason)
 
     def rotate_current_image(self, angle_degrees: float, reason: str = "현재 이미지 회전") -> None:
         if self.image_bgr is None:
