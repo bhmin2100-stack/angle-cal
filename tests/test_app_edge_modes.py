@@ -710,14 +710,22 @@ def test_segment_selection_tool_shows_profile_in_measurement_dock():
 
         window.set_current_tool("segment")
         view_pos = QPointF(window.canvas.mapFromScene(QPointF(70.0, 40.0)))
-        event = QMouseEvent(
+        press = QMouseEvent(
             QEvent.Type.MouseButtonPress,
             view_pos,
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.LeftButton,
             Qt.KeyboardModifier.NoModifier,
         )
-        window.canvas.mousePressEvent(event)
+        release = QMouseEvent(
+            QEvent.Type.MouseButtonRelease,
+            view_pos,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        window.canvas.mousePressEvent(press)
+        window.canvas.mouseReleaseEvent(release)
 
         assert window.selected_segment == ("E1", 0)
         assert window.canvas.selected_segment_item is not None
@@ -751,17 +759,95 @@ def test_segment_selection_accepts_search_range_band_click():
 
         window.set_current_tool("segment")
         view_pos = QPointF(window.canvas.mapFromScene(QPointF(90.0, 40.0)))
-        event = QMouseEvent(
+        press = QMouseEvent(
             QEvent.Type.MouseButtonPress,
             view_pos,
             Qt.MouseButton.LeftButton,
             Qt.MouseButton.LeftButton,
             Qt.KeyboardModifier.NoModifier,
         )
-        window.canvas.mousePressEvent(event)
+        release = QMouseEvent(
+            QEvent.Type.MouseButtonRelease,
+            view_pos,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        window.canvas.mousePressEvent(press)
+        window.canvas.mouseReleaseEvent(release)
 
         assert window.selected_segment == ("E1", 0)
         assert window.canvas.selected_segment_item is not None
+    finally:
+        window.close()
+
+
+def test_segment_profile_display_orders_follow_image_axes():
+    offsets = np.asarray([-2, -1, 0, 1, 2], dtype=np.float32)
+
+    vertical_top_down = MainWindow._segment_profile_offset_display_order((70.0, 20.0), (70.0, 100.0), offsets)
+    horizontal_left_right = MainWindow._segment_profile_offset_display_order((20.0, 60.0), (120.0, 60.0), offsets)
+    vertical_distance = MainWindow._segment_profile_distance_display_order((70.0, 100.0), (70.0, 20.0), 5)
+    horizontal_distance = MainWindow._segment_profile_distance_display_order((120.0, 60.0), (20.0, 60.0), 5)
+
+    assert list(vertical_top_down) == [4, 3, 2, 1, 0]
+    assert list(horizontal_left_right) == [0, 1, 2, 3, 4]
+    assert list(vertical_distance) == [4, 3, 2, 1, 0]
+    assert list(horizontal_distance) == [4, 3, 2, 1, 0]
+
+
+def test_r_hold_drag_box_selects_segment():
+    window = _window_with_edge_image()
+    try:
+        edge = LineRecord(
+            id="E1",
+            kind="edge",
+            start=(70.0, 20.0),
+            end=(70.0, 100.0),
+            label="edge",
+            points=[(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)],
+            recognition_points=[(70.0, 20.0), (70.0, 60.0), (70.0, 100.0)],
+            edge_segmented=True,
+            search_radius_px=25,
+        )
+        window.records[edge.id] = edge
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        press_r = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_R, Qt.KeyboardModifier.NoModifier)
+        window.canvas.keyPressEvent(press_r)
+        assert window.canvas.current_tool == "segment"
+
+        start_pos = QPointF(window.canvas.mapFromScene(QPointF(58.0, 24.0)))
+        end_pos = QPointF(window.canvas.mapFromScene(QPointF(82.0, 56.0)))
+        press = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            start_pos,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        move = QMouseEvent(
+            QEvent.Type.MouseMove,
+            end_pos,
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        release = QMouseEvent(
+            QEvent.Type.MouseButtonRelease,
+            end_pos,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        window.canvas.mousePressEvent(press)
+        window.canvas.mouseMoveEvent(move)
+        window.canvas.mouseReleaseEvent(release)
+
+        assert window.selected_segment == ("E1", 0)
+        assert window.canvas.selected_segment_item is not None
+        assert window.canvas._segment_drag_origin is None
+        assert not window.canvas._segment_rubber_band.isVisible()
     finally:
         window.close()
 

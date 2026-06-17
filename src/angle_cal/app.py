@@ -360,6 +360,9 @@ class AngleCanvas(QGraphicsView):
         self._updating_from_point_handle = False
         self._space_edge_previous_tool: Optional[str] = None
         self._segment_select_previous_tool: Optional[str] = None
+        self._segment_drag_origin: Optional[QPoint] = None
+        self._segment_drag_active = False
+        self._segment_rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
         self._additive_rubberband_items: Optional[set[QGraphicsItem]] = None
         self._shortcut_overlay_visible = False
         self._object_drag_items: list[AnnotationLineItem | AnnotationCurveItem] = []
@@ -387,6 +390,8 @@ class AngleCanvas(QGraphicsView):
             self._hide_scale_magnifier()
         if tool != "edge" or self.edge_draw_mode != "polyline":
             self._clear_curve_preview()
+        if tool != "segment":
+            self._clear_segment_drag()
         if tool == "pan":
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -415,6 +420,7 @@ class AngleCanvas(QGraphicsView):
         self._resizing = False
         self._clear_object_drag(restore=True)
         self._clear_search_range_drag()
+        self._clear_segment_drag()
         self._restore_tool_cursor()
 
     def _restore_tool_cursor(self) -> None:
@@ -1260,6 +1266,12 @@ class AngleCanvas(QGraphicsView):
         self._search_range_drag_segment = None
         self._search_range_drag_moved = False
 
+    def _clear_segment_drag(self) -> None:
+        if hasattr(self, "_segment_rubber_band"):
+            self._segment_rubber_band.hide()
+        self._segment_drag_origin = None
+        self._segment_drag_active = False
+
     def _begin_object_drag_for_items(
         self,
         selected_items: list[AnnotationLineItem | AnnotationCurveItem],
@@ -1424,11 +1436,8 @@ class AngleCanvas(QGraphicsView):
             return
 
         if event.button() == Qt.MouseButton.LeftButton and self.current_tool == "segment":
-            segment = self._segment_at(event.pos())
-            if segment is not None:
-                self.segment_selected.emit(segment[0], segment[1])
-            else:
-                self.clear_selected_segment()
+            self._segment_drag_origin = event.pos()
+            self._segment_drag_active = False
             event.accept()
             return
 
@@ -1537,6 +1546,22 @@ class AngleCanvas(QGraphicsView):
             event.accept()
             return
 
+        if self.current_tool == "segment" and self._segment_drag_origin is not None:
+            if not (event.buttons() & Qt.MouseButton.LeftButton):
+                event.accept()
+                return
+            if not self._segment_drag_active:
+                distance = (event.pos() - self._segment_drag_origin).manhattanLength()
+                if distance < QApplication.startDragDistance():
+                    event.accept()
+                    return
+                self._segment_drag_active = True
+            rect = QRect(self._segment_drag_origin, event.pos()).normalized()
+            self._segment_rubber_band.setGeometry(rect)
+            self._segment_rubber_band.show()
+            event.accept()
+            return
+
         if self._panning:
             delta = event.pos() - self._pan_last
             self._pan_last = event.pos()
@@ -1584,6 +1609,20 @@ class AngleCanvas(QGraphicsView):
         if self._object_drag_start_scene is not None and event.button() == Qt.MouseButton.LeftButton:
             self._finish_object_drag(event.modifiers())
             self._restore_tool_cursor()
+            event.accept()
+            return
+
+        if self.current_tool == "segment" and self._segment_drag_origin is not None and event.button() == Qt.MouseButton.LeftButton:
+            if self._segment_drag_active:
+                rect = QRect(self._segment_drag_origin, event.pos()).normalized()
+                segment = self._segment_in_view_rect(rect)
+            else:
+                segment = self._segment_at(event.pos())
+            self._clear_segment_drag()
+            if segment is not None:
+                self.segment_selected.emit(segment[0], segment[1])
+            else:
+                self.clear_selected_segment()
             event.accept()
             return
 
@@ -1672,6 +1711,33 @@ class AngleCanvas(QGraphicsView):
             if range_best is None:
                 return None
             return (range_best[1], range_best[2])
+        return (best[1], best[2])
+
+    def _segment_in_view_rect(self, view_rect: QRect) -> Optional[tuple[str, int]]:
+        if view_rect.width() < 2 and view_rect.height() < 2:
+            return None
+        rect = QRectF(view_rect).normalized()
+        center = rect.center()
+        best: Optional[tuple[float, str, int]] = None
+        for item in self.line_items.values():
+            if item.kind != "edge":
+                continue
+            points = points_from_path_item(item)
+            for idx, (start, end) in enumerate(zip(points, points[1:])):
+                start_view = QPointF(self.mapFromScene(QPointF(start[0], start[1])))
+                end_view = QPointF(self.mapFromScene(QPointF(end[0], end[1])))
+                segment_rect = QRectF(start_view, end_view).normalized().adjusted(-2.0, -2.0, 2.0, 2.0)
+                if not rect.intersects(segment_rect) and not rect.contains(start_view) and not rect.contains(end_view):
+                    continue
+                distance = point_to_segment_distance(
+                    (float(center.x()), float(center.y())),
+                    (float(start_view.x()), float(start_view.y())),
+                    (float(end_view.x()), float(end_view.y())),
+                )
+                if best is None or distance < best[0]:
+                    best = (distance, item.record_id, idx)
+        if best is None:
+            return None
         return (best[1], best[2])
 
     def mouseDoubleClickEvent(self, event):  # noqa: N802
@@ -5262,6 +5328,36 @@ class MainWindow(QMainWindow):
         self.measurements_dock.raise_()
         self._set_status(f"{record_id} 세그먼트 {segment_index + 1} 밝기 프로파일을 표시했습니다.")
 
+    @staticmethod
+    def _segment_profile_offset_display_order(start: Point, end: Point, offsets: np.ndarray) -> np.ndarray:
+        nx, ny = normal_for_line(start, end)
+        if abs(nx) >= abs(ny):
+            screen_coordinates = np.asarray(offsets, dtype=np.float32) * float(nx)
+        else:
+            screen_coordinates = np.asarray(offsets, dtype=np.float32) * float(ny)
+        return np.argsort(screen_coordinates, kind="stable")
+
+    @staticmethod
+    def _segment_profile_distance_display_order(start: Point, end: Point, distance_count: int) -> np.ndarray:
+        if distance_count <= 0:
+            return np.asarray([], dtype=np.int32)
+        length = line_length(start, end)
+        if length <= 0:
+            return np.arange(distance_count, dtype=np.int32)
+        tx = (end[0] - start[0]) / length
+        ty = (end[1] - start[1]) / length
+        distances = np.arange(distance_count, dtype=np.float32)
+        if abs(tx) >= abs(ty):
+            screen_coordinates = float(start[0]) + distances * float(tx)
+        else:
+            screen_coordinates = float(start[1]) + distances * float(ty)
+        return np.argsort(screen_coordinates, kind="stable")
+
+    @staticmethod
+    def _segment_profile_axis_label(start: Point, end: Point) -> str:
+        nx, ny = normal_for_line(start, end)
+        return "좌→우" if abs(nx) >= abs(ny) else "상→하"
+
     def _segment_profile_pixmap(
         self,
         record_id: str,
@@ -5287,13 +5383,17 @@ class MainWindow(QMainWindow):
             f"{record_id} seg {segment_index + 1}  L {length_px:.1f}px  {mode_label} {result.best_offset_px:.1f}px",
         )
 
+        display_offsets = np.asarray(result.offsets, dtype=np.float32)
+        offset_order = self._segment_profile_offset_display_order(start, end, display_offsets)
+        display_offsets = display_offsets[offset_order]
+
         graph_rect = QRectF(38, 38, width - 58, 92)
         painter.setPen(QPen(QColor("#475569"), 1))
         painter.drawRect(graph_rect)
         painter.drawText(QRectF(12, graph_rect.top() - 2, 24, 16), title_flags, "255")
         painter.drawText(QRectF(16, graph_rect.bottom() - 14, 20, 16), title_flags, "0")
 
-        profile = np.asarray(result.intensity_profile, dtype=np.float32)
+        profile = np.asarray(result.intensity_profile, dtype=np.float32)[offset_order]
         finite = np.isfinite(profile)
         if np.count_nonzero(finite) >= 2:
             min_value = float(np.nanmin(profile[finite]))
@@ -5312,7 +5412,7 @@ class MainWindow(QMainWindow):
             painter.setPen(QPen(QColor("#34d399"), 2))
             painter.drawPath(path)
 
-            best_index = int(np.nanargmin(np.abs(np.asarray(result.offsets) - result.best_offset_px)))
+            best_index = int(np.nanargmin(np.abs(display_offsets - result.best_offset_px)))
             best_x = graph_rect.left() + best_index / max(1, profile.size - 1) * graph_rect.width()
             painter.setPen(QPen(QColor("#fbbf24"), 1, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(best_x, graph_rect.top()), QPointF(best_x, graph_rect.bottom()))
@@ -5321,13 +5421,16 @@ class MainWindow(QMainWindow):
         painter.drawText(
             QRectF(38, 132, width - 58, 18),
             title_flags,
-            f"수직 오프셋 {float(result.offsets[0]):.0f}px ~ {float(result.offsets[-1]):.0f}px",
+            f"이미지 기준 {self._segment_profile_axis_label(start, end)} / 오프셋 {float(display_offsets[0]):.0f}px ~ {float(display_offsets[-1]):.0f}px",
         )
 
         bar_rect = QRectF(38, 154, width - 58, 50)
         painter.setPen(QPen(QColor("#475569"), 1))
         painter.drawRect(bar_rect)
         sample_grid = np.asarray(result.sample_grid, dtype=np.float32)
+        if sample_grid.ndim == 2:
+            distance_order = self._segment_profile_distance_display_order(start, end, sample_grid.shape[1])
+            sample_grid = sample_grid[offset_order, :][:, distance_order]
         grid_finite = np.isfinite(sample_grid)
         if sample_grid.ndim == 2 and np.count_nonzero(grid_finite) >= 2:
             grid_min = float(np.nanmin(sample_grid[grid_finite]))
@@ -5344,7 +5447,7 @@ class MainWindow(QMainWindow):
                     painter.setPen(QColor(gray, gray, gray))
                     painter.drawPoint(int(bar_rect.left()) + x_idx, int(bar_rect.top()) + y_idx)
 
-            best_row = int(np.nanargmin(np.abs(np.asarray(result.offsets) - result.best_offset_px)))
+            best_row = int(np.nanargmin(np.abs(display_offsets - result.best_offset_px)))
             best_ratio = best_row / max(1, sample_grid.shape[0] - 1)
             best_x = bar_rect.left() + best_ratio * bar_rect.width()
             painter.setPen(QPen(QColor("#fbbf24"), 1, Qt.PenStyle.DashLine))
