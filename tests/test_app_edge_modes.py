@@ -1630,6 +1630,17 @@ def test_data_export_dialog_has_open_after_export_option():
         dialog.close()
 
 
+def test_data_export_dialog_can_be_fixed_to_favorites_scope():
+    _app()
+    dialog = app_module.DataExportDialog(True, fixed_scope="favorite")
+    try:
+        assert dialog.scope_combo.currentData() == "favorite"
+        assert not dialog.scope_combo.isEnabled()
+        assert dialog.options().scope == "favorite"
+    finally:
+        dialog.close()
+
+
 def test_data_export_opens_file_when_option_is_checked(monkeypatch, tmp_path):
     class _Dialog:
         def __init__(self, *args, **kwargs):
@@ -1679,6 +1690,75 @@ def test_data_export_project_scope_includes_saved_image_states():
 
         image_names = {row["이미지"] for row in sheets["경계길이"]}
         assert image_names == {"current.png", "other.png"}
+    finally:
+        window.close()
+
+
+def test_favorite_data_export_scope_includes_only_favorite_images():
+    window = _window_with_edge_image()
+    try:
+        window.image_path = "/tmp/current.png"
+        window._create_edge_line((20.0, 10.0), (20.0, 110.0))
+        favorite = LineRecord("E_fav", "edge", (80.0, 10.0), (80.0, 110.0))
+        non_favorite = LineRecord("E_other", "edge", (120.0, 10.0), (120.0, 110.0))
+        window.image_states["/tmp/favorite.png"] = {
+            "records": [app_module.asdict(favorite)],
+            "counter": 2,
+            "nm_per_px": None,
+            "hidden_angle_measurements": [],
+        }
+        window.image_states["/tmp/other.png"] = {
+            "records": [app_module.asdict(non_favorite)],
+            "counter": 3,
+            "nm_per_px": None,
+            "hidden_angle_measurements": [],
+        }
+        window.favorite_image_paths = ["/tmp/favorite.png"]
+        options = DataExportOptions(scope="favorite", selected_items={"edge_length"}, order_priority="y")
+
+        sheets = window._build_export_sheets(options)
+
+        assert [row["이미지"] for row in sheets["경계길이"]] == ["favorite.png"]
+        assert [row["경계ID"] for row in sheets["경계길이"]] == ["E_fav"]
+    finally:
+        window.close()
+
+
+def test_export_favorite_data_uses_favorite_scope(monkeypatch, tmp_path):
+    class _Dialog:
+        def __init__(self, *args, **kwargs):
+            assert kwargs.get("fixed_scope") == "favorite"
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def options(self):
+            return DataExportOptions(scope="favorite", selected_items={"edge_length"}, order_priority="y")
+
+    export_path = tmp_path / "favorite-data.xlsx"
+    written: list[tuple[str, dict[str, list[dict[str, object]]]]] = []
+    monkeypatch.setattr(app_module, "DataExportDialog", _Dialog)
+    monkeypatch.setattr(app_module.QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(export_path), "Excel Workbook (*.xlsx)"))
+    monkeypatch.setattr(app_module, "write_xlsx", lambda path, sheets: written.append((path, sheets)))
+
+    window = _window_with_edge_image()
+    try:
+        window.image_path = "/tmp/current.png"
+        window._create_edge_line((20.0, 10.0), (20.0, 110.0))
+        favorite = LineRecord("E_fav", "edge", (80.0, 10.0), (80.0, 110.0))
+        window.image_states["/tmp/favorite.png"] = {
+            "records": [app_module.asdict(favorite)],
+            "counter": 2,
+            "nm_per_px": None,
+            "hidden_angle_measurements": [],
+        }
+        window.favorite_image_paths = ["/tmp/favorite.png"]
+
+        window.export_favorite_data_xlsx()
+
+        assert written
+        assert written[0][0] == str(export_path)
+        assert [row["이미지"] for row in written[0][1]["경계길이"]] == ["favorite.png"]
     finally:
         window.close()
 
@@ -2860,7 +2940,7 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         file_group_titles = [group.title() for group in file_groups]
         assert file_group_titles == ["불러오기 / 저장", "내보내기"]
         export_group = next(group for group in file_groups if group.title() == "내보내기")
-        assert [button.text() for button in export_group.findChildren(QPushButton)] == ["Data Export", "즐겨찾기 이미지 내보내기"]
+        assert [button.text() for button in export_group.findChildren(QPushButton)] == ["Data Export", "즐겨찾기 이미지 내보내기", "즐겨찾기 Data Export"]
     finally:
         window.close()
 

@@ -2719,14 +2719,19 @@ class CdDisplaySettingsDialog(QDialog):
 
 
 class DataExportDialog(QDialog):
-    def __init__(self, has_multiple_images: bool, parent: Optional[QWidget] = None):
+    def __init__(self, has_multiple_images: bool, parent: Optional[QWidget] = None, fixed_scope: Optional[str] = None):
         super().__init__(parent)
         self.setWindowTitle("Data Export")
         self.setModal(True)
+        self.fixed_scope = fixed_scope
 
         self.scope_combo = QComboBox()
-        self.scope_combo.addItem("현재 보이는 이미지만", "current")
-        self.scope_combo.addItem("현재 작업 프로젝트 전부", "project")
+        if fixed_scope == "favorite":
+            self.scope_combo.addItem("즐겨찾기 이미지", "favorite")
+            self.scope_combo.setEnabled(False)
+        else:
+            self.scope_combo.addItem("현재 보이는 이미지만", "current")
+            self.scope_combo.addItem("현재 작업 프로젝트 전부", "project")
 
         self.item_checkboxes: dict[str, QCheckBox] = {}
         for key, label in [
@@ -2762,7 +2767,7 @@ class DataExportDialog(QDialog):
 
     def options(self) -> DataExportOptions:
         return DataExportOptions(
-            scope=str(self.scope_combo.currentData()),
+            scope=str(self.fixed_scope or self.scope_combo.currentData()),
             selected_items={key for key, checkbox in self.item_checkboxes.items() if checkbox.isChecked()},
             order_priority=str(self.order_combo.currentData()),
             open_after_export=self.open_after_export_checkbox.isChecked(),
@@ -2946,6 +2951,8 @@ class MainWindow(QMainWindow):
         self.export_data_action.triggered.connect(self.export_data_xlsx)
         self.export_favorite_images_action = QAction("즐겨찾기 이미지 내보내기", self)
         self.export_favorite_images_action.triggered.connect(self.export_favorite_images)
+        self.export_favorite_data_action = QAction("즐겨찾기 Data Export", self)
+        self.export_favorite_data_action.triggered.connect(self.export_favorite_data_xlsx)
         self.select_tool_action = QAction("선택 도구", self)
         self.select_tool_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.select_tool_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -3092,6 +3099,7 @@ class MainWindow(QMainWindow):
         export_group = group(file_page, "내보내기")
         export_group.addWidget(self._button_for_action(self.export_data_action))
         export_group.addWidget(self._button_for_action(self.export_favorite_images_action))
+        export_group.addWidget(self._button_for_action(self.export_favorite_data_action))
         self.ribbon_tabs.addTab(file_page, "파일")
 
         edge_page = page()
@@ -4712,23 +4720,37 @@ class MainWindow(QMainWindow):
         dialog = DataExportDialog(bool(self.image_states), self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        options = dialog.options()
-        if not options.selected_items:
-            QMessageBox.information(self, "Data Export", "내보낼 항목을 하나 이상 선택하세요.")
+        self._write_data_export_from_options(dialog.options(), "Data Export")
+
+    def export_favorite_data_xlsx(self) -> None:
+        if self.image_bgr is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Data Export", "", "Excel Workbook (*.xlsx)")
+        if not self.favorite_image_paths:
+            QMessageBox.information(self, "즐겨찾기 Data Export", "내보낼 즐겨찾기 이미지가 없습니다.")
+            return
+        self._save_current_image_state()
+        dialog = DataExportDialog(True, self, fixed_scope="favorite")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._write_data_export_from_options(dialog.options(), "즐겨찾기 Data Export")
+
+    def _write_data_export_from_options(self, options: DataExportOptions, title: str) -> None:
+        if not options.selected_items:
+            QMessageBox.information(self, title, "내보낼 항목을 하나 이상 선택하세요.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, title, "", "Excel Workbook (*.xlsx)")
         if not path:
             return
         if not path.lower().endswith(".xlsx"):
             path += ".xlsx"
         sheets = self._build_export_sheets(options)
         if not any(rows for rows in sheets.values()):
-            QMessageBox.information(self, "Data Export", "내보낼 측정 데이터가 없습니다.")
+            QMessageBox.information(self, title, "내보낼 측정 데이터가 없습니다.")
             return
         write_xlsx(path, sheets)
         if options.open_after_export:
             self._open_export_file(path)
-        self._set_status(f"Data Export 저장: {Path(path).name}")
+        self._set_status(f"{title} 저장: {Path(path).name}")
 
     def export_favorite_images(self) -> None:
         if not self.favorite_image_paths:
@@ -4779,6 +4801,17 @@ class MainWindow(QMainWindow):
             return [(current_path, current_state)]
         states = dict(self.image_states)
         states[current_path] = current_state
+        if scope == "favorite":
+            result: list[tuple[str, dict]] = []
+            seen: set[str] = set()
+            for path in self.favorite_image_paths:
+                if path in seen:
+                    continue
+                state = states.get(path)
+                if state is not None:
+                    result.append((path, state))
+                    seen.add(path)
+            return result
         ordered_paths = self.browser_image_paths or list(states.keys())
         result: list[tuple[str, dict]] = []
         seen: set[str] = set()
