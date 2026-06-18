@@ -2423,6 +2423,7 @@ def group_bounds_center(records: list[LineRecord]) -> Point:
 
 EXPORT_COLUMNS = [
     "이미지",
+    "폴더",
     "그룹",
     "그룹번호",
     "순서",
@@ -4802,8 +4803,9 @@ class MainWindow(QMainWindow):
             records = [line_record_from_dict(item) for item in state.get("records", [])]
             nm_per_px = state.get("nm_per_px")
             image_name = Path(image_path).name if image_path else f"image_{image_index}"
+            folder_label = self._export_folder_label(image_path)
             group_info = self._export_group_info(records, options.order_priority)
-            rows_by_item = self._export_rows_for_records(image_name, records, nm_per_px, group_info, options.order_priority)
+            rows_by_item = self._export_rows_for_records(image_name, records, nm_per_px, group_info, options.order_priority, folder_label)
             for item_key, sheet_name in [
                 ("line_angle", "선각도"),
                 ("intersection_angle", "교점각도"),
@@ -4813,6 +4815,20 @@ class MainWindow(QMainWindow):
                 if item_key in options.selected_items:
                     sheets[sheet_name].extend(rows_by_item[item_key])
         return {name: rows for name, rows in sheets.items() if rows or name in self._selected_sheet_names(options)}
+
+    def _export_folder_label(self, image_path: str) -> str:
+        if not image_path or image_path == "current":
+            return ""
+        folder = Path(image_path).parent
+        if self.browser_root is not None:
+            try:
+                relative = folder.relative_to(self.browser_root)
+            except ValueError:
+                return folder.name or str(folder)
+            if str(relative) == ".":
+                return self.browser_root.name
+            return str(relative).replace("\\", "/")
+        return folder.name or str(folder)
 
     def _selected_sheet_names(self, options: DataExportOptions) -> set[str]:
         names = {
@@ -4845,11 +4861,13 @@ class MainWindow(QMainWindow):
         item_type: str,
         records: list[LineRecord],
         group_info: dict[Optional[str], dict[str, object]],
+        folder_label: str = "",
     ) -> dict[str, object]:
         group_id = next((record.object_group for record in records if record.object_group), None)
         info = group_info.get(group_id, group_info[None])
         return {
             "이미지": image_name,
+            "폴더": folder_label,
             "그룹": info["label"],
             "그룹번호": info["number"],
             "항목": item_type,
@@ -4889,6 +4907,7 @@ class MainWindow(QMainWindow):
         nm_per_px: Optional[float],
         group_info: dict[Optional[str], dict[str, object]],
         priority: str,
+        folder_label: str = "",
     ) -> dict[str, list[dict[str, object]]]:
         edges = [record for record in records if record.kind == "edge"]
         guides = [record for record in records if record.kind == "guide"]
@@ -4905,7 +4924,7 @@ class MainWindow(QMainWindow):
             length_px = record_length(edge)
             if not has_segmented_edge_angle(edge):
                 angle = acute_angle_difference(record_angle(edge), reference_angle)
-                row = self._export_base_row(image_name, "선각도", [edge], group_info)
+                row = self._export_base_row(image_name, "선각도", [edge], group_info, folder_label)
                 row.update(
                     {
                         "측정ID": f"{edge.id}_to_{reference_id}",
@@ -4922,7 +4941,7 @@ class MainWindow(QMainWindow):
                 )
                 self._set_export_object(row, edge.id, center)
                 rows["line_angle"].append(row)
-            length_row = self._export_base_row(image_name, "경계길이", [edge], group_info)
+            length_row = self._export_base_row(image_name, "경계길이", [edge], group_info, folder_label)
             length_row.update(
                 {
                     "측정ID": f"{edge.id}_length",
@@ -4947,7 +4966,7 @@ class MainWindow(QMainWindow):
                 for cross_idx, (cross, edge_angle) in enumerate(crosses, start=1):
                     _arc_start, _arc_end, angle = angle_sector_geometry(edge_angle, guide_angle, edge.angle_sector)
                     suffix = f"_{cross_idx}" if len(crosses) > 1 else ""
-                    row = self._export_base_row(image_name, "교점각도", [edge, guide], group_info)
+                    row = self._export_base_row(image_name, "교점각도", [edge, guide], group_info, folder_label)
                     display_guide_id = guide_ids.get(guide.id, guide.id)
                     display_guide_number = guide_numbers.get(guide.id, "")
                     row.update(
@@ -4991,7 +5010,7 @@ class MainWindow(QMainWindow):
                     continue
                 length_px = line_length(point_a, point_b)
                 midpoint = ((point_a[0] + point_b[0]) / 2.0, (point_a[1] + point_b[1]) / 2.0)
-                row = self._export_base_row(image_name, "CD길이", [edge_a, edge_b, guide], group_info)
+                row = self._export_base_row(image_name, "CD길이", [edge_a, edge_b, guide], group_info, folder_label)
                 display_guide_id = guide_ids.get(guide.id, guide.id)
                 display_guide_number = guide_numbers.get(guide.id, "")
                 row.update(

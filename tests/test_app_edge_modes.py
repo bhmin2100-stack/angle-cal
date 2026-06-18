@@ -1614,6 +1614,7 @@ def test_data_export_sorts_by_group_item_and_position(tmp_path):
             assert "xl/workbook.xml" in names
             assert "xl/worksheets/sheet1.xml" in names
             assert "<t>개체</t>" in archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+            assert "<t>폴더</t>" in archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
     finally:
         window.close()
 
@@ -1678,6 +1679,35 @@ def test_data_export_project_scope_includes_saved_image_states():
 
         image_names = {row["이미지"] for row in sheets["경계길이"]}
         assert image_names == {"current.png", "other.png"}
+    finally:
+        window.close()
+
+
+def test_data_export_includes_relative_folder_for_each_image(tmp_path):
+    window = _window_with_edge_image()
+    try:
+        root_image = tmp_path / "root.png"
+        nested_dir = tmp_path / "000"
+        nested_dir.mkdir()
+        nested_image = nested_dir / "nested.png"
+        window.browser_root = tmp_path
+        window.image_path = str(root_image)
+        window._create_edge_line((20.0, 10.0), (20.0, 110.0))
+        other = LineRecord("E_other", "edge", (80.0, 10.0), (80.0, 110.0))
+        window.browser_image_paths = [str(root_image), str(nested_image)]
+        window.image_states[str(nested_image)] = {
+            "records": [app_module.asdict(other)],
+            "counter": 2,
+            "nm_per_px": None,
+            "hidden_angle_measurements": [],
+        }
+        options = DataExportOptions(scope="project", selected_items={"edge_length"}, order_priority="y")
+
+        sheets = window._build_export_sheets(options)
+
+        folders_by_image = {row["이미지"]: row["폴더"] for row in sheets["경계길이"]}
+        assert folders_by_image["root.png"] == tmp_path.name
+        assert folders_by_image["nested.png"] == "000"
     finally:
         window.close()
 
