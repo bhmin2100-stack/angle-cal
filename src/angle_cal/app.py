@@ -2399,8 +2399,8 @@ def guide_display_numbers(guides: list[LineRecord]) -> dict[str, int]:
         key=lambda record: (guide_position(record), guide_secondary_position(record), record.id),
     )
     display_numbers = {main_guide.id: 0}
-    display_numbers.update({record.id: -index for index, record in enumerate(before, start=1)})
-    display_numbers.update({record.id: index for index, record in enumerate(after, start=1)})
+    display_numbers.update({record.id: index for index, record in enumerate(before, start=1)})
+    display_numbers.update({record.id: -index for index, record in enumerate(after, start=1)})
     return display_numbers
 
 
@@ -4946,7 +4946,7 @@ class MainWindow(QMainWindow):
         guides = [record for record in records if record.kind == "guide"]
         guide_numbers = guide_display_numbers(guides)
         guide_ids = guide_display_ids(guides)
-        guides = sorted(guides, key=lambda guide: (guide_numbers.get(guide.id, 0), *position_key(record_center(guide), priority), guide.id))
+        guides = sorted(guides, key=lambda guide: (*position_key(record_center(guide), "y"), guide.id))
         reference = next((record for record in records if record.kind == "reference"), None)
         reference_angle = line_angle_degrees(reference.start, reference.end) if reference else 0.0
         reference_id = reference.id if reference else "horizontal"
@@ -6005,7 +6005,7 @@ class MainWindow(QMainWindow):
         guides = [record for record in self.records.values() if record.kind == "guide"]
         guide_numbers = guide_display_numbers(guides)
         guide_ids = guide_display_ids(guides)
-        guides = sorted(guides, key=lambda guide: (guide_numbers.get(guide.id, 0), record_center(guide), guide.id))
+        guides = sorted(guides, key=lambda guide: (*position_key(record_center(guide), "y"), guide.id))
 
         mode = self.cd_segment_combo.currentData()
         cd_label_gap = self.canvas.screen_to_scene_length(self.cd_label_gap)
@@ -6338,7 +6338,7 @@ class MainWindow(QMainWindow):
         guides = [record for record in self.records.values() if record.kind == "guide"]
         guide_numbers = guide_display_numbers(guides)
         guide_ids = guide_display_ids(guides)
-        guides = sorted(guides, key=lambda guide: (guide_numbers.get(guide.id, 0), record_center(guide), guide.id))
+        guides = sorted(guides, key=lambda guide: (*position_key(record_center(guide), "y"), guide.id))
         for edge in edges:
             if has_segmented_edge_angle(edge):
                 continue

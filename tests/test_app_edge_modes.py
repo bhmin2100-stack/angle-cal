@@ -1410,30 +1410,30 @@ def test_guide_display_ids_use_main_guide_as_zero_with_signed_positions():
     ]
 
     assert app_module.guide_display_ids(horizontal_guides) == {
-        "G_top2": "G-2",
-        "G_top1": "G-1",
+        "G_top2": "G2",
+        "G_top1": "G1",
         "G_main": "G0",
-        "G_bottom1": "G1",
-        "G_bottom2": "G2",
+        "G_bottom1": "G-1",
+        "G_bottom2": "G-2",
     }
     assert app_module.guide_display_numbers(horizontal_guides) == {
-        "G_top2": -2,
-        "G_top1": -1,
+        "G_top2": 2,
+        "G_top1": 1,
         "G_main": 0,
-        "G_bottom1": 1,
-        "G_bottom2": 2,
+        "G_bottom1": -1,
+        "G_bottom2": -2,
     }
     assert app_module.guide_display_ids(vertical_guides) == {
-        "G_left2": "G-2",
-        "G_left1": "G-1",
+        "G_left2": "G2",
+        "G_left1": "G1",
         "G_main": "G0",
-        "G_right1": "G1",
+        "G_right1": "G-1",
     }
     assert app_module.guide_display_numbers(vertical_guides) == {
-        "G_left2": -2,
-        "G_left1": -1,
+        "G_left2": 2,
+        "G_left1": 1,
         "G_main": 0,
-        "G_right1": 1,
+        "G_right1": -1,
     }
 
 
@@ -1452,9 +1452,9 @@ def test_measurement_rows_use_signed_main_guide_display_ids():
             [row for row in window.last_measurements if row["kind"] == "edge_guide_intersection"],
             key=lambda row: float(row["y_px"]),
         )
-        assert [row["guide_id"] for row in rows] == ["G-1", "G0", "G1"]
-        assert [row["guide_number"] for row in rows] == [-1, 0, 1]
-        assert [row["measurement"] for row in rows] == [f"{edge.id}_x_G-1", f"{edge.id}_x_G0", f"{edge.id}_x_G1"]
+        assert [row["guide_id"] for row in rows] == ["G1", "G0", "G-1"]
+        assert [row["guide_number"] for row in rows] == [1, 0, -1]
+        assert [row["measurement"] for row in rows] == [f"{edge.id}_x_G1", f"{edge.id}_x_G0", f"{edge.id}_x_G-1"]
     finally:
         window.close()
 
@@ -1475,9 +1475,9 @@ def test_data_export_rows_use_signed_main_guide_display_ids():
             window._export_group_info(records, "y"),
             "y",
         )["intersection_angle"]
-        assert [row["가이드ID"] for row in rows] == ["G-1", "G0", "G1"]
-        assert [row["가이드번호"] for row in rows] == [-1, 0, 1]
-        assert [row["측정ID"] for row in rows] == ["E1_x_G-1", "E1_x_G0", "E1_x_G1"]
+        assert [row["가이드ID"] for row in rows] == ["G1", "G0", "G-1"]
+        assert [row["가이드번호"] for row in rows] == [1, 0, -1]
+        assert [row["측정ID"] for row in rows] == ["E1_x_G1", "E1_x_G0", "E1_x_G-1"]
     finally:
         window.close()
 
@@ -1501,14 +1501,14 @@ def test_data_export_left_to_right_sorts_by_objects_before_guides():
         )["intersection_angle"]
 
         assert [row["경계ID"] for row in rows] == ["E_left", "E_left", "E_left", "E_right", "E_right", "E_right"]
-        assert [row["가이드번호"] for row in rows] == [-1, 0, 1, -1, 0, 1]
+        assert [row["가이드번호"] for row in rows] == [1, 0, -1, 1, 0, -1]
         assert [row["개체"] for row in rows] == [
-            "E_left|G-1",
-            "E_left|G0",
             "E_left|G1",
-            "E_right|G-1",
-            "E_right|G0",
+            "E_left|G0",
+            "E_left|G-1",
             "E_right|G1",
+            "E_right|G0",
+            "E_right|G-1",
         ]
     finally:
         window.close()
