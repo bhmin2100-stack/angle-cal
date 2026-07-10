@@ -10,6 +10,7 @@ from angle_cal.image_ops import (
     bgr_to_rgb8_for_display,
     intersection,
     line_angle_degrees,
+    measure_cliff_curvature,
     read_image,
     rotate_image_and_points,
     snap_line_to_gradient_curve,
@@ -118,6 +119,30 @@ def test_snap_polyline_to_gradient_uses_drawn_connected_segments():
     assert len(result.points) > 10
     assert ys.max() - ys.min() > 90
     assert xs[-1] - xs[0] > 25
+
+
+def test_measure_cliff_curvature_fits_rounded_corner_radius():
+    image = np.zeros((130, 130), dtype=np.uint8)
+    center = (58.0, 66.0)
+    radius = 18.0
+    arc_points = [
+        (
+            center[0] + radius * math.cos(math.radians(angle)),
+            center[1] + radius * math.sin(math.radians(angle)),
+        )
+        for angle in np.linspace(-90.0, 0.0, 30)
+    ]
+    boundary = [(0.0, center[1] - radius), (center[0], center[1] - radius), *arc_points, (center[0] + radius, 129.0), (0.0, 129.0)]
+    polygon = np.array(boundary, dtype=np.int32)
+    cv2.fillPoly(image, [polygon], 255)
+    image = cv2.GaussianBlur(image, (3, 3), 0)
+
+    result = measure_cliff_curvature(image)
+
+    assert result is not None
+    assert 13.0 <= result.radius_px <= 24.0
+    assert math.hypot(result.center[0] - center[0], result.center[1] - center[1]) < 8.0
+    assert result.quality > 0.7
 
 
 def test_rotate_points_can_align_downward_line_to_horizontal():

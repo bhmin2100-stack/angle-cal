@@ -66,6 +66,7 @@ from .image_ops import (
     intersection,
     line_angle_degrees,
     line_length,
+    measure_cliff_curvature,
     normal_for_line,
     read_image,
     rotate_image_and_points,
@@ -110,6 +111,13 @@ class LineRecord:
     show_range_label: bool = True
     show_edge_length: bool = True
     edge_length_label_pos: Optional[Point] = None
+    curvature_center: Optional[Point] = None
+    curvature_apex: Optional[Point] = None
+    curvature_radius_px: Optional[float] = None
+    curvature_quality: Optional[float] = None
+    curvature_fit_points: Optional[list[Point]] = None
+    curvature_edge_points: Optional[list[Point]] = None
+    curvature_label_pos: Optional[Point] = None
     stroke_color: Optional[str] = None
     stroke_width: Optional[float] = None
     is_main_guide: bool = False
@@ -149,6 +157,8 @@ GROUP_BOX_GROUP_KEY = 6
 GROUP_BOX_RECORD_IDS_KEY = 7
 SEARCH_RANGE_RECORD_KEY = 8
 SEARCH_RANGE_SEGMENT_KEY = 9
+CURVATURE_RECORD_KEY = 10
+CURVATURE_LABEL_KEY = 11
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 IMAGE_FORMAT_SUFFIX = ".anglecal.format.json"
 NATURAL_SORT_PART_RE = re.compile(r"(\d+)")
@@ -307,6 +317,7 @@ class AngleCanvas(QGraphicsView):
     guide_context_requested = Signal(str, QPoint)
     image_context_requested = Signal(QPoint)
     recognize_requested = Signal()
+    curvature_roi_selected = Signal(tuple, tuple)
 
     def __init__(self):
         super().__init__()
@@ -324,6 +335,8 @@ class AngleCanvas(QGraphicsView):
         self.angle_items: list[QGraphicsPathItem | QGraphicsTextItem] = []
         self.cd_items: list[QGraphicsItem] = []
         self.edge_length_items: list[QGraphicsItem] = []
+        self.curvature_items: list[QGraphicsItem] = []
+        self.curvature_record_items: dict[str, list[QGraphicsItem]] = {}
         self.group_box_items: list[QGraphicsItem] = []
         self.search_range_band_items: list[QGraphicsItem] = []
         self.search_range_label_items: list[QGraphicsItem] = []
@@ -347,6 +360,8 @@ class AngleCanvas(QGraphicsView):
         self.current_tool = "select"
         self._drawing_start: Optional[QPointF] = None
         self._temp_line: Optional[QGraphicsLineItem] = None
+        self._curvature_roi_start: Optional[QPointF] = None
+        self._temp_curvature_rect: Optional[QGraphicsRectItem] = None
         self.edge_draw_mode = "line"
         self._curve_points: list[QPointF] = []
         self._temp_curve: Optional[QGraphicsPathItem] = None
@@ -393,6 +408,10 @@ class AngleCanvas(QGraphicsView):
             self._clear_curve_preview()
         if tool != "segment":
             self._clear_segment_drag()
+        if tool != "curvature" and self._temp_curvature_rect is not None:
+            self.scene.removeItem(self._temp_curvature_rect)
+            self._temp_curvature_rect = None
+            self._curvature_roi_start = None
         if tool == "pan":
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -400,6 +419,9 @@ class AngleCanvas(QGraphicsView):
             self.setCursor(Qt.CursorShape.SizeFDiagCursor)
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
         elif tool == "segment":
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        elif tool == "curvature":
             self.setCursor(Qt.CursorShape.CrossCursor)
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
         else:
@@ -414,8 +436,12 @@ class AngleCanvas(QGraphicsView):
         if self._temp_line is not None:
             self.scene.removeItem(self._temp_line)
             self._temp_line = None
+        if self._temp_curvature_rect is not None:
+            self.scene.removeItem(self._temp_curvature_rect)
+            self._temp_curvature_rect = None
         self._clear_curve_preview()
         self._drawing_start = None
+        self._curvature_roi_start = None
         self._hide_scale_magnifier()
         self._panning = False
         self._resizing = False
@@ -429,6 +455,8 @@ class AngleCanvas(QGraphicsView):
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         elif self.current_tool == "resize":
             self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        elif self.current_tool in {"segment", "curvature"}:
+            self.setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.unsetCursor()
 
@@ -438,6 +466,8 @@ class AngleCanvas(QGraphicsView):
         self.angle_items.clear()
         self.cd_items.clear()
         self.edge_length_items.clear()
+        self.curvature_items.clear()
+        self.curvature_record_items.clear()
         self.group_box_items.clear()
         self.search_range_band_items.clear()
         self.search_range_label_items.clear()
@@ -471,6 +501,8 @@ class AngleCanvas(QGraphicsView):
             self.scene.removeItem(item)
         self.line_items.clear()
         for record in records:
+            if record.kind == "curvature":
+                continue
             if record.kind == "edge" and record.points and len(record.points) >= 2:
                 item = AnnotationCurveItem(record, self._pen_for_record(record))
             else:
@@ -1167,6 +1199,103 @@ class AngleCanvas(QGraphicsView):
             if group_id in self.edge_length_groups
         }
 
+    def clear_curvature_items(self) -> None:
+        for item in self.curvature_items:
+            if item.scene() is self.scene:
+                self.scene.removeItem(item)
+        self.curvature_items.clear()
+        self.curvature_record_items.clear()
+
+    def update_curvature_overlay(self, records: list[LineRecord]) -> None:
+        self.clear_curvature_items()
+        if self.pixmap_item is None:
+            return
+        for record in records:
+            if record.kind != "curvature" or record.curvature_center is None or record.curvature_radius_px is None:
+                continue
+            record_items: list[QGraphicsItem] = []
+            left = min(record.start[0], record.end[0])
+            right = max(record.start[0], record.end[0])
+            top = min(record.start[1], record.end[1])
+            bottom = max(record.start[1], record.end[1])
+            roi_rect = QGraphicsRectItem(QRectF(left, top, right - left, bottom - top))
+            roi_rect.setPen(cosmetic_pen(QColor(76, 201, 240, 210), 1.4, Qt.PenStyle.DashLine))
+            roi_rect.setBrush(QBrush(QColor(76, 201, 240, 18)))
+            roi_rect.setZValue(14)
+            record_items.append(roi_rect)
+
+            if record.curvature_edge_points and len(record.curvature_edge_points) >= 2:
+                edge_path = QGraphicsPathItem(path_from_points(record.curvature_edge_points, smooth=False))
+                edge_path.setPen(cosmetic_pen(QColor(255, 209, 102, 210), 1.3))
+                edge_path.setZValue(15)
+                record_items.append(edge_path)
+
+            if record.curvature_fit_points and len(record.curvature_fit_points) >= 2:
+                fit_path = QGraphicsPathItem(path_from_points(record.curvature_fit_points, smooth=False))
+                fit_path.setPen(cosmetic_pen(QColor("#f97316"), 2.0))
+                fit_path.setZValue(16)
+                record_items.append(fit_path)
+
+            center = record.curvature_center
+            radius = float(record.curvature_radius_px)
+            circle = QGraphicsEllipseItem(center[0] - radius, center[1] - radius, radius * 2.0, radius * 2.0)
+            circle.setPen(cosmetic_pen(QColor("#ef4444"), 1.8))
+            circle.setBrush(QBrush(QColor(239, 68, 68, 12)))
+            circle.setZValue(17)
+            record_items.append(circle)
+
+            if record.curvature_apex is not None:
+                apex_radius = self.screen_to_scene_length(4.0)
+                apex = QGraphicsEllipseItem(
+                    record.curvature_apex[0] - apex_radius,
+                    record.curvature_apex[1] - apex_radius,
+                    apex_radius * 2.0,
+                    apex_radius * 2.0,
+                )
+                apex.setPen(cosmetic_pen(QColor("#ffffff"), 1.2))
+                apex.setBrush(QBrush(QColor("#ef4444")))
+                apex.setZValue(18)
+                record_items.append(apex)
+
+            if record.value_nm is not None:
+                radius_text = f"R {float(record.value_nm):.3g} nm"
+            else:
+                radius_text = f"R {radius:.2f} px"
+            quality_text = f"q {float(record.curvature_quality or 0.0):.2f}"
+            label = QGraphicsTextItem()
+            label.setHtml(
+                "<div style='background-color:rgba(50,12,18,190);"
+                "color:#ffe4e6;padding:2px 6px;border-radius:3px;'>"
+                f"{xml_escape(radius_text)}<br><span style='font-size:8pt'>{xml_escape(quality_text)}</span></div>"
+            )
+            label_rect = label.boundingRect()
+            if record.curvature_label_pos is not None:
+                label.setPos(record.curvature_label_pos[0], record.curvature_label_pos[1])
+            elif record.curvature_apex is not None:
+                label.setPos(record.curvature_apex[0] + 10.0, record.curvature_apex[1] - label_rect.height() - 8.0)
+            else:
+                label.setPos(center[0] + radius + 8.0, center[1] - label_rect.height() / 2.0)
+            label.setZValue(32)
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+            label.setData(CURVATURE_LABEL_KEY, True)
+            record_items.append(label)
+
+            for item in record_items:
+                item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+                item.setData(CURVATURE_RECORD_KEY, record.id)
+                self.scene.addItem(item)
+                self.curvature_items.append(item)
+            self.curvature_record_items[record.id] = record_items
+
+    def selected_curvature_record_ids(self) -> set[str]:
+        ids: set[str] = set()
+        for item in self.scene.selectedItems():
+            record_id = item.data(CURVATURE_RECORD_KEY)
+            if record_id:
+                ids.add(str(record_id))
+        return ids
+
     def _expand_angle_group_selection(self) -> None:
         if self._filtering_selection:
             return
@@ -1449,6 +1578,20 @@ class AngleCanvas(QGraphicsView):
             event.accept()
             return
 
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.current_tool == "curvature"
+            and self.pixmap_item is not None
+        ):
+            self._curvature_roi_start = self._clamp_to_image(self.mapToScene(event.pos()))
+            self._temp_curvature_rect = QGraphicsRectItem(QRectF(self._curvature_roi_start, self._curvature_roi_start))
+            self._temp_curvature_rect.setPen(cosmetic_pen(QColor("#ef4444"), 1.6, Qt.PenStyle.DashLine))
+            self._temp_curvature_rect.setBrush(QBrush(QColor(239, 68, 68, 20)))
+            self._temp_curvature_rect.setZValue(44)
+            self.scene.addItem(self._temp_curvature_rect)
+            event.accept()
+            return
+
         if event.button() == Qt.MouseButton.LeftButton and self.current_tool == "segment":
             self._segment_drag_origin = event.pos()
             self._segment_drag_active = False
@@ -1584,6 +1727,12 @@ class AngleCanvas(QGraphicsView):
             event.accept()
             return
 
+        if self._temp_curvature_rect is not None and self._curvature_roi_start is not None:
+            end = self._clamp_to_image(self.mapToScene(event.pos()))
+            self._temp_curvature_rect.setRect(QRectF(self._curvature_roi_start, end).normalized())
+            event.accept()
+            return
+
         if self._temp_line is not None and self._drawing_start is not None:
             end = self._clamp_to_image(self.mapToScene(event.pos()))
             if self.current_tool in {"scale", "guide"}:
@@ -1654,6 +1803,21 @@ class AngleCanvas(QGraphicsView):
             self._resizing = False
             event.accept()
             self.scene_changed.emit()
+            return
+
+        if self._temp_curvature_rect is not None and self._curvature_roi_start is not None and event.button() == Qt.MouseButton.LeftButton:
+            start = self._curvature_roi_start
+            end = self._clamp_to_image(self.mapToScene(event.pos()))
+            rect = QRectF(start, end).normalized()
+            self.scene.removeItem(self._temp_curvature_rect)
+            self._temp_curvature_rect = None
+            self._curvature_roi_start = None
+            if rect.width() >= 8.0 and rect.height() >= 8.0:
+                self.curvature_roi_selected.emit(
+                    (float(rect.left()), float(rect.top())),
+                    (float(rect.right()), float(rect.bottom())),
+                )
+            event.accept()
             return
 
         if self._temp_line is not None and self._drawing_start is not None:
@@ -2201,6 +2365,13 @@ def clone_record(record: LineRecord) -> LineRecord:
         show_range_label=record.show_range_label,
         show_edge_length=record.show_edge_length,
         edge_length_label_pos=tuple(record.edge_length_label_pos) if record.edge_length_label_pos else None,
+        curvature_center=tuple(record.curvature_center) if record.curvature_center else None,
+        curvature_apex=tuple(record.curvature_apex) if record.curvature_apex else None,
+        curvature_radius_px=record.curvature_radius_px,
+        curvature_quality=record.curvature_quality,
+        curvature_fit_points=[tuple(point) for point in record.curvature_fit_points] if record.curvature_fit_points else None,
+        curvature_edge_points=[tuple(point) for point in record.curvature_edge_points] if record.curvature_edge_points else None,
+        curvature_label_pos=tuple(record.curvature_label_pos) if record.curvature_label_pos else None,
         stroke_color=record.stroke_color,
         stroke_width=record.stroke_width,
         is_main_guide=record.is_main_guide,
@@ -2245,6 +2416,13 @@ def line_record_from_dict(item: dict) -> LineRecord:
         show_range_label=bool(item.get("show_range_label", True)),
         show_edge_length=bool(item.get("show_edge_length", True)),
         edge_length_label_pos=tuple(item["edge_length_label_pos"]) if item.get("edge_length_label_pos") is not None else None,
+        curvature_center=tuple(item["curvature_center"]) if item.get("curvature_center") is not None else None,
+        curvature_apex=tuple(item["curvature_apex"]) if item.get("curvature_apex") is not None else None,
+        curvature_radius_px=float(item["curvature_radius_px"]) if item.get("curvature_radius_px") is not None else None,
+        curvature_quality=float(item["curvature_quality"]) if item.get("curvature_quality") is not None else None,
+        curvature_fit_points=[tuple(point) for point in (item.get("curvature_fit_points") or [])] or None,
+        curvature_edge_points=[tuple(point) for point in (item.get("curvature_edge_points") or [])] or None,
+        curvature_label_pos=tuple(item["curvature_label_pos"]) if item.get("curvature_label_pos") is not None else None,
         stroke_color=item.get("stroke_color"),
         stroke_width=float(item["stroke_width"]) if item.get("stroke_width") is not None else None,
         is_main_guide=bool(item.get("is_main_guide", False)),
@@ -2844,6 +3022,7 @@ class MainWindow(QMainWindow):
         self._updating_object_visibility_controls = False
         self._updating_detection_controls = False
         self._updating_image_adjustment_controls = False
+        self._updating_curvature_toggle = False
         self._expanding_object_group_selection = False
         self.last_edge_record_id: Optional[str] = None
         self.selected_segment: Optional[tuple[str, int]] = None
@@ -2902,6 +3081,7 @@ class MainWindow(QMainWindow):
         self.canvas.guide_context_requested.connect(self.open_guide_context_menu)
         self.canvas.image_context_requested.connect(self.open_image_context_menu)
         self.canvas.recognize_requested.connect(self.recognize_edges)
+        self.canvas.curvature_roi_selected.connect(self.measure_curvature_roi)
         self.detection_preview_timer = QTimer(self)
         self.detection_preview_timer.setSingleShot(True)
         self.detection_preview_timer.timeout.connect(self.clear_detection_preview)
@@ -2924,6 +3104,7 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_toolbar()
         self._build_measurements_dock()
+        self._build_curvature_dock()
         self._build_visibility_dock()
         self._build_scale_preset_dock()
         self._build_thumbnail_dock()
@@ -3231,9 +3412,12 @@ class MainWindow(QMainWindow):
         angle_button.clicked.connect(lambda: self.calculate_angles(reset_hidden=True))
         cd_button = QPushButton("CD 측정")
         cd_button.clicked.connect(self.calculate_cd_lengths)
+        self.curvature_tool_checkbox = QCheckBox("곡률 측정")
+        self.curvature_tool_checkbox.toggled.connect(self.toggle_curvature_tool)
         measurement_group.addWidget(self.cd_segment_combo)
         measurement_group.addWidget(angle_button)
         measurement_group.addWidget(cd_button)
+        measurement_group.addWidget(self.curvature_tool_checkbox)
         self.ribbon_tabs.addTab(guide_page, "가이드/측정")
 
         display_page = page()
@@ -3425,6 +3609,7 @@ class MainWindow(QMainWindow):
             self.canvas.clear_point_handles()
             self._show_image(keep_view=True)
             self.canvas.redraw_lines(list(self.records.values()))
+            self._refresh_curvature_overlay()
             self.calculate_angles(reset_hidden=False)
             self._restore_angle_item_states(snapshot.get("angle_item_states", []))
             self._update_search_range_overlay()
@@ -3547,6 +3732,38 @@ class MainWindow(QMainWindow):
         self.detection_preview_label.hide()
         self.measurement_table.hide()
         self.segment_profile_label.show()
+
+    def _build_curvature_dock(self) -> None:
+        dock = QDockWidget("곡률 측정", self)
+        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        guide = QLabel(
+            "측정할 절벽 꼭지점이 들어오도록 이미지 위에서 네모 ROI를 드래그하세요.\n"
+            "ROI 내부의 명도 경계 contour를 따라 꼭지점 곡률 반경을 자동 계산합니다."
+        )
+        guide.setWordWrap(True)
+        self.curvature_result_label = QLabel("결과: -")
+        self.curvature_result_label.setWordWrap(True)
+        self.curvature_result_label.setStyleSheet(
+            "QLabel {"
+            "background: #fff1f2;"
+            "border: 1px solid #fecdd3;"
+            "border-radius: 4px;"
+            "padding: 8px;"
+            "color: #7f1d1d;"
+            "}"
+        )
+        close_button = QPushButton("곡률 측정 끄기")
+        close_button.clicked.connect(lambda: self.curvature_tool_checkbox.setChecked(False))
+        layout.addWidget(guide)
+        layout.addWidget(self.curvature_result_label)
+        layout.addWidget(close_button)
+        dock.setWidget(container)
+        dock.visibilityChanged.connect(self._curvature_dock_visibility_changed)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.curvature_dock = dock
+        dock.hide()
 
     def _build_visibility_dock(self) -> None:
         dock = QDockWidget("표시", self)
@@ -3764,6 +3981,7 @@ class MainWindow(QMainWindow):
             self.hidden_angle_measurements.clear()
         self._show_image()
         self.canvas.redraw_lines(list(self.records.values()))
+        self._refresh_curvature_overlay()
         self._refresh_table()
         self._update_search_range_overlay()
         self._apply_visibility()
@@ -3885,6 +4103,21 @@ class MainWindow(QMainWindow):
             if record.edge_length_label_pos is not None:
                 points.append(record.edge_length_label_pos)
                 descriptors.append((record, "edge_length_label", 1))
+            if record.curvature_center is not None:
+                points.append(record.curvature_center)
+                descriptors.append((record, "curvature_center", 1))
+            if record.curvature_apex is not None:
+                points.append(record.curvature_apex)
+                descriptors.append((record, "curvature_apex", 1))
+            if record.curvature_label_pos is not None:
+                points.append(record.curvature_label_pos)
+                descriptors.append((record, "curvature_label", 1))
+            if record.curvature_fit_points:
+                points.extend(record.curvature_fit_points)
+                descriptors.append((record, "curvature_fit", len(record.curvature_fit_points)))
+            if record.curvature_edge_points:
+                points.extend(record.curvature_edge_points)
+                descriptors.append((record, "curvature_edge", len(record.curvature_edge_points)))
 
         rotated, transformed = rotate_image_and_points(image, points, float(angle_degrees))
         cursor = 0
@@ -3902,6 +4135,16 @@ class MainWindow(QMainWindow):
                 record.recognition_points = chunk
             elif item_kind == "edge_length_label" and chunk:
                 record.edge_length_label_pos = chunk[0]
+            elif item_kind == "curvature_center" and chunk:
+                record.curvature_center = chunk[0]
+            elif item_kind == "curvature_apex" and chunk:
+                record.curvature_apex = chunk[0]
+            elif item_kind == "curvature_label" and chunk:
+                record.curvature_label_pos = chunk[0]
+            elif item_kind == "curvature_fit":
+                record.curvature_fit_points = chunk
+            elif item_kind == "curvature_edge":
+                record.curvature_edge_points = chunk
         return rotated
 
     def _set_rotation_status(self, angle_degrees: float, reason: str) -> None:
@@ -5104,6 +5347,7 @@ class MainWindow(QMainWindow):
         elif tool == "guide":
             self._create_guide_line(start, end)
         self.canvas.redraw_lines(list(self.records.values()))
+        self._refresh_curvature_overlay()
         self._refresh_table()
         self._update_search_range_overlay()
         self._apply_visibility()
@@ -5218,6 +5462,7 @@ class MainWindow(QMainWindow):
             del self.records[record_id]
         self._create_scale_record_from_preset(preset)
         self.canvas.redraw_lines(list(self.records.values()))
+        self._refresh_curvature_overlay()
         self._refresh_table()
         self._update_search_range_overlay()
         self._apply_visibility()
@@ -5637,6 +5882,7 @@ class MainWindow(QMainWindow):
         self.image_rotation_degrees = self._normalized_image_rotation(self.image_rotation_degrees + rotate_by)
         self._show_image(keep_view=False)
         self.canvas.redraw_lines(list(self.records.values()))
+        self._refresh_curvature_overlay()
         self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
@@ -5674,6 +5920,7 @@ class MainWindow(QMainWindow):
         self.image_rotation_degrees = self._normalized_image_rotation(self.image_rotation_degrees + float(angle_degrees))
         self._show_image(keep_view=False)
         self.canvas.redraw_lines(list(self.records.values()))
+        self._refresh_curvature_overlay()
         self.calculate_angles(reset_hidden=False)
         self._update_search_range_overlay()
         self._apply_visibility()
@@ -6453,12 +6700,13 @@ class MainWindow(QMainWindow):
 
     def delete_selected(self) -> None:
         selected = set(self.canvas.selected_line_ids())
+        selected_curvature_ids = self.canvas.selected_curvature_record_ids()
         selected_angle_items = self.canvas.selected_angle_items()
         selected_edge_length_items = self.canvas.selected_edge_length_items()
         selected_point_handles = self.canvas.selected_point_handles()
-        if not selected and not selected_angle_items and not selected_edge_length_items and not selected_point_handles:
+        if not selected and not selected_curvature_ids and not selected_angle_items and not selected_edge_length_items and not selected_point_handles:
             return
-        if not selected and not selected_angle_items and not selected_edge_length_items and selected_point_handles:
+        if not selected and not selected_curvature_ids and not selected_angle_items and not selected_edge_length_items and selected_point_handles:
             visible_angle_ids = self._visible_angle_measurement_ids()
             self.save_undo_snapshot()
             if self.canvas.delete_selected_point_handles():
@@ -6477,10 +6725,11 @@ class MainWindow(QMainWindow):
                 record.show_edge_length = False
         if selected:
             self.canvas.clear_point_handles()
-        for record_id in selected:
+        for record_id in selected | selected_curvature_ids:
             self.records.pop(record_id, None)
-        if selected:
+        if selected or selected_curvature_ids:
             self.canvas.redraw_lines(list(self.records.values()))
+            self._refresh_curvature_overlay()
             self.calculate_angles(reset_hidden=False, visible_measurement_ids=visible_angle_ids)
             self._update_search_range_overlay()
             self._apply_visibility()
@@ -6490,7 +6739,7 @@ class MainWindow(QMainWindow):
         if selected_edge_length_items and not selected:
             self.canvas.remove_edge_length_items(selected_edge_length_items)
             self._update_object_visibility_controls()
-        deleted_count = len(selected) + len(selected_angle_items) + len(selected_edge_length_items)
+        deleted_count = len(selected) + len(selected_curvature_ids) + len(selected_angle_items) + len(selected_edge_length_items)
         self._set_status(f"{deleted_count}개 개체를 삭제했습니다.")
 
     def group_selected_objects(self) -> None:
@@ -6870,6 +7119,109 @@ class MainWindow(QMainWindow):
         self.canvas.set_tool(tool)
         if hasattr(self, "tool_buttons") and tool in self.tool_buttons:
             self.tool_buttons[tool].setChecked(True)
+        elif hasattr(self, "tool_button_group"):
+            self.tool_button_group.setExclusive(False)
+            for button in self.tool_buttons.values():
+                button.setChecked(False)
+            self.tool_button_group.setExclusive(True)
+        if hasattr(self, "curvature_tool_checkbox") and not self._updating_curvature_toggle:
+            self._updating_curvature_toggle = True
+            try:
+                self.curvature_tool_checkbox.setChecked(tool == "curvature")
+            finally:
+                self._updating_curvature_toggle = False
+        if tool != "curvature" and hasattr(self, "curvature_dock"):
+            self.curvature_dock.hide()
+
+    def toggle_curvature_tool(self, enabled: bool) -> None:
+        if self._updating_curvature_toggle:
+            return
+        if enabled:
+            if self.image_bgr is None:
+                self._updating_curvature_toggle = True
+                try:
+                    self.curvature_tool_checkbox.setChecked(False)
+                finally:
+                    self._updating_curvature_toggle = False
+                QMessageBox.information(self, "곡률 측정", "먼저 이미지를 불러오세요.")
+                return
+            self.set_current_tool("curvature")
+            self.curvature_dock.setFloating(True)
+            self.curvature_dock.show()
+            self.curvature_dock.raise_()
+            self.curvature_result_label.setText("결과: 이미지 위에서 절벽 꼭지점 주변을 네모로 드래그하세요.")
+            self._set_status("곡률 측정: 절벽 꼭지점이 들어오도록 네모 ROI를 드래그하세요.")
+            return
+        if self.current_tool == "curvature":
+            self.set_current_tool("select")
+        if hasattr(self, "curvature_dock"):
+            self.curvature_dock.hide()
+
+    def _curvature_dock_visibility_changed(self, visible: bool) -> None:
+        if visible or not hasattr(self, "curvature_tool_checkbox"):
+            return
+        if self.curvature_tool_checkbox.isChecked():
+            self._updating_curvature_toggle = True
+            try:
+                self.curvature_tool_checkbox.setChecked(False)
+            finally:
+                self._updating_curvature_toggle = False
+        if self.current_tool == "curvature":
+            self.set_current_tool("select")
+
+    def measure_curvature_roi(self, start: Point, end: Point) -> None:
+        if self.image_bgr is None:
+            return
+        height, width = self.image_bgr.shape[:2]
+        left = max(0, min(width - 1, int(math.floor(min(start[0], end[0])))))
+        right = max(0, min(width, int(math.ceil(max(start[0], end[0])))))
+        top = max(0, min(height - 1, int(math.floor(min(start[1], end[1])))))
+        bottom = max(0, min(height, int(math.ceil(max(start[1], end[1])))))
+        if right - left < 8 or bottom - top < 8:
+            self._set_status("곡률 측정 ROI가 너무 작습니다.")
+            return
+        roi = self._adjusted_image_bgr()[top:bottom, left:right]
+        result = measure_cliff_curvature(roi)
+        if result is None:
+            self.curvature_result_label.setText("결과: ROI 안에서 안정적인 절벽 꼭지점 곡률을 찾지 못했습니다.")
+            self._set_status("곡률 측정 실패: ROI를 조금 더 넓게 잡거나 대비/선명도를 조정해보세요.")
+            return
+
+        self.save_undo_snapshot()
+        offset = (float(left), float(top))
+        radius_nm = result.radius_px * self.nm_per_px if self.nm_per_px else None
+        record = LineRecord(
+            id=self._next_id("C"),
+            kind="curvature",
+            start=(float(left), float(top)),
+            end=(float(right), float(bottom)),
+            label="곡률 반경",
+            value_nm=radius_nm,
+            curvature_center=offset_point(result.center, offset[0], offset[1]),
+            curvature_apex=offset_point(result.apex, offset[0], offset[1]),
+            curvature_radius_px=float(result.radius_px),
+            curvature_quality=float(result.quality),
+            curvature_fit_points=[offset_point(point, offset[0], offset[1]) for point in result.fit_points],
+            curvature_edge_points=[offset_point(point, offset[0], offset[1]) for point in result.edge_points],
+        )
+        self.records[record.id] = record
+        self._refresh_curvature_overlay()
+        self._refresh_table()
+        if radius_nm is not None:
+            result_text = f"{record.id}: R {radius_nm:.4g} nm ({result.radius_px:.2f} px), 품질 {result.quality:.2f}"
+        else:
+            result_text = f"{record.id}: R {result.radius_px:.2f} px, 품질 {result.quality:.2f}"
+        self.curvature_result_label.setText(f"결과: {result_text}")
+        self._set_status(f"곡률 측정 완료: {result_text}")
+
+    def _refresh_curvature_values(self) -> None:
+        for record in self.records.values():
+            if record.kind == "curvature" and record.curvature_radius_px is not None:
+                record.value_nm = record.curvature_radius_px * self.nm_per_px if self.nm_per_px else None
+
+    def _refresh_curvature_overlay(self) -> None:
+        self._refresh_curvature_values()
+        self.canvas.update_curvature_overlay(list(self.records.values()))
 
     def apply_selected_style(self) -> None:
         if not hasattr(self, "stroke_color_combo"):
@@ -7383,6 +7735,13 @@ class MainWindow(QMainWindow):
             if parent_id and str(parent_id) in self.records:
                 pos = item.pos()
                 self.records[str(parent_id)].edge_length_label_pos = (float(pos.x()), float(pos.y()))
+        for item in self.canvas.curvature_items:
+            if not item.data(CURVATURE_LABEL_KEY):
+                continue
+            record_id = item.data(CURVATURE_RECORD_KEY)
+            if record_id and str(record_id) in self.records:
+                pos = item.pos()
+                self.records[str(record_id)].curvature_label_pos = (float(pos.x()), float(pos.y()))
         for record_id, item in self.canvas.line_items.items():
             if record_id not in self.records:
                 continue
@@ -7426,11 +7785,19 @@ class MainWindow(QMainWindow):
 
     def _refresh_table(self) -> None:
         self._sync_records_from_canvas()
+        self._refresh_curvature_values()
         rows = [record for record in self.records.values() if record.kind != "guide"]
         self.measurement_table.setRowCount(len(rows))
         for row_idx, record in enumerate(rows):
-            length_px = record_length(record)
-            length_nm = length_px * self.nm_per_px if self.nm_per_px else None
+            if record.kind == "curvature":
+                length_px = float(record.curvature_radius_px or 0.0)
+                length_nm = record.value_nm
+                angle_text = f"q {float(record.curvature_quality or 0.0):.2f}"
+                kind_text = "곡률 반경"
+            else:
+                length_px = record_length(record)
+                length_nm = length_px * self.nm_per_px if self.nm_per_px else None
+                kind_text = record.kind
             if record.kind == "edge":
                 reference = self._reference_record()
                 if reference is not None:
@@ -7446,11 +7813,11 @@ class MainWindow(QMainWindow):
                 angle_text = f"{angle:.2f}°"
             elif record.kind == "reference":
                 angle_text = f"{line_angle_degrees(record.start, record.end):.2f}°"
-            else:
+            elif record.kind != "curvature":
                 angle_text = ""
             values = [
                 record.id,
-                record.kind,
+                kind_text,
                 f"{length_px:.2f}",
                 f"{length_nm:.2f}" if length_nm is not None else "",
                 angle_text,

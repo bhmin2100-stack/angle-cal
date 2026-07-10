@@ -31,6 +31,23 @@ def _window_with_edge_image():
     return window
 
 
+def _rounded_cliff_image() -> np.ndarray:
+    image = np.zeros((130, 130), dtype=np.uint8)
+    center = (58.0, 66.0)
+    radius = 18.0
+    arc_points = [
+        (
+            center[0] + radius * math.cos(math.radians(angle)),
+            center[1] + radius * math.sin(math.radians(angle)),
+        )
+        for angle in np.linspace(-90.0, 0.0, 30)
+    ]
+    boundary = [(0.0, center[1] - radius), (center[0], center[1] - radius), *arc_points, (center[0] + radius, 129.0), (0.0, 129.0)]
+    cv2.fillPoly(image, [np.array(boundary, dtype=np.int32)], 255)
+    image = cv2.GaussianBlur(image, (3, 3), 0)
+    return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+
 def _select_edges(window: MainWindow) -> list[LineRecord]:
     window.canvas.redraw_lines(list(window.records.values()))
     edges = [record for record in window.records.values() if record.kind == "edge"]
@@ -2956,6 +2973,67 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         assert file_group_titles == ["불러오기 / 저장", "내보내기"]
         export_group = next(group for group in file_groups if group.title() == "내보내기")
         assert [button.text() for button in export_group.findChildren(QPushButton)] == ["Data Export", "즐겨찾기 이미지 내보내기", "즐겨찾기 Data Export"]
+    finally:
+        window.close()
+
+
+def test_curvature_tool_checkbox_opens_popup_and_drag_roi_measures_radius():
+    _app()
+    window = MainWindow()
+    try:
+        window.image_bgr = _rounded_cliff_image()
+        window.nm_per_px = 2.0
+        window._show_image()
+
+        window.curvature_tool_checkbox.setChecked(True)
+
+        assert window.current_tool == "curvature"
+        assert window.canvas.current_tool == "curvature"
+        assert window.curvature_dock.isVisible()
+
+        press = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPointF(window.canvas.mapFromScene(QPointF(0.0, 0.0))),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        move = QMouseEvent(
+            QEvent.Type.MouseMove,
+            QPointF(window.canvas.mapFromScene(QPointF(129.0, 129.0))),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        release = QMouseEvent(
+            QEvent.Type.MouseButtonRelease,
+            QPointF(window.canvas.mapFromScene(QPointF(129.0, 129.0))),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        window.canvas.mousePressEvent(press)
+        window.canvas.mouseMoveEvent(move)
+        window.canvas.mouseReleaseEvent(release)
+
+        curvature_records = [record for record in window.records.values() if record.kind == "curvature"]
+        assert len(curvature_records) == 1
+        record = curvature_records[0]
+        assert record.curvature_radius_px is not None
+        assert 13.0 <= record.curvature_radius_px <= 24.0
+        assert record.value_nm is not None
+        assert math.isclose(record.value_nm, record.curvature_radius_px * 2.0)
+        assert record.id in window.canvas.curvature_record_items
+        assert any("R " in item.toPlainText() for item in window.canvas.curvature_record_items[record.id] if isinstance(item, QGraphicsTextItem))
+        assert window.measurement_table.rowCount() == 1
+        assert window.measurement_table.item(0, 1).text() == "곡률 반경"
+        assert "R " in window.curvature_result_label.text()
+
+        window.canvas.curvature_record_items[record.id][0].setSelected(True)
+        window.delete_selected()
+
+        assert not [item for item in window.records.values() if item.kind == "curvature"]
+        assert not window.canvas.curvature_items
     finally:
         window.close()
 

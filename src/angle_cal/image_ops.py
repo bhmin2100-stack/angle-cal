@@ -50,6 +50,16 @@ class SegmentProfileResult:
     best_gradient: float
 
 
+@dataclass(frozen=True)
+class CurvatureResult:
+    center: Point
+    radius_px: float
+    apex: Point
+    edge_points: list[Point]
+    fit_points: list[Point]
+    quality: float
+
+
 def line_length(start: Point, end: Point) -> float:
     return float(math.hypot(end[0] - start[0], end[1] - start[1]))
 
@@ -350,6 +360,190 @@ def segment_brightness_profile(
         best_offset_px=float(offsets[best_index]),
         best_gradient=float(gradient[best_index]),
     )
+
+
+def measure_cliff_curvature(image: np.ndarray) -> Optional[CurvatureResult]:
+    """Estimate the local radius of curvature for a cliff-like rounded edge.
+
+    The input is a user-selected ROI. The method extracts high-gradient edge
+    contours, finds the strongest local turning point, and fits a circle to the
+    neighboring contour points around that apex. Returned coordinates are
+    relative to the ROI origin.
+    """
+    gray = to_gray(image)
+    if gray.size < 64:
+        return None
+    height, width = gray.shape[:2]
+    if height < 8 or width < 8:
+        return None
+
+    gray8 = _normalize_gray_uint8(gray)
+    if gray8 is None:
+        return None
+    blurred = cv2.GaussianBlur(gray8, (5, 5), 0)
+    edges = _auto_canny(blurred)
+    if int(np.count_nonzero(edges)) < 12:
+        edges = _gradient_edge_mask(blurred)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    best: Optional[tuple[float, CurvatureResult]] = None
+    for contour in contours:
+        points = contour.reshape(-1, 2).astype(np.float32)
+        if len(points) < 16:
+            continue
+        if cv2.arcLength(contour, False) < 12.0:
+            continue
+        candidate = _curvature_from_contour(points, width, height)
+        if candidate is None:
+            continue
+        score = candidate.quality * math.sqrt(len(candidate.fit_points))
+        if best is None or score > best[0]:
+            best = (score, candidate)
+    return best[1] if best is not None else None
+
+
+def _normalize_gray_uint8(gray: np.ndarray) -> Optional[np.ndarray]:
+    values = gray.astype(np.float32)
+    finite = np.isfinite(values)
+    if not np.any(finite):
+        return None
+    min_value = float(np.nanmin(values[finite]))
+    max_value = float(np.nanmax(values[finite]))
+    if max_value - min_value < 1e-6:
+        return None
+    scaled = (values - min_value) * (255.0 / (max_value - min_value))
+    return np.clip(scaled, 0, 255).astype(np.uint8)
+
+
+def _auto_canny(gray8: np.ndarray) -> np.ndarray:
+    median = float(np.median(gray8))
+    lower = int(max(5, 0.66 * median))
+    upper = int(min(255, max(lower + 10, 1.33 * median)))
+    edges = cv2.Canny(gray8, lower, upper, L2gradient=True)
+    kernel = np.ones((2, 2), dtype=np.uint8)
+    return cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+
+def _gradient_edge_mask(gray8: np.ndarray) -> np.ndarray:
+    values = gray8.astype(np.float32)
+    gy, gx = np.gradient(values)
+    magnitude = np.hypot(gx, gy)
+    finite = np.isfinite(magnitude)
+    if not np.any(finite):
+        return np.zeros(gray8.shape, dtype=np.uint8)
+    threshold = float(np.percentile(magnitude[finite], 92.0))
+    mask = (magnitude >= threshold).astype(np.uint8) * 255
+    kernel = np.ones((2, 2), dtype=np.uint8)
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+
+def _curvature_from_contour(points: np.ndarray, width: int, height: int) -> Optional[CurvatureResult]:
+    points = _smooth_contour_points(points)
+    count = int(points.shape[0])
+    if count < 16:
+        return None
+    closed = bool(np.linalg.norm(points[0] - points[-1]) <= 2.0)
+    step = max(3, min(14, count // 12))
+    scores: list[tuple[float, int]] = []
+    start_index = 0 if closed else step
+    end_index = count if closed else count - step
+    for index in range(start_index, end_index):
+        p0 = points[(index - step) % count]
+        p1 = points[index]
+        p2 = points[(index + step) % count]
+        a = p0 - p1
+        b = p2 - p1
+        len_a = float(np.linalg.norm(a))
+        len_b = float(np.linalg.norm(b))
+        if len_a < 1e-6 or len_b < 1e-6:
+            continue
+        cosine = float(np.clip(np.dot(a, b) / (len_a * len_b), -1.0, 1.0))
+        turn = abs(math.pi - math.acos(cosine))
+        scores.append((turn, index))
+    if not scores:
+        return None
+
+    max_radius = max(float(width), float(height)) * 2.0
+    neighborhood = max(6, min(24, step + 2))
+    margin = max(4.0, min(float(width), float(height)) * 0.05)
+    for _, index in sorted(scores, reverse=True)[:80]:
+        apex_x = float(points[index, 0])
+        apex_y = float(points[index, 1])
+        if apex_x <= margin or apex_y <= margin or apex_x >= width - 1 - margin or apex_y >= height - 1 - margin:
+            continue
+        fit_points = _contour_window(points, index, neighborhood, closed)
+        if fit_points.shape[0] < 8:
+            continue
+        fit = _fit_circle(fit_points)
+        if fit is None:
+            continue
+        center_x, center_y, radius, residual = fit
+        if not (2.0 <= radius <= max_radius):
+            continue
+        if residual > 0.35:
+            continue
+        center = (float(center_x), float(center_y))
+        apex = (apex_x, apex_y)
+        sampled_edge = _sample_points(points, 220)
+        sampled_fit = _sample_points(fit_points, 80)
+        quality = float(max(0.0, min(1.0, 1.0 - residual)))
+        return CurvatureResult(
+            center=center,
+            radius_px=float(radius),
+            apex=apex,
+            edge_points=sampled_edge,
+            fit_points=sampled_fit,
+            quality=quality,
+        )
+    return None
+
+
+def _smooth_contour_points(points: np.ndarray) -> np.ndarray:
+    if points.shape[0] < 7:
+        return points.astype(np.float32)
+    kernel = np.array([1, 2, 3, 2, 1], dtype=np.float32)
+    kernel /= kernel.sum()
+    pad = len(kernel) // 2
+    x = np.convolve(np.pad(points[:, 0], (pad, pad), mode="edge"), kernel, mode="valid")
+    y = np.convolve(np.pad(points[:, 1], (pad, pad), mode="edge"), kernel, mode="valid")
+    return np.column_stack([x, y]).astype(np.float32)
+
+
+def _contour_window(points: np.ndarray, index: int, radius: int, closed: bool) -> np.ndarray:
+    count = int(points.shape[0])
+    if closed:
+        indexes = [(index + offset) % count for offset in range(-radius, radius + 1)]
+        return points[indexes]
+    left = max(0, index - radius)
+    right = min(count, index + radius + 1)
+    return points[left:right]
+
+
+def _fit_circle(points: np.ndarray) -> Optional[tuple[float, float, float, float]]:
+    if points.shape[0] < 3:
+        return None
+    x = points[:, 0].astype(np.float64)
+    y = points[:, 1].astype(np.float64)
+    matrix = np.column_stack([2.0 * x, 2.0 * y, np.ones_like(x)])
+    rhs = x * x + y * y
+    try:
+        center_x, center_y, c = np.linalg.lstsq(matrix, rhs, rcond=None)[0]
+    except np.linalg.LinAlgError:
+        return None
+    radius_sq = float(center_x * center_x + center_y * center_y + c)
+    if radius_sq <= 0:
+        return None
+    radius = math.sqrt(radius_sq)
+    distances = np.hypot(x - center_x, y - center_y)
+    residual = float(np.sqrt(np.mean((distances - radius) ** 2)) / max(radius, 1e-6))
+    return float(center_x), float(center_y), float(radius), residual
+
+
+def _sample_points(points: np.ndarray, limit: int) -> list[Point]:
+    if points.shape[0] <= limit:
+        return [(float(x), float(y)) for x, y in points]
+    indexes = np.linspace(0, points.shape[0] - 1, limit).round().astype(int)
+    return [(float(points[index, 0]), float(points[index, 1])) for index in indexes]
 
 
 def _boundary_profile_index(
