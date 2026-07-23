@@ -463,7 +463,7 @@ def _curvature_from_contour(points: np.ndarray, width: int, height: int) -> Opti
     if not scores:
         return None
 
-    max_radius = max(float(width), float(height)) * 2.0
+    max_radius = max(4.0, min(float(width), float(height)) * 0.5)
     neighborhood = max(6, min(24, step + 2))
     margin = max(4.0, min(float(width), float(height)) * 0.05)
     for _, index in sorted(scores, reverse=True)[:80]:

@@ -12,7 +12,7 @@ from typing import Callable, Optional
 import zipfile
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QDoubleSpinBox,
+    QProgressDialog,
     QPushButton,
     QRubberBand,
     QScrollArea,
@@ -58,6 +59,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import updater
 from .image_ops import (
     Point,
     acute_angle_difference,
@@ -2965,6 +2967,36 @@ class DataExportDialog(QDialog):
         )
 
 
+class UpdateCheckWorker(QObject):
+    finished = Signal(object, object, bool)
+
+    def __init__(self, manual: bool) -> None:
+        super().__init__()
+        self.manual = manual
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(updater.fetch_update_info(), None, self.manual)
+        except Exception as exc:
+            self.finished.emit(None, exc, self.manual)
+
+
+class UpdateDownloadWorker(QObject):
+    progress = Signal(int, int)
+    finished = Signal(object, object)
+
+    def __init__(self, info: updater.UpdateInfo) -> None:
+        super().__init__()
+        self.info = info
+
+    def run(self) -> None:
+        try:
+            path = updater.download_update(self.info, progress=lambda done, total: self.progress.emit(done, total))
+            self.finished.emit(path, None)
+        except Exception as exc:
+            self.finished.emit(None, exc)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -3100,6 +3132,12 @@ class MainWindow(QMainWindow):
         self.save_notification_timer = QTimer(self)
         self.save_notification_timer.setSingleShot(True)
         self.save_notification_timer.timeout.connect(self.save_notification_label.hide)
+        self._update_check_thread: Optional[QThread] = None
+        self._update_check_worker: Optional[UpdateCheckWorker] = None
+        self._update_download_thread: Optional[QThread] = None
+        self._update_download_worker: Optional[UpdateDownloadWorker] = None
+        self._update_progress_dialog: Optional[QProgressDialog] = None
+        self._last_update_prompt_key: Optional[str] = None
 
         self._build_actions()
         self._build_toolbar()
@@ -3112,6 +3150,7 @@ class MainWindow(QMainWindow):
         self.canvas.scene.selectionChanged.connect(self._update_object_visibility_controls)
         self.setStatusBar(QStatusBar())
         self._set_status("이미지를 불러오면 시작할 수 있습니다.")
+        QTimer.singleShot(1500, self.check_updates_on_startup)
 
     @staticmethod
     def _apply_tooltip_style() -> None:
@@ -3123,6 +3162,168 @@ class MainWindow(QMainWindow):
             return
         separator = "\n" if current and not current.endswith("\n") else ""
         app.setStyleSheet(f"{current}{separator}{TOOLTIP_STYLESHEET}")
+
+    def check_updates_on_startup(self) -> None:
+        self.start_update_check(manual=False)
+
+    def check_updates_manually(self) -> None:
+        self.start_update_check(manual=True)
+
+    def start_update_check(self, *, manual: bool) -> None:
+        if self._update_check_thread is not None:
+            if manual:
+                self._set_status("업데이트 확인이 이미 진행 중입니다.")
+            return
+        if not manual and not updater.is_packaged_app():
+            return
+        if manual:
+            self._set_status("업데이트 확인 중...")
+
+        thread = QThread(self)
+        worker = UpdateCheckWorker(manual)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self.on_update_check_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread: self.cleanup_update_check_thread(t))
+        self._update_check_thread = thread
+        self._update_check_worker = worker
+        thread.start()
+
+    def cleanup_update_check_thread(self, thread: QThread) -> None:
+        if self._update_check_thread is thread:
+            self._update_check_thread = None
+            self._update_check_worker = None
+
+    def on_update_check_finished(self, info: object, error: object, manual: bool) -> None:
+        if error:
+            if manual:
+                QMessageBox.warning(self, "업데이트 확인", f"업데이트 정보를 확인하지 못했습니다.\n\n{error}")
+            return
+        if not isinstance(info, updater.UpdateInfo):
+            return
+        if not info.is_available:
+            if manual:
+                QMessageBox.information(self, "업데이트 확인", f"현재 최신 버전입니다.\n\n현재: {info.current_label}")
+            return
+        if not manual and not updater.should_notify_update(info, self._last_update_prompt_key):
+            return
+        if not updater.is_packaged_app():
+            if manual:
+                QMessageBox.information(
+                    self,
+                    "업데이트 확인",
+                    "새 버전이 있지만 현재는 Python 소스 실행 상태라 EXE 교체를 적용하지 않습니다.\n"
+                    "배포된 AngleCal.exe에서 자동 업데이트를 실행하세요.",
+                )
+            return
+
+        if not manual:
+            self._last_update_prompt_key = info.notification_key
+        self.show_update_prompt(info)
+
+    def show_update_prompt(self, info: updater.UpdateInfo) -> None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("업데이트")
+        notes = f"\n\n변경 내용:\n{info.notes}" if info.notes else ""
+        published = f"\n게시 시각: {info.latest_build_date}" if info.latest_build_date else ""
+        dialog.setText(
+            "새 버전이 있습니다.\n\n"
+            f"현재 버전: {info.current_label}\n"
+            f"최신 버전: {info.latest_label}{published}{notes}\n\n"
+            "지금 업데이트하면 AngleCal이 종료된 뒤 EXE가 교체되고 자동으로 다시 실행됩니다.\n"
+            "이미지, 프로젝트 파일, 즐겨찾기, 설정은 변경하지 않습니다."
+        )
+        update_button = dialog.addButton("지금 업데이트", QMessageBox.ButtonRole.AcceptRole)
+        dialog.addButton("나중에", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() is update_button:
+            self.start_update_download(info)
+
+    def start_update_download(self, info: updater.UpdateInfo) -> None:
+        if install_error := updater.update_install_error():
+            QMessageBox.warning(self, "업데이트", install_error)
+            return
+        if self._update_download_thread is not None:
+            self._set_status("업데이트 다운로드가 이미 진행 중입니다.")
+            return
+
+        dialog = QProgressDialog("업데이트 파일 다운로드 중...", "", 0, 100, self)
+        dialog.setWindowTitle("업데이트")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setCancelButton(None)
+        dialog.setValue(0)
+        dialog.show()
+
+        thread = QThread(self)
+        worker = UpdateDownloadWorker(info)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self.on_update_download_progress)
+        worker.finished.connect(self.on_update_download_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda t=thread: self.cleanup_update_download_thread(t))
+        self._update_progress_dialog = dialog
+        self._update_download_thread = thread
+        self._update_download_worker = worker
+        thread.start()
+
+    def cleanup_update_download_thread(self, thread: QThread) -> None:
+        if self._update_download_thread is thread:
+            self._update_download_thread = None
+            self._update_download_worker = None
+
+    def on_update_download_progress(self, downloaded: int, total: int) -> None:
+        dialog = self._update_progress_dialog
+        if dialog is None:
+            return
+        if total > 0:
+            percent = max(0, min(100, int(downloaded * 100 / total)))
+            dialog.setRange(0, 100)
+            dialog.setValue(percent)
+            dialog.setLabelText(f"업데이트 파일 다운로드 중... {self.format_bytes(downloaded)} / {self.format_bytes(total)}")
+        else:
+            dialog.setRange(0, 0)
+            dialog.setLabelText(f"업데이트 파일 다운로드 중... {self.format_bytes(downloaded)}")
+
+    def on_update_download_finished(self, path: object, error: object) -> None:
+        dialog = self._update_progress_dialog
+        self._update_progress_dialog = None
+        if dialog is not None:
+            dialog.close()
+        if error:
+            QMessageBox.warning(
+                self,
+                "업데이트",
+                f"업데이트 다운로드에 실패했습니다.\n\n{error}\n\n수동 확인: {updater.selected_channel().release_page_url}",
+            )
+            return
+        if not isinstance(path, Path):
+            QMessageBox.warning(self, "업데이트", "업데이트 파일 경로를 확인할 수 없습니다.")
+            return
+        try:
+            updater.launch_self_update(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "업데이트", f"업데이트 적용을 시작하지 못했습니다.\n\n{exc}")
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    @staticmethod
+    def format_bytes(value: int) -> str:
+        size = float(max(0, value))
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024 or unit == "GB":
+                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+            size /= 1024
+        return f"{int(value)} B"
 
     def _build_actions(self) -> None:
         self.open_action = QAction("이미지 열기", self)
@@ -3147,6 +3348,8 @@ class MainWindow(QMainWindow):
         self.export_favorite_images_action.triggered.connect(self.export_favorite_images)
         self.export_favorite_data_action = QAction("즐겨찾기 Data Export", self)
         self.export_favorite_data_action.triggered.connect(self.export_favorite_data_xlsx)
+        self.check_updates_action = QAction("업데이트 확인", self)
+        self.check_updates_action.triggered.connect(self.check_updates_manually)
         self.select_tool_action = QAction("선택 도구", self)
         self.select_tool_action.setShortcut(QKeySequence(Qt.Key.Key_Escape))
         self.select_tool_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -3294,6 +3497,7 @@ class MainWindow(QMainWindow):
         export_group.addWidget(self._button_for_action(self.export_data_action))
         export_group.addWidget(self._button_for_action(self.export_favorite_images_action))
         export_group.addWidget(self._button_for_action(self.export_favorite_data_action))
+        export_group.addWidget(self._button_for_action(self.check_updates_action))
         self.ribbon_tabs.addTab(file_page, "파일")
 
         edge_page = page()
@@ -7859,6 +8063,9 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
+    if len(sys.argv) >= 3 and sys.argv[1] == "--build-info-json":
+        Path(sys.argv[2]).write_text(json.dumps(updater.build_info_dict(), ensure_ascii=False), encoding="utf-8")
+        return
     app = QApplication(sys.argv)
     app.setApplicationName("Angle Cal")
     window = MainWindow()

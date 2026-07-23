@@ -2256,7 +2256,7 @@ def test_scan_folder_images_uses_natural_numeric_order_for_nested_folders(tmp_pa
     try:
         scanned = window._scan_folder_images(tmp_path)
 
-        assert [str(path.relative_to(tmp_path)) for path in scanned] == [
+        assert [path.relative_to(tmp_path).as_posix() for path in scanned] == [
             "000/1/a.png",
             "000/2/a.png",
             "000/10/a.png",
@@ -2745,7 +2745,7 @@ def test_open_project_sorts_nested_browser_paths_naturally(tmp_path, monkeypatch
     try:
         window.open_project()
 
-        assert [str(Path(path).relative_to(tmp_path)) for path in window.browser_image_paths] == [
+        assert [Path(path).relative_to(tmp_path).as_posix() for path in window.browser_image_paths] == [
             "000/1/a.png",
             "000/2/a.png",
             "000/10/a.png",
@@ -2972,7 +2972,12 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         file_group_titles = [group.title() for group in file_groups]
         assert file_group_titles == ["불러오기 / 저장", "내보내기"]
         export_group = next(group for group in file_groups if group.title() == "내보내기")
-        assert [button.text() for button in export_group.findChildren(QPushButton)] == ["Data Export", "즐겨찾기 이미지 내보내기", "즐겨찾기 Data Export"]
+        assert [button.text() for button in export_group.findChildren(QPushButton)] == [
+            "Data Export",
+            "즐겨찾기 이미지 내보내기",
+            "즐겨찾기 Data Export",
+            "업데이트 확인",
+        ]
     finally:
         window.close()
 
