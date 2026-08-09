@@ -55,11 +55,26 @@ from PySide6.QtWidgets import (
     QTabBar,
     QTabWidget,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from . import updater
+from .photo_merge import PhotoMergeDialog
+
+
+@dataclass(frozen=True)
+class AddonDefinition:
+    addon_id: str
+    title: str
+
+
+ADDON_DEFINITIONS = (
+    AddonDefinition("photo_merge", "사진 합치기"),
+    AddonDefinition("trench_analyzer", "Trench 자동분석기"),
+    AddonDefinition("cliff_angle_analyzer", "Cliff angle 분석기"),
+)
 from .image_ops import (
     Point,
     acute_angle_difference,
@@ -3021,6 +3036,10 @@ class MainWindow(QMainWindow):
         self.current_browser_index = -1
         self.thumbnail_buttons: dict[str, QPushButton] = {}
         self.selected_thumbnail_paths: set[str] = set()
+        self.enabled_addon_ids: set[str] = set()
+        self.addon_actions: dict[str, QAction] = {}
+        self.addon_pages: dict[str, QWidget] = {}
+        self.photo_merge_dialog: Optional[PhotoMergeDialog] = None
         self._thumbnail_anchor_path: Optional[str] = None
         self._thumbnail_drag_origin: Optional[QPoint] = None
         self._thumbnail_drag_active = False
@@ -3469,6 +3488,17 @@ class MainWindow(QMainWindow):
         quick_recognize_button.clicked.connect(self.recognize_edges)
         quick_row.addWidget(quick_recognize_button)
         quick_row.addStretch(1)
+        self.addon_button = QToolButton()
+        self.addon_button.setText("애드온")
+        self.addon_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        addon_menu = QMenu(self.addon_button)
+        for definition in ADDON_DEFINITIONS:
+            action = addon_menu.addAction(definition.title)
+            action.setCheckable(True)
+            action.toggled.connect(lambda enabled, addon_id=definition.addon_id: self.set_addon_enabled(addon_id, enabled))
+            self.addon_actions[definition.addon_id] = action
+        self.addon_button.setMenu(addon_menu)
+        quick_row.addWidget(self.addon_button)
 
         self.ribbon_tabs = QTabWidget()
         self.ribbon_tabs.setDocumentMode(True)
@@ -3747,6 +3777,66 @@ class MainWindow(QMainWindow):
         )
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
         return toolbar
+
+    def set_addon_enabled(self, addon_id: str, enabled: bool) -> None:
+        definition = next((item for item in ADDON_DEFINITIONS if item.addon_id == addon_id), None)
+        if definition is None:
+            return
+        if enabled:
+            self.enabled_addon_ids.add(addon_id)
+            page = self.addon_pages.get(addon_id)
+            if page is None:
+                page = self._create_addon_page(addon_id)
+                self.addon_pages[addon_id] = page
+            ordered_index = next(i for i, item in enumerate(ADDON_DEFINITIONS) if item.addon_id == addon_id)
+            insert_at = 5 + sum(1 for item in ADDON_DEFINITIONS[:ordered_index] if item.addon_id in self.enabled_addon_ids)
+            if self.ribbon_tabs.indexOf(page) < 0:
+                self.ribbon_tabs.insertTab(insert_at, page, definition.title)
+            self.ribbon_tabs.setCurrentWidget(page)
+        else:
+            self.enabled_addon_ids.discard(addon_id)
+            page = self.addon_pages.get(addon_id)
+            if page is not None and self.ribbon_tabs.indexOf(page) >= 0:
+                self.ribbon_tabs.removeTab(self.ribbon_tabs.indexOf(page))
+
+    def _create_addon_page(self, addon_id: str) -> QWidget:
+        page = QWidget()
+        layout = QHBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        if addon_id == "photo_merge":
+            box = QGroupBox("무손실 모자이크")
+            box_layout = QHBoxLayout(box)
+            description = QLabel("겹치는 영역을 자동 정렬해 픽셀 크기가 확장된 한 장의 이미지로 만듭니다.\nTIFF 기본 · PNG 선택 · 저장 후 자동 열기")
+            box_layout.addWidget(description)
+            open_button = QPushButton("사진 합치기 작업 열기")
+            open_button.clicked.connect(self.open_photo_merge_dialog)
+            box_layout.addWidget(open_button)
+            layout.addWidget(box)
+        else:
+            title = next(item.title for item in ADDON_DEFINITIONS if item.addon_id == addon_id)
+            layout.addWidget(QLabel(f"{title} 기능은 준비 중입니다."))
+        layout.addStretch(1)
+        return page
+
+    def open_photo_merge_dialog(self) -> None:
+        paths = [path for path in self.browser_image_paths if path in self.selected_thumbnail_paths]
+        if not paths and self.image_path:
+            paths = [self.image_path]
+        dialog = PhotoMergeDialog(paths, self)
+        dialog.result_saved.connect(self._open_merged_image)
+        self.photo_merge_dialog = dialog
+        dialog.finished.connect(lambda _result: setattr(self, "photo_merge_dialog", None))
+        dialog.show()
+
+    def _open_merged_image(self, path: str) -> None:
+        resolved = str(Path(path).resolve())
+        if resolved not in self.browser_image_paths:
+            self.browser_image_paths.append(resolved)
+            self.browser_image_paths.sort(key=lambda value: Path(value).name.casefold())
+            self.populate_thumbnails()
+        self.nm_per_px = None
+        self._load_image_path(resolved, preserve_calibration=False)
+        self._set_status("합친 이미지를 열었습니다. 혼합 배율 결과이므로 스케일 재보정이 필요합니다.")
 
     def _button_for_action(self, action: QAction) -> QPushButton:
         button = QPushButton(action.text())
