@@ -52,10 +52,14 @@ def test_multiple_addons_can_be_enabled_and_disabled():
         window.close()
 
 
-def test_thumbnail_width_fills_viewport_for_each_column_count():
+def test_thumbnail_width_fills_viewport_for_each_column_count(tmp_path):
     app = QApplication.instance() or QApplication([])
+    image_path = tmp_path / "wide.png"
+    _write(image_path, np.full((60, 180, 3), 180, dtype=np.uint8))
     window = MainWindow()
     try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(image_path)]
         window.resize(1280, 820)
         window.show()
         app.processEvents()
@@ -66,5 +70,17 @@ def test_thumbnail_width_fills_viewport_for_each_column_count():
             occupied = thumb_width * columns + window.thumbnail_layout.horizontalSpacing() * (columns - 1)
             available = window.thumbnail_scroll.viewport().width() - margins.left() - margins.right()
             assert 0 <= available - occupied < columns
+
+        window.thumbnail_columns = 3
+        window.thumbnail_scroll.resize(90, 300)
+        app.processEvents()
+        window._populate_thumbnails()
+        button = window.thumbnail_buttons[str(image_path)]
+        narrow_width, _, narrow_icon_width, _ = window._thumbnail_dimensions()
+        assert button.width() == narrow_width
+        assert narrow_width * 3 + window.thumbnail_layout.horizontalSpacing() * 2 <= (
+            window.thumbnail_scroll.viewport().width() - margins.left() - margins.right()
+        )
+        assert max(size.width() for size in button.icon().availableSizes()) <= narrow_icon_width
     finally:
         window.close()

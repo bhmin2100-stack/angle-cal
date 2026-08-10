@@ -3488,9 +3488,9 @@ class MainWindow(QMainWindow):
         quick_recognize_button = QPushButton("인식")
         quick_recognize_button.clicked.connect(self.recognize_edges)
         quick_row.addWidget(quick_recognize_button)
-        quick_row.addStretch(1)
         self.addon_button = QToolButton()
         self.addon_button.setText("애드온")
+        self.addon_button.setToolTip("사진 합치기, Trench 자동분석기, Cliff angle 분석기를 켜거나 끕니다.")
         self.addon_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         addon_menu = QMenu(self.addon_button)
         for definition in ADDON_DEFINITIONS:
@@ -3500,6 +3500,7 @@ class MainWindow(QMainWindow):
             self.addon_actions[definition.addon_id] = action
         self.addon_button.setMenu(addon_menu)
         quick_row.addWidget(self.addon_button)
+        quick_row.addStretch(1)
 
         self.ribbon_tabs = QTabWidget()
         self.ribbon_tabs.setDocumentMode(True)
@@ -4190,6 +4191,10 @@ class MainWindow(QMainWindow):
         self.thumbnail_rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.thumbnail_container)
         self.thumbnail_container.installEventFilter(self)
         scroll.viewport().installEventFilter(self)
+        self.thumbnail_resize_timer = QTimer(self)
+        self.thumbnail_resize_timer.setSingleShot(True)
+        self.thumbnail_resize_timer.setInterval(80)
+        self.thumbnail_resize_timer.timeout.connect(self._resize_thumbnail_buttons_to_viewport)
         scroll.setWidget(self.thumbnail_container)
         container_layout.addWidget(scroll)
         dock.setWidget(container)
@@ -4540,8 +4545,7 @@ class MainWindow(QMainWindow):
             path for path in self.selected_thumbnail_paths if path in self.browser_image_paths
         }
         for col_idx in range(8):
-            self.thumbnail_layout.setColumnStretch(col_idx, 0)
-        self.thumbnail_layout.setColumnStretch(self.thumbnail_columns, 1)
+            self.thumbnail_layout.setColumnStretch(col_idx, 1 if col_idx < self.thumbnail_columns else 0)
         if not self.browser_image_paths:
             self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, self.thumbnail_columns)
             self.thumbnail_empty_label.show()
@@ -4812,19 +4816,20 @@ class MainWindow(QMainWindow):
         margins = self.thumbnail_layout.contentsMargins() if hasattr(self, "thumbnail_layout") else None
         horizontal_margins = margins.left() + margins.right() if margins is not None else 12
         spacing = self.thumbnail_layout.horizontalSpacing() if hasattr(self, "thumbnail_layout") else 6
-        available_width = max(48 * columns, viewport_width - horizontal_margins - spacing * (columns - 1))
-        thumb_width = max(48, available_width // columns)
-        thumb_height = max(46, int(round(thumb_width * 0.74)))
-        icon_inset = 8
-        return (thumb_width, thumb_height, max(40, thumb_width - icon_inset), max(38, thumb_height - icon_inset))
+        available_width = max(columns, viewport_width - horizontal_margins - spacing * (columns - 1))
+        thumb_width = max(1, available_width // columns)
+        thumb_height = max(24, int(round(thumb_width * 0.74)))
+        icon_inset = 4
+        return (thumb_width, thumb_height, max(1, thumb_width - icon_inset), max(1, thumb_height - icon_inset))
 
     def _resize_thumbnail_buttons_to_viewport(self) -> None:
         if not hasattr(self, "thumbnail_buttons"):
             return
         thumb_width, thumb_height, icon_width, icon_height = self._thumbnail_dimensions()
-        for button in self.thumbnail_buttons.values():
+        for path, button in self.thumbnail_buttons.items():
             button.setFixedSize(thumb_width, thumb_height)
             button.setIconSize(QSize(icon_width, icon_height))
+            button.setIcon(self._thumbnail_icon(Path(path)))
 
     def _clear_thumbnail_layout(self) -> None:
         while self.thumbnail_layout.count():
@@ -4931,7 +4936,7 @@ class MainWindow(QMainWindow):
             and watched is self.thumbnail_scroll.viewport()
             and event.type() == QEvent.Type.Resize
         ):
-            QTimer.singleShot(0, self._resize_thumbnail_buttons_to_viewport)
+            self.thumbnail_resize_timer.start()
         if self._is_thumbnail_event_source(watched) and self._handle_thumbnail_event(watched, event):
             return True
         return super().eventFilter(watched, event)
