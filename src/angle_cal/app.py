@@ -3067,6 +3067,7 @@ class MainWindow(QMainWindow):
         self.image_contrast = 100
         self.image_sharpness = 0
         self.image_rotation_degrees = 0.0
+        self.image_rotation_steps: list[float] = []
         self.hidden_angle_measurements: set[str] = set()
         self.undo_stack: list[dict] = []
         self._restoring_undo = False
@@ -3855,6 +3856,7 @@ class MainWindow(QMainWindow):
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "angle_item_states": self._angle_item_states(),
             "image_rotation_degrees": self.image_rotation_degrees,
+            "image_rotation_steps": list(self.image_rotation_steps),
         }
         self.undo_stack.append(snapshot)
         if len(self.undo_stack) > 30:
@@ -3900,6 +3902,7 @@ class MainWindow(QMainWindow):
             self.nm_per_px = snapshot.get("nm_per_px")
             self.hidden_angle_measurements = set(snapshot.get("hidden_angle_measurements", []))
             self.image_rotation_degrees = float(snapshot.get("image_rotation_degrees", 0.0) or 0.0)
+            self.image_rotation_steps = [float(value) for value in snapshot.get("image_rotation_steps", [])]
             self.canvas.clear_point_handles()
             self._show_image(keep_view=True)
             self.canvas.redraw_lines(list(self.records.values()))
@@ -4264,10 +4267,11 @@ class MainWindow(QMainWindow):
         self.image_path = path
         if state is not None:
             self._restore_image_state(state)
-            self.image_bgr = self._image_with_rotation(image, self.image_rotation_degrees)
+            self.image_bgr = self._image_with_rotation_steps(image, self.image_rotation_steps, self.image_rotation_degrees)
         else:
             self.nm_per_px = previous_nm_per_px if preserve_calibration else None
             self.image_rotation_degrees = 0.0
+            self.image_rotation_steps = []
             self.records.clear()
             self._counter = 1
         self.undo_stack.clear()
@@ -4297,6 +4301,7 @@ class MainWindow(QMainWindow):
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "image_adjustments": self._image_adjustment_state(),
             "image_rotation_degrees": self.image_rotation_degrees,
+            "image_rotation_steps": list(self.image_rotation_steps),
         }
         self.image_states[self.image_path] = state
         self._write_image_format_file(self.image_path, state, explicit=False)
@@ -4307,6 +4312,7 @@ class MainWindow(QMainWindow):
         self.nm_per_px = state.get("nm_per_px")
         self.hidden_angle_measurements = set(state.get("hidden_angle_measurements", []))
         self.image_rotation_degrees = float(state.get("image_rotation_degrees", 0.0) or 0.0)
+        self.image_rotation_steps = [float(value) for value in state.get("image_rotation_steps", [])]
         self._restore_image_adjustments(state.get("image_adjustments"), refresh=False)
 
     def _current_image_state_dict(self) -> dict:
@@ -4318,6 +4324,7 @@ class MainWindow(QMainWindow):
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "image_adjustments": self._image_adjustment_state(),
             "image_rotation_degrees": self.image_rotation_degrees,
+            "image_rotation_steps": list(self.image_rotation_steps),
         }
 
     @staticmethod
@@ -4368,6 +4375,7 @@ class MainWindow(QMainWindow):
             "hidden_angle_measurements": list(state.get("hidden_angle_measurements", [])),
             "image_adjustments": dict(state.get("image_adjustments", {})),
             "image_rotation_degrees": float(state.get("image_rotation_degrees", 0.0) or 0.0),
+            "image_rotation_steps": [float(value) for value in state.get("image_rotation_steps", [])],
         }
 
     @staticmethod
@@ -4382,6 +4390,15 @@ class MainWindow(QMainWindow):
         if not self._is_effective_rotation(angle_degrees):
             return image
         rotated, _ = rotate_image_and_points(image, [], float(angle_degrees))
+        return rotated
+
+    def _image_with_rotation_steps(self, image: np.ndarray, steps: list[float], fallback_angle: float) -> np.ndarray:
+        if not steps:
+            return self._image_with_rotation(image, fallback_angle)
+        rotated = image
+        for angle in steps:
+            if self._is_effective_rotation(angle):
+                rotated, _ = rotate_image_and_points(rotated, [], float(angle))
         return rotated
 
     def _rotate_image_and_records(self, image: np.ndarray, records: list[LineRecord], angle_degrees: float) -> np.ndarray:
@@ -4473,6 +4490,7 @@ class MainWindow(QMainWindow):
                     "hidden_angle_measurements": payload.get("hidden_angle_measurements", []),
                     "image_adjustments": payload.get("image_adjustments", {}),
                     "image_rotation_degrees": payload.get("image_rotation_degrees", 0.0),
+                    "image_rotation_steps": payload.get("image_rotation_steps", []),
                 }
             )
         return states
@@ -4838,7 +4856,8 @@ class MainWindow(QMainWindow):
             state = self._load_image_format_state(str(path))
         if state is not None:
             rotation = float(state.get("image_rotation_degrees", 0.0) or 0.0)
-            image = self._image_with_rotation(image, rotation)
+            steps = [float(value) for value in state.get("image_rotation_steps", [])]
+            image = self._image_with_rotation_steps(image, steps, rotation)
         rgb = bgr_to_rgb8_for_display(image)
         h, w = rgb.shape[:2]
         qimage = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
@@ -5201,6 +5220,7 @@ class MainWindow(QMainWindow):
             "nm_per_px": current_state.get("nm_per_px"),
             "image_adjustments": current_state.get("image_adjustments", self._image_adjustment_state()),
             "image_rotation_degrees": current_state.get("image_rotation_degrees", self.image_rotation_degrees),
+            "image_rotation_steps": current_state.get("image_rotation_steps", self.image_rotation_steps),
             "edge_detection": {
                 "edge_mode": "line",
                 "search_radius_px": self.search_radius_spin.value(),
@@ -6193,6 +6213,7 @@ class MainWindow(QMainWindow):
         self._last_align_key = align_key
         self.image_bgr = self._rotate_image_and_records(self.image_bgr, list(self.records.values()), rotate_by)
         self.image_rotation_degrees = self._normalized_image_rotation(self.image_rotation_degrees + rotate_by)
+        self.image_rotation_steps.append(float(rotate_by))
         self._show_image(keep_view=False)
         self.canvas.redraw_lines(list(self.records.values()))
         self._refresh_curvature_overlay()
@@ -6231,6 +6252,7 @@ class MainWindow(QMainWindow):
         self.save_undo_snapshot()
         self.image_bgr = self._rotate_image_and_records(self.image_bgr, list(self.records.values()), float(angle_degrees))
         self.image_rotation_degrees = self._normalized_image_rotation(self.image_rotation_degrees + float(angle_degrees))
+        self.image_rotation_steps.append(float(angle_degrees))
         self._show_image(keep_view=False)
         self.canvas.redraw_lines(list(self.records.values()))
         self._refresh_curvature_overlay()
@@ -6287,10 +6309,12 @@ class MainWindow(QMainWindow):
 
         records = [line_record_from_dict(item) for item in state.get("records", [])]
         current_rotation = float(state.get("image_rotation_degrees", 0.0) or 0.0)
-        current_image = self._image_with_rotation(image, current_rotation)
+        rotation_steps = [float(value) for value in state.get("image_rotation_steps", [])]
+        current_image = self._image_with_rotation_steps(image, rotation_steps, current_rotation)
         self._rotate_image_and_records(current_image, records, angle_degrees)
         state["records"] = [asdict(record) for record in records]
         state["image_rotation_degrees"] = self._normalized_image_rotation(current_rotation + angle_degrees)
+        state["image_rotation_steps"] = [*rotation_steps, float(angle_degrees)]
         self.image_states[path] = state
         self._write_image_format_file(path, state, explicit=False)
         return True

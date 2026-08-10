@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import cv2
 import numpy as np
+import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QGroupBox, QLabel, QMessageBox, QPushButton
@@ -1997,6 +1998,41 @@ def test_rotate_current_image_saves_rotation_state(tmp_path):
         assert window.image_bgr.shape[:2] == (40, 20)
         assert window.image_rotation_degrees == 90.0
         assert window.records[edge.id].start != (5.0, 5.0)
+    finally:
+        window.close()
+
+
+def test_scale_bar_stays_on_same_pixels_after_sequential_rotation_and_reload(tmp_path):
+    image_path = tmp_path / "scale-rotation.png"
+    image = np.zeros((80, 140, 3), dtype=np.uint8)
+    cv2.line(image, (20, 30), (100, 30), (255, 255, 255), 2)
+    cv2.imwrite(str(image_path), image)
+
+    _app()
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(image_path)]
+        window._load_image_path(str(image_path), preserve_calibration=False)
+        scale = LineRecord("S1", "scale", (20.0, 30.0), (100.0, 30.0), label="80 nm", value_nm=80.0)
+        window.records[scale.id] = scale
+        window.nm_per_px = 1.0
+        window.canvas.redraw_lines(list(window.records.values()))
+
+        window.rotate_current_image(17.0, "첫 회전")
+        window.rotate_current_image(23.0, "두 번째 회전")
+        expected_start = window.records[scale.id].start
+        expected_end = window.records[scale.id].end
+        expected_shape = window.image_bgr.shape
+
+        window._load_image_path(str(image_path), preserve_calibration=True)
+
+        assert window.image_bgr.shape == expected_shape
+        assert window.records[scale.id].start == pytest.approx(expected_start)
+        assert window.records[scale.id].end == pytest.approx(expected_end)
+        assert app_module.record_length(window.records[scale.id]) == pytest.approx(80.0)
+        assert window.nm_per_px == 1.0
+        assert window.image_states[str(image_path)]["image_rotation_steps"] == [17.0, 23.0]
     finally:
         window.close()
 
