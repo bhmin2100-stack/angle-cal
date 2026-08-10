@@ -3201,7 +3201,8 @@ class MainWindow(QMainWindow):
         if not manual and not updater.is_packaged_app():
             return
         if manual:
-            self._set_status("업데이트 확인 중...")
+            channel = updater.selected_channel()
+            self._set_status(f"업데이트 확인 중... ({channel.name}: {channel.release_page_url})")
 
         thread = QThread(self)
         worker = UpdateCheckWorker(manual)
@@ -3224,13 +3225,31 @@ class MainWindow(QMainWindow):
     def on_update_check_finished(self, info: object, error: object, manual: bool) -> None:
         if error:
             if manual:
-                QMessageBox.warning(self, "업데이트 확인", f"업데이트 정보를 확인하지 못했습니다.\n\n{error}")
+                channel = updater.selected_channel()
+                QMessageBox.warning(
+                    self,
+                    "업데이트 확인",
+                    "업데이트 정보를 확인하지 못했습니다.\n\n"
+                    f"현재 빌드 채널: {channel.name}\n"
+                    f"조회 API: {channel.release_api_url}\n"
+                    f"릴리스 페이지: {channel.release_page_url}\n\n"
+                    f"오류: {error}",
+                )
             return
         if not isinstance(info, updater.UpdateInfo):
             return
         if not info.is_available:
             if manual:
-                QMessageBox.information(self, "업데이트 확인", f"현재 최신 버전입니다.\n\n현재: {info.current_label}")
+                channel = updater.selected_channel()
+                QMessageBox.information(
+                    self,
+                    "업데이트 확인",
+                    "현재 최신 빌드입니다.\n\n"
+                    f"채널: {channel.name}\n"
+                    f"현재: {info.current_label}\n"
+                    f"확인한 빌드: {info.latest_label}\n"
+                    f"릴리스: {channel.release_page_url}",
+                )
             return
         if not manual and not updater.should_notify_update(info, self._last_update_prompt_key):
             return

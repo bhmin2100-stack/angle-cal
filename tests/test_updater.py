@@ -43,7 +43,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(info.notes, manifest["notes"])
         self.assertEqual(info.latest_build_date, manifest["publishedAtUtc"])
         self.assertEqual(info.channel, "company")
-        self.assertFalse(info.build_id_updates)
+        self.assertTrue(info.build_id_updates)
 
     def test_enterprise_latest_api_response_loads_manifest_asset(self) -> None:
         def fake_read(url: str, timeout: int) -> dict:
@@ -86,9 +86,16 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(updater.should_notify_update(info, None))
         self.assertFalse(updater.should_notify_update(info, info.notification_key))
 
-    def test_same_company_version_is_not_available_without_build_id_updates(self) -> None:
-        info = updater.UpdateInfo("0.1.0", "old", "", "0.1.0", "new", "", "", "", "", channel="company")
-        self.assertFalse(info.is_available)
+    def test_same_company_version_detects_new_company_build_id(self) -> None:
+        info = updater.UpdateInfo(
+            "0.1.0", "company-old", "", "0.1.0", "company-new", "", "", "", "",
+            channel="company", build_id_updates=True,
+        )
+        self.assertTrue(info.is_available)
+
+    def test_company_channel_uses_enterprise_repository_name(self) -> None:
+        self.assertIn("/bh2-min/AngleCal/", updater.COMPANY_CHANNEL.release_api_url)
+        self.assertEqual(updater.COMPANY_CHANNEL.release_page_url, "https://github.samsungds.net/bh2-min/AngleCal/releases")
 
     def test_source_execution_disallows_exe_replacement(self) -> None:
         with patch.object(updater, "is_packaged_app", return_value=False):
