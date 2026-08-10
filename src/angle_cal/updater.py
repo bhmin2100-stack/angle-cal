@@ -33,8 +33,8 @@ PERSONAL_RELEASE_API_URL = "https://api.github.com/repos/bhmin2100-stack/angle-c
 PERSONAL_RELEASE_PAGE_URL = "https://github.com/bhmin2100-stack/angle-cal/releases/tag/windows-latest"
 PERSONAL_DIRECT_EXE_URL = "https://github.com/bhmin2100-stack/angle-cal/releases/download/windows-latest/AngleCal.exe"
 PERSONAL_DIRECT_VERSION_URL = "https://github.com/bhmin2100-stack/angle-cal/releases/download/windows-latest/version.json"
-COMPANY_RELEASE_API_URL = "https://github.samsungds.net/api/v3/repos/bh2-min/AngleCal/releases/latest"
-COMPANY_RELEASE_PAGE_URL = "https://github.samsungds.net/bh2-min/AngleCal/releases"
+COMPANY_RELEASE_API_URL = "http://github.samsungds.net/api/v3/repos/bh2-min/AngleCal/releases/latest"
+COMPANY_RELEASE_PAGE_URL = "http://github.samsungds.net/bh2-min/AngleCal/releases"
 USER_AGENT = f"AngleCal/{__version__}"
 
 

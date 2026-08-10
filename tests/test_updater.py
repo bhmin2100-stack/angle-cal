@@ -18,7 +18,7 @@ class UpdaterTests(unittest.TestCase):
             "tag_name": "0.1.1",
             "published_at": "2026-07-23T00:00:00Z",
             "body": "Release notes",
-            "html_url": "https://github.samsungds.net/bh2-min/angle-cal/releases/1",
+            "html_url": "http://github.samsungds.net/bh2-min/AngleCal/releases/1",
             "assets": [
                 {"name": "AngleCal.exe", "browser_download_url": "https://company/AngleCal.exe", "size": 12},
                 {"name": "version.json", "browser_download_url": "https://company/version.json"},
@@ -94,8 +94,14 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(info.is_available)
 
     def test_company_channel_uses_enterprise_repository_name(self) -> None:
-        self.assertIn("/bh2-min/AngleCal/", updater.COMPANY_CHANNEL.release_api_url)
-        self.assertEqual(updater.COMPANY_CHANNEL.release_page_url, "https://github.samsungds.net/bh2-min/AngleCal/releases")
+        self.assertEqual(
+            updater.COMPANY_CHANNEL.release_api_url,
+            "http://github.samsungds.net/api/v3/repos/bh2-min/AngleCal/releases/latest",
+        )
+        self.assertEqual(
+            updater.COMPANY_CHANNEL.release_page_url,
+            "http://github.samsungds.net/bh2-min/AngleCal/releases",
+        )
 
     def test_source_execution_disallows_exe_replacement(self) -> None:
         with patch.object(updater, "is_packaged_app", return_value=False):
@@ -155,6 +161,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("AngleCal.spec", script)
         self.assertIn("--build-info-json", script)
         self.assertIn('update_channel -ne "company"', script)
+        self.assertIn("Remove-BuildInfoBytecode", script)
 
 
 if __name__ == "__main__":

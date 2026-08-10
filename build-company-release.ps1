@@ -11,6 +11,12 @@ function Write-Utf8NoBom($Path, $Content) {
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Remove-BuildInfoBytecode {
+    $cacheDir = Join-Path $root "src\angle_cal\__pycache__"
+    Get-ChildItem -LiteralPath $cacheDir -Filter "build_info*.pyc" -File -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
 $python = if (Test-Path ".venv\Scripts\python.exe") { ".venv\Scripts\python.exe" } else { "python" }
 
 $null = & $python -c "import PyInstaller" 2>$null
@@ -40,6 +46,7 @@ BUILD_DATE = "$buildDate"
 UPDATE_CHANNEL = "company"
 "@
     Write-Utf8NoBom $buildInfo $companyBuildInfo
+    Remove-BuildInfoBytecode
 
     $embeddedVersion = (& $python -c "from angle_cal import __version__; from angle_cal.build_info import APP_VERSION, UPDATE_CHANNEL; print(f'{__version__}|{APP_VERSION}|{UPDATE_CHANNEL}')").Trim()
     if ($embeddedVersion -ne "$version|$version|company") { throw "Build metadata validation failed: $embeddedVersion" }
@@ -74,5 +81,6 @@ UPDATE_CHANNEL = "company"
     Write-Host "Update channel: company"
 } finally {
     Write-Utf8NoBom $buildInfo $originalBuildInfo
+    Remove-BuildInfoBytecode
     Remove-Item -LiteralPath $smokeFile -Force -ErrorAction SilentlyContinue
 }
