@@ -5,7 +5,7 @@ import numpy as np
 
 from PySide6.QtWidgets import QApplication
 from angle_cal.app import MainWindow
-from angle_cal.photo_merge import PhotoMergeDialog
+from angle_cal.photo_merge import PhotoMergeBoard
 from angle_cal.stitching import StitchOptions, save_stitch_result, stitch_paths
 
 
@@ -60,20 +60,55 @@ def test_photo_merge_button_starts_worker_and_finishes(tmp_path):
     left_path, right_path = tmp_path / "left.png", tmp_path / "right.png"
     _write(left_path, scene[:, :300])
     _write(right_path, scene[:, 120:])
-    dialog = PhotoMergeDialog([str(left_path), str(right_path)])
+    dialog = PhotoMergeBoard()
+    dialog.add_paths([str(left_path), str(right_path)])
     try:
-        dialog.start.click()
-        assert dialog.status.text() == "합치기 준비 중…"
+        dialog.align_button.click()
+        assert dialog.status.text() == "보드 이미지 자동 정렬 준비 중…"
         deadline = time.monotonic() + 5.0
-        while dialog.result is None and time.monotonic() < deadline:
+        captured = []
+        dialog.result_ready.connect(captured.append)
+        while not captured and time.monotonic() < deadline:
             app.processEvents()
             time.sleep(0.01)
-        assert dialog.result is not None
-        assert dialog.result.output_size == (420, 220)
-        assert dialog.status.text().startswith("완료:")
+        assert captured
+        assert captured[0].output_size == (420, 220)
+        assert dialog.status.text().startswith("합치기 완료:")
     finally:
         dialog.close()
         app.processEvents()
+
+
+def test_photo_merge_addon_reuses_thumbnail_dock_and_central_board(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    _write(first, np.full((80, 120, 3), 70, dtype=np.uint8))
+    _write(second, np.full((80, 120, 3), 170, dtype=np.uint8))
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(first), str(second)]
+        window.selected_thumbnail_paths = {str(first), str(second)}
+        window._populate_thumbnails()
+        window.addon_actions["photo_merge"].setChecked(True)
+
+        assert window.photo_merge_board is not None
+        assert window.workspace_stack.currentWidget() is window.photo_merge_board
+        window.open_photo_merge_dialog()
+        assert len(window.photo_merge_board.view.items_in_board()) == 2
+
+        item = window.photo_merge_board.view.items_in_board()[0]
+        item.setPos(115, 75)
+        item.setOpacity(0.44)
+        item.setSelected(True)
+        window.photo_merge_board.view.delete_selected()
+        assert len(window.photo_merge_board.view.items_in_board()) == 1
+        assert window.photo_merge_board.count_label.text() == "보드 이미지 1장"
+        assert not window.photo_merge_board.align_button.isEnabled()
+        app.processEvents()
+    finally:
+        window.close()
 
 
 def test_thumbnail_width_fills_viewport_for_each_column_count(tmp_path):

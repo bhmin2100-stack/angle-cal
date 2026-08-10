@@ -3,9 +3,9 @@ from pathlib import Path
 import threading
 import cv2
 import numpy as np
-from PySide6.QtCore import QObject,Qt,QThread,Signal,Slot
-from PySide6.QtGui import QImage,QPixmap
-from PySide6.QtWidgets import QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QHBoxLayout,QLabel,QListWidget,QListWidgetItem,QMessageBox,QProgressBar,QPushButton,QSplitter,QTableWidget,QTableWidgetItem,QVBoxLayout,QWidget
+from PySide6.QtCore import QObject,QPointF,Qt,QThread,QTimer,Signal,Slot
+from PySide6.QtGui import QImage,QKeyEvent,QPixmap,QWheelEvent
+from PySide6.QtWidgets import QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QGraphicsPixmapItem,QGraphicsScene,QGraphicsView,QHBoxLayout,QLabel,QListWidget,QListWidgetItem,QMessageBox,QProgressBar,QPushButton,QSplitter,QTableWidget,QTableWidgetItem,QVBoxLayout,QWidget
 from .stitching import StitchOptions,StitchResult,StitchingCancelled,StitchingNeedsManual,detect_bottom_overlay_fraction,read_raw_image,save_stitch_result,stitch_paths
 
 def preview_pixmap(image):
@@ -75,3 +75,234 @@ class PhotoMergeDialog(QDialog):
             except Exception as exc:QMessageBox.warning(self,"사진 합치기",str(exc));return
             self.result_saved.emit(str(output));self.accept()
     def reject(self):self.cancel_stitch();super().reject()
+
+
+class MergeBoardItem(QGraphicsPixmapItem):
+    def __init__(self, path: str, pixmap: QPixmap, preview: QPixmap, view: "MergeBoardView") -> None:
+        super().__init__(pixmap)
+        self.path = path
+        self.preview = preview
+        self.view = view
+        self.setFlags(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable | QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable)
+        self.setAcceptHoverEvents(True)
+        self.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        self.setToolTip(Path(path).name)
+        self.hover_timer = QTimer()
+        self.hover_timer.setSingleShot(True)
+        self.hover_timer.setInterval(550)
+        self.hover_timer.timeout.connect(lambda: self.view.show_hover_preview(self))
+
+    def hoverEnterEvent(self, event) -> None:  # noqa: N802
+        self.hover_timer.start()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:  # noqa: N802
+        self.hover_timer.stop()
+        self.view.hide_hover_preview()
+        super().hoverLeaveEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        delta = 0.08 if event.delta() > 0 else -0.08
+        self.setOpacity(max(0.12, min(1.0, self.opacity() + delta)))
+        self.view.opacity_changed.emit(round(self.opacity() * 100))
+        event.accept()
+
+
+class MergeBoardView(QGraphicsView):
+    paths_changed = Signal(int)
+    opacity_changed = Signal(int)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setScene(QGraphicsScene(self))
+        self.setAcceptDrops(True)
+        self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self.setRenderHints(self.renderHints())
+        self.setStyleSheet("QGraphicsView { background:#24282d; border:1px solid #8b949e; }")
+        self.setSceneRect(-2500, -1800, 5000, 3600)
+        self.preview_popup = QLabel(None, Qt.WindowType.ToolTip)
+        self.preview_popup.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_popup.setStyleSheet("background:#111827; border:2px solid #4cc9f0; padding:6px;")
+
+    def items_in_board(self) -> list[MergeBoardItem]:
+        return [item for item in self.scene().items() if isinstance(item, MergeBoardItem)]
+
+    def paths(self) -> list[str]:
+        return [item.path for item in sorted(self.items_in_board(), key=lambda item: (item.pos().y(), item.pos().x()))]
+
+    def add_paths(self, paths: list[str], drop_position: QPointF | None = None) -> None:
+        existing = {item.path.casefold() for item in self.items_in_board()}
+        added = 0
+        origin = drop_position or self.mapToScene(self.viewport().rect().center())
+        for raw_path in paths:
+            path = str(Path(raw_path).resolve())
+            if path.casefold() in existing or not Path(path).is_file():
+                continue
+            try:
+                image = read_raw_image(path)
+            except Exception:
+                continue
+            full = preview_pixmap(image)
+            board_pixmap = full.scaled(360, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            large_preview = full.scaled(720, 520, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            item = MergeBoardItem(path, board_pixmap, large_preview, self)
+            item.setPos(origin + QPointF(34 * added, 28 * added))
+            item.setZValue(len(self.items_in_board()) + 1)
+            self.scene().addItem(item)
+            existing.add(path.casefold())
+            added += 1
+        if added:
+            self.paths_changed.emit(len(self.items_in_board()))
+
+    def clear_board(self) -> None:
+        self.hide_hover_preview()
+        self.scene().clear()
+        self.paths_changed.emit(0)
+
+    def delete_selected(self) -> None:
+        removed = False
+        for item in list(self.scene().selectedItems()):
+            if isinstance(item, MergeBoardItem):
+                self.scene().removeItem(item)
+                removed = True
+        if removed:
+            self.hide_hover_preview()
+            self.paths_changed.emit(len(self.items_in_board()))
+
+    def show_hover_preview(self, item: MergeBoardItem) -> None:
+        self.preview_popup.setPixmap(item.preview)
+        self.preview_popup.adjustSize()
+        cursor = self.mapToGlobal(self.mapFromScene(item.sceneBoundingRect().center()))
+        self.preview_popup.move(cursor.x() + 18, cursor.y() + 18)
+        self.preview_popup.show()
+
+    def hide_hover_preview(self) -> None:
+        self.preview_popup.hide()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Delete:
+            self.delete_selected()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            self.add_paths(paths, self.mapToScene(event.position().toPoint()))
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
+
+
+class PhotoMergeBoard(QWidget):
+    result_ready = Signal(object)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.thread: QThread | None = None
+        self.worker: StitchWorker | None = None
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        toolbar = QHBoxLayout()
+        title = QLabel("사진 합치기 보드")
+        title.setStyleSheet("font-size:16px;font-weight:700")
+        toolbar.addWidget(title)
+        self.count_label = QLabel("보드 이미지 0장")
+        toolbar.addWidget(self.count_label)
+        toolbar.addStretch(1)
+        load_button = QPushButton("이미지 불러오기")
+        load_button.clicked.connect(self.choose_files)
+        toolbar.addWidget(load_button)
+        clear_button = QPushButton("보드 비우기")
+        clear_button.clicked.connect(self.clear_board)
+        toolbar.addWidget(clear_button)
+        self.align_button = QPushButton("맞추기")
+        self.align_button.setEnabled(False)
+        self.align_button.setStyleSheet("font-weight:700;padding:7px 18px")
+        self.align_button.clicked.connect(self.start_alignment)
+        toolbar.addWidget(self.align_button)
+        root.addLayout(toolbar)
+        hint = QLabel("왼쪽 썸네일을 끌어 놓으세요  ·  드래그: 위치 이동  ·  휠: 투명도  ·  Delete: 보드에서 제거  ·  잠시 올려두기: 크게 보기")
+        hint.setStyleSheet("color:#586069;padding:2px")
+        root.addWidget(hint)
+        self.view = MergeBoardView()
+        root.addWidget(self.view, 1)
+        bottom = QHBoxLayout()
+        self.status = QLabel("이미지를 보드에 배치한 뒤 맞추기를 누르세요.")
+        self.progress = QProgressBar()
+        self.progress.setMaximumWidth(260)
+        self.progress.setValue(0)
+        bottom.addWidget(self.status, 1)
+        bottom.addWidget(self.progress)
+        root.addLayout(bottom)
+        self.view.paths_changed.connect(self._update_count)
+        self.view.opacity_changed.connect(lambda value: self.status.setText(f"선택 이미지 투명도 {value}%"))
+
+    def add_paths(self, paths: list[str]) -> None:
+        self.view.add_paths(paths)
+
+    def choose_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, "합칠 이미지 불러오기", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
+        self.add_paths(paths)
+
+    def clear_board(self) -> None:
+        if self.thread is None:
+            self.view.clear_board()
+
+    def _update_count(self, count: int) -> None:
+        self.count_label.setText(f"보드 이미지 {count}장")
+        self.align_button.setEnabled(count >= 2 and self.thread is None)
+
+    def start_alignment(self) -> None:
+        paths = self.view.paths()
+        if len(paths) < 2 or self.thread is not None:
+            return
+        self.status.setText("보드 이미지 자동 정렬 준비 중…")
+        self.progress.setValue(0)
+        self.align_button.setEnabled(False)
+        self.thread = QThread(self)
+        self.worker = StitchWorker(paths, StitchOptions())
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_finished)
+        self.worker.failed.connect(self._on_failed)
+        self.worker.manual.connect(self._on_failed)
+        for signal in (self.worker.finished, self.worker.failed, self.worker.manual):
+            signal.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
+        self.thread.start()
+
+    def _on_progress(self, value: int, text: str) -> None:
+        self.progress.setValue(value)
+        self.status.setText(text)
+
+    def _on_finished(self, result: StitchResult) -> None:
+        self.progress.setValue(100)
+        self.status.setText(f"합치기 완료: {result.output_size[0]} × {result.output_size[1]} px")
+        self.result_ready.emit(result)
+
+    def _on_failed(self, message: str) -> None:
+        self.status.setText(message)
+        QMessageBox.warning(self, "사진 합치기", message)
+
+    def _thread_finished(self) -> None:
+        if self.thread is not None:
+            self.thread.deleteLater()
+        self.thread = None
+        self.worker = None
+        self._update_count(len(self.view.items_in_board()))

@@ -12,8 +12,8 @@ from typing import Callable, Optional
 import zipfile
 
 import numpy as np
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QDrag, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
     QRubberBand,
     QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
@@ -61,7 +62,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import updater
-from .photo_merge import PhotoMergeDialog
+from .photo_merge import PhotoMergeBoard, PhotoMergeDialog
 
 
 @dataclass(frozen=True)
@@ -3040,6 +3041,7 @@ class MainWindow(QMainWindow):
         self.addon_actions: dict[str, QAction] = {}
         self.addon_pages: dict[str, QWidget] = {}
         self.photo_merge_dialog: Optional[PhotoMergeDialog] = None
+        self.photo_merge_board: Optional[PhotoMergeBoard] = None
         self._thumbnail_anchor_path: Optional[str] = None
         self._thumbnail_drag_origin: Optional[QPoint] = None
         self._thumbnail_drag_active = False
@@ -3118,7 +3120,9 @@ class MainWindow(QMainWindow):
         central_layout.setSpacing(0)
         central_layout.addWidget(self.favorite_group_bar)
         central_layout.addWidget(self.favorite_tab_bar)
-        central_layout.addWidget(self.canvas, 1)
+        self.workspace_stack = QStackedWidget()
+        self.workspace_stack.addWidget(self.canvas)
+        central_layout.addWidget(self.workspace_stack, 1)
         self.setCentralWidget(central)
         self.canvas.line_created.connect(self._handle_line_created)
         self.canvas.segment_split_requested.connect(self.split_edge_segment_for_selection)
@@ -3765,6 +3769,7 @@ class MainWindow(QMainWindow):
         structure_group.addWidget(structure_import_button)
         structure_group.addWidget(structure_delete_button)
         self.ribbon_tabs.addTab(structure_page, "구조")
+        self.ribbon_tabs.currentChanged.connect(self._ribbon_tab_changed)
 
     def _new_toolbar(self, title: str) -> QToolBar:
         toolbar = QToolBar(title)
@@ -3806,14 +3811,18 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
         if addon_id == "photo_merge":
-            box = QGroupBox("무손실 모자이크")
+            box = QGroupBox("사진 합치기 보드")
             box_layout = QHBoxLayout(box)
-            description = QLabel("겹치는 영역을 자동 정렬해 픽셀 크기가 확장된 한 장의 이미지로 만듭니다.\nTIFF 기본 · PNG 선택 · 저장 후 자동 열기")
+            description = QLabel("왼쪽 썸네일을 중앙 보드로 끌어 놓고 대강 배치한 뒤 맞추기를 누르세요.")
             box_layout.addWidget(description)
-            open_button = QPushButton("사진 합치기 작업 열기")
-            open_button.clicked.connect(self.open_photo_merge_dialog)
-            box_layout.addWidget(open_button)
+            add_button = QPushButton("선택 썸네일을 보드에 추가")
+            add_button.clicked.connect(self.open_photo_merge_dialog)
+            box_layout.addWidget(add_button)
             layout.addWidget(box)
+            if self.photo_merge_board is None:
+                self.photo_merge_board = PhotoMergeBoard(self)
+                self.photo_merge_board.result_ready.connect(self._show_photo_merge_result)
+                self.workspace_stack.addWidget(self.photo_merge_board)
         else:
             title = next(item.title for item in ADDON_DEFINITIONS if item.addon_id == addon_id)
             layout.addWidget(QLabel(f"{title} 기능은 준비 중입니다."))
@@ -3824,11 +3833,38 @@ class MainWindow(QMainWindow):
         paths = [path for path in self.browser_image_paths if path in self.selected_thumbnail_paths]
         if not paths and self.image_path:
             paths = [self.image_path]
-        dialog = PhotoMergeDialog(paths, self)
-        dialog.result_saved.connect(self._open_merged_image)
-        self.photo_merge_dialog = dialog
-        dialog.finished.connect(lambda _result: setattr(self, "photo_merge_dialog", None))
-        dialog.show()
+        if self.photo_merge_board is not None:
+            self.photo_merge_board.add_paths(paths)
+            self.workspace_stack.setCurrentWidget(self.photo_merge_board)
+
+    def _ribbon_tab_changed(self, _index: int) -> None:
+        current_page = self.ribbon_tabs.currentWidget()
+        photo_page = self.addon_pages.get("photo_merge")
+        if current_page is photo_page and self.photo_merge_board is not None:
+            self.workspace_stack.setCurrentWidget(self.photo_merge_board)
+        else:
+            self.workspace_stack.setCurrentWidget(self.canvas)
+
+    def _show_photo_merge_result(self, result: object) -> None:
+        if not hasattr(result, "image"):
+            return
+        self._save_current_image_state()
+        self.image_bgr = result.image
+        self.image_path = None
+        self.project_path = None
+        self.records.clear()
+        self._counter = 1
+        self.nm_per_px = None
+        self.image_rotation_degrees = 0.0
+        self.image_rotation_steps = []
+        self.undo_stack.clear()
+        self.hidden_angle_measurements.clear()
+        self.workspace_stack.setCurrentWidget(self.canvas)
+        self.ribbon_tabs.setCurrentIndex(0)
+        self._show_image(keep_view=False)
+        self.canvas.redraw_lines([])
+        self._refresh_table()
+        self._set_status("합친 이미지를 기존 분석 화면에 표시했습니다. 스케일을 재보정한 뒤 필요한 형식으로 저장하세요.")
 
     def _open_merged_image(self, path: str) -> None:
         resolved = str(Path(path).resolve())
@@ -4971,6 +5007,21 @@ class MainWindow(QMainWindow):
                 distance = (pos - self._thumbnail_drag_origin).manhattanLength()
                 if distance < QApplication.startDragDistance():
                     return False
+                dragged_path = next((path for path, button in self.thumbnail_buttons.items() if button is watched), None)
+                if dragged_path is not None:
+                    paths = [path for path in self.browser_image_paths if path in self.selected_thumbnail_paths]
+                    if dragged_path not in paths:
+                        paths = [dragged_path]
+                    mime = QMimeData()
+                    mime.setUrls([QUrl.fromLocalFile(path) for path in paths])
+                    drag = QDrag(watched)
+                    drag.setMimeData(mime)
+                    drag.setPixmap(watched.icon().pixmap(watched.iconSize()))
+                    self._thumbnail_drag_origin = None
+                    self._thumbnail_drag_active = False
+                    self.thumbnail_rubber_band.hide()
+                    drag.exec(Qt.DropAction.CopyAction)
+                    return True
                 self._thumbnail_drag_active = True
             rect = QRect(self._thumbnail_drag_origin, pos).normalized()
             self.thumbnail_rubber_band.setGeometry(rect)
