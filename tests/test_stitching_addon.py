@@ -1,9 +1,11 @@
 from pathlib import Path
+import time
 import cv2
 import numpy as np
 
 from PySide6.QtWidgets import QApplication
 from angle_cal.app import MainWindow
+from angle_cal.photo_merge import PhotoMergeDialog
 from angle_cal.stitching import StitchOptions, save_stitch_result, stitch_paths
 
 
@@ -50,6 +52,28 @@ def test_multiple_addons_can_be_enabled_and_disabled():
         assert window.ribbon_tabs.tabText(5) == "Trench 자동분석기"
     finally:
         window.close()
+
+
+def test_photo_merge_button_starts_worker_and_finishes(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    scene = np.random.default_rng(31).integers(0, 256, (220, 420), dtype=np.uint8)
+    left_path, right_path = tmp_path / "left.png", tmp_path / "right.png"
+    _write(left_path, scene[:, :300])
+    _write(right_path, scene[:, 120:])
+    dialog = PhotoMergeDialog([str(left_path), str(right_path)])
+    try:
+        dialog.start.click()
+        assert dialog.status.text() == "합치기 준비 중…"
+        deadline = time.monotonic() + 5.0
+        while dialog.result is None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert dialog.result is not None
+        assert dialog.result.output_size == (420, 220)
+        assert dialog.status.text().startswith("완료:")
+    finally:
+        dialog.close()
+        app.processEvents()
 
 
 def test_thumbnail_width_fills_viewport_for_each_column_count(tmp_path):

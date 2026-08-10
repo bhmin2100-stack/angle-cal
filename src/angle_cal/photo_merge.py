@@ -54,18 +54,18 @@ class PhotoMergeDialog(QDialog):
         except Exception as exc:QMessageBox.warning(self,"장비 정보 감지",str(exc))
     def start_stitch(self):
         if len(self.paths())<2:QMessageBox.information(self,"사진 합치기","이미지를 2장 이상 추가하세요.");return
-        self.result=None;self.save.setEnabled(False);self.start.setEnabled(False);self.cancel.setEnabled(True);self.thread=QThread(self);self.worker=StitchWorker(self.paths(),StitchOptions(self.crop.value()/100));self.worker.moveToThread(self.thread);self.thread.started.connect(self.worker.run);self.worker.progress.connect(self.on_progress);self.worker.finished.connect(self.finished);self.worker.failed.connect(self.failed);self.worker.manual.connect(self.manual_required)
+        self.result=None;self.save.setEnabled(False);self.start.setEnabled(False);self.cancel.setEnabled(True);self.status.setText("합치기 준비 중…");self.progress.setValue(0);self.thread=QThread(self);self.worker=StitchWorker(self.paths(),StitchOptions(self.crop.value()/100));self.worker.moveToThread(self.thread);self.thread.started.connect(self.worker.run);self.worker.progress.connect(self.on_progress);self.worker.finished.connect(self._on_stitch_finished);self.worker.failed.connect(self._on_stitch_failed);self.worker.manual.connect(self._on_manual_required)
         for signal in (self.worker.finished,self.worker.failed,self.worker.manual):signal.connect(self.thread.quit)
         self.thread.finished.connect(self.worker.deleteLater);self.thread.finished.connect(self.thread_finished);self.thread.start()
     def cancel_stitch(self):
         if self.worker:self.worker.cancel_event.set();self.status.setText("취소 중…")
     def on_progress(self,value,text):self.progress.setValue(value);self.status.setText(text)
-    def finished(self,result:StitchResult):
+    def _on_stitch_finished(self,result:StitchResult):
         self.result=result;self.progress.setValue(100);self.status.setText(f"완료: {result.output_size[0]} × {result.output_size[1]} px · 스케일 재보정 필요");self.save.setEnabled(True);self.preview.setPixmap(preview_pixmap(result.image).scaled(self.preview.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation));self.table.setRowCount(len(result.placements))
         for r,p in enumerate(result.placements):
             for c,v in enumerate((Path(p.path).name,p.mode,p.inlier_count,f"{p.reprojection_error:.3f}")):self.table.setItem(r,c,QTableWidgetItem(str(v)))
-    def failed(self,message):self.status.setText(message);QMessageBox.warning(self,"사진 합치기",message)
-    def manual_required(self,message):self.status.setText("수동 보정 필요");QMessageBox.information(self,"수동 정렬 필요",message+"\n수동 기준점 편집기는 다음 업데이트에서 연결됩니다.")
+    def _on_stitch_failed(self,message):self.status.setText(message);QMessageBox.warning(self,"사진 합치기",message)
+    def _on_manual_required(self,message):self.status.setText("수동 보정 필요");QMessageBox.information(self,"수동 정렬 필요",message+"\n수동 기준점 편집기는 다음 업데이트에서 연결됩니다.")
     def thread_finished(self):self.thread.deleteLater();self.thread=None;self.worker=None;self.start.setEnabled(True);self.cancel.setEnabled(False)
     def save_result(self):
         if self.result is None:return
