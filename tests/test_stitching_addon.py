@@ -50,3 +50,21 @@ def test_multiple_addons_can_be_enabled_and_disabled():
         assert window.ribbon_tabs.tabText(5) == "Trench 자동분석기"
     finally:
         window.close()
+
+
+def test_thumbnail_width_fills_viewport_for_each_column_count():
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        window.resize(1280, 820)
+        window.show()
+        app.processEvents()
+        for columns in (1, 2, 3):
+            window.thumbnail_columns = columns
+            thumb_width, _, _, _ = window._thumbnail_dimensions()
+            margins = window.thumbnail_layout.contentsMargins()
+            occupied = thumb_width * columns + window.thumbnail_layout.horizontalSpacing() * (columns - 1)
+            available = window.thumbnail_scroll.viewport().width() - margins.left() - margins.right()
+            assert 0 <= available - occupied < columns
+    finally:
+        window.close()
