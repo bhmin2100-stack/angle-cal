@@ -3,10 +3,10 @@ from pathlib import Path
 import threading
 import cv2
 import numpy as np
-from PySide6.QtCore import QObject,QPointF,Qt,QThread,Signal,Slot
-from PySide6.QtGui import QImage,QKeyEvent,QPixmap,QWheelEvent
-from PySide6.QtWidgets import QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QGraphicsPixmapItem,QGraphicsScene,QGraphicsView,QHBoxLayout,QLabel,QListWidget,QListWidgetItem,QMessageBox,QProgressBar,QPushButton,QSplitter,QTableWidget,QTableWidgetItem,QVBoxLayout,QWidget
-from .stitching import StitchOptions,StitchResult,StitchingCancelled,StitchingNeedsManual,detect_bottom_overlay_fraction,read_raw_image,save_stitch_result,stitch_paths
+from PySide6.QtCore import QObject,QPointF,QRectF,Qt,QThread,Signal,Slot
+from PySide6.QtGui import QColor,QImage,QKeyEvent,QPainter,QPainterPath,QPen,QPixmap,QWheelEvent
+from PySide6.QtWidgets import QComboBox,QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QGraphicsItem,QGraphicsPixmapItem,QGraphicsScene,QGraphicsView,QHBoxLayout,QLabel,QListWidget,QListWidgetItem,QMessageBox,QProgressBar,QPushButton,QSplitter,QTableWidget,QTableWidgetItem,QVBoxLayout,QWidget
+from .stitching import StitchLayoutHint,StitchOptions,StitchResult,StitchingCancelled,StitchingNeedsManual,detect_bottom_overlay_fraction,read_raw_image,save_stitch_result,stitch_paths
 
 def preview_pixmap(image):
     shown=image
@@ -19,10 +19,10 @@ def preview_pixmap(image):
 
 class StitchWorker(QObject):
     progress=Signal(int,str); finished=Signal(object); failed=Signal(str); manual=Signal(str)
-    def __init__(self,paths,options):super().__init__();self.paths=paths;self.options=options;self.cancel_event=threading.Event()
+    def __init__(self,paths,options,layout_hints=None):super().__init__();self.paths=paths;self.options=options;self.layout_hints=layout_hints;self.cancel_event=threading.Event()
     @Slot()
     def run(self):
-        try:self.finished.emit(stitch_paths(self.paths,self.options,progress=self.on_progress,cancelled=self.cancel_event.is_set))
+        try:self.finished.emit(stitch_paths(self.paths,self.options,layout_hints=self.layout_hints,progress=self.on_progress,cancelled=self.cancel_event.is_set))
         except StitchingNeedsManual as exc:self.manual.emit(str(exc))
         except StitchingCancelled:self.failed.emit("사진 합치기를 취소했습니다.")
         except Exception as exc:self.failed.emit(str(exc))
@@ -77,14 +77,154 @@ class PhotoMergeDialog(QDialog):
     def reject(self):self.cancel_stitch();super().reject()
 
 
+class CropOverlayItem(QGraphicsItem):
+    HANDLE_SIZE = 9.0
+    MIN_SIZE = 24.0
+
+    def __init__(self, parent: "MergeBoardItem") -> None:
+        super().__init__(parent)
+        self.owner = parent
+        self.active_handle: str | None = None
+        self.drag_start = QPointF()
+        self.start_rect = QRectF()
+        self.setZValue(1000)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresParentOpacity, True)
+        self.setAcceptHoverEvents(True)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.hide()
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return self.owner.boundingRect()
+
+    def crop_rect(self) -> QRectF:
+        full = self.boundingRect()
+        region = self.owner.match_rect
+        if region is None:
+            return QRectF(full)
+        x, y, width, height = region
+        return QRectF(full.left() + x * full.width(), full.top() + y * full.height(), width * full.width(), height * full.height())
+
+    def _handle_rects(self, crop: QRectF) -> dict[str, QRectF]:
+        size = self.HANDLE_SIZE
+        half = size / 2.0
+        points = {
+            "top_left": crop.topLeft(),
+            "top": QPointF(crop.center().x(), crop.top()),
+            "top_right": crop.topRight(),
+            "right": QPointF(crop.right(), crop.center().y()),
+            "bottom_right": crop.bottomRight(),
+            "bottom": QPointF(crop.center().x(), crop.bottom()),
+            "bottom_left": crop.bottomLeft(),
+            "left": QPointF(crop.left(), crop.center().y()),
+        }
+        return {name: QRectF(point.x() - half, point.y() - half, size, size) for name, point in points.items()}
+
+    def _handle_at(self, position: QPointF) -> str | None:
+        for name, rect in self._handle_rects(self.crop_rect()).items():
+            if rect.adjusted(-4, -4, 4, 4).contains(position):
+                return name
+        return None
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        full = self.boundingRect()
+        crop = self.crop_rect()
+        outside = QPainterPath()
+        outside.addRect(full)
+        inside = QPainterPath()
+        inside.addRect(crop)
+        painter.fillPath(outside.subtracted(inside), QColor(0, 0, 0, 150))
+        painter.setPen(QPen(QColor(255, 255, 255), 2.0, Qt.PenStyle.DashLine))
+        painter.drawRect(crop)
+        painter.setPen(QPen(QColor(255, 255, 255, 130), 1.0, Qt.PenStyle.DotLine))
+        painter.drawLine(QPointF(crop.left() + crop.width() / 3, crop.top()), QPointF(crop.left() + crop.width() / 3, crop.bottom()))
+        painter.drawLine(QPointF(crop.left() + crop.width() * 2 / 3, crop.top()), QPointF(crop.left() + crop.width() * 2 / 3, crop.bottom()))
+        painter.drawLine(QPointF(crop.left(), crop.top() + crop.height() / 3), QPointF(crop.right(), crop.top() + crop.height() / 3))
+        painter.drawLine(QPointF(crop.left(), crop.top() + crop.height() * 2 / 3), QPointF(crop.right(), crop.top() + crop.height() * 2 / 3))
+        painter.setPen(QPen(QColor(20, 20, 20), 1.0))
+        painter.setBrush(QColor(255, 255, 255))
+        for rect in self._handle_rects(crop).values():
+            painter.drawRect(rect)
+
+    def hoverMoveEvent(self, event) -> None:  # noqa: N802
+        handle = self._handle_at(event.pos())
+        cursors = {
+            "top_left": Qt.CursorShape.SizeFDiagCursor,
+            "bottom_right": Qt.CursorShape.SizeFDiagCursor,
+            "top_right": Qt.CursorShape.SizeBDiagCursor,
+            "bottom_left": Qt.CursorShape.SizeBDiagCursor,
+            "top": Qt.CursorShape.SizeVerCursor,
+            "bottom": Qt.CursorShape.SizeVerCursor,
+            "left": Qt.CursorShape.SizeHorCursor,
+            "right": Qt.CursorShape.SizeHorCursor,
+        }
+        self.setCursor(cursors.get(handle, Qt.CursorShape.ArrowCursor))
+        super().hoverMoveEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        handle = self._handle_at(event.pos())
+        if handle is None:
+            event.ignore()
+            return
+        self.owner.setSelected(True)
+        self.active_handle = handle
+        self.drag_start = event.pos()
+        self.start_rect = self.crop_rect()
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self.active_handle is None:
+            event.ignore()
+            return
+        delta = event.pos() - self.drag_start
+        crop = QRectF(self.start_rect)
+        if "left" in self.active_handle:
+            crop.setLeft(min(crop.right() - self.MIN_SIZE, crop.left() + delta.x()))
+        if "right" in self.active_handle:
+            crop.setRight(max(crop.left() + self.MIN_SIZE, crop.right() + delta.x()))
+        if "top" in self.active_handle:
+            crop.setTop(min(crop.bottom() - self.MIN_SIZE, crop.top() + delta.y()))
+        if "bottom" in self.active_handle:
+            crop.setBottom(max(crop.top() + self.MIN_SIZE, crop.bottom() + delta.y()))
+        full = self.boundingRect()
+        crop.setLeft(max(full.left(), crop.left()))
+        crop.setTop(max(full.top(), crop.top()))
+        crop.setRight(min(full.right(), crop.right()))
+        crop.setBottom(min(full.bottom(), crop.bottom()))
+        self.owner.set_match_rect_from_display(crop)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self.active_handle = None
+        event.accept()
+
+
 class MergeBoardItem(QGraphicsPixmapItem):
-    def __init__(self, path: str, pixmap: QPixmap, view: "MergeBoardView") -> None:
+    def __init__(self, path: str, pixmap: QPixmap, source_size: tuple[int, int], view: "MergeBoardView") -> None:
         super().__init__(pixmap)
         self.path = path
+        self.source_size = source_size
         self.view = view
+        self.match_rect: tuple[float, float, float, float] | None = None
         self.setFlags(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable | QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable)
         self.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self.setToolTip(Path(path).name)
+        self.crop_overlay = CropOverlayItem(self)
+
+    def set_match_rect_from_display(self, rect: QRectF) -> None:
+        full = self.boundingRect()
+        normalized = (
+            (rect.left() - full.left()) / max(1.0, full.width()),
+            (rect.top() - full.top()) / max(1.0, full.height()),
+            rect.width() / max(1.0, full.width()),
+            rect.height() / max(1.0, full.height()),
+        )
+        self.set_match_rect(normalized)
+
+    def set_match_rect(self, region: tuple[float, float, float, float] | None, *, notify: bool = True) -> None:
+        self.match_rect = region
+        self.crop_overlay.update()
+        if notify:
+            self.view.crop_region_changed(self)
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         delta = 0.08 if event.delta() > 0 else -0.08
@@ -96,6 +236,7 @@ class MergeBoardItem(QGraphicsPixmapItem):
 class MergeBoardView(QGraphicsView):
     paths_changed = Signal(int)
     opacity_changed = Signal(int)
+    crop_changed = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -105,6 +246,9 @@ class MergeBoardView(QGraphicsView):
         self.setRenderHints(self.renderHints())
         self.setStyleSheet("QGraphicsView { background:#24282d; border:1px solid #8b949e; }")
         self.setSceneRect(-2500, -1800, 5000, 3600)
+        self.crop_mode = False
+        self.crop_scope_all = False
+        self.scene().selectionChanged.connect(self._sync_crop_overlays)
 
     def items_in_board(self) -> list[MergeBoardItem]:
         return [item for item in self.scene().items() if isinstance(item, MergeBoardItem)]
@@ -112,10 +256,76 @@ class MergeBoardView(QGraphicsView):
     def paths(self) -> list[str]:
         return [item.path for item in sorted(self.items_in_board(), key=lambda item: (item.pos().y(), item.pos().x()))]
 
+    def layout_hints(self) -> list[StitchLayoutHint]:
+        hints = []
+        for item in sorted(self.items_in_board(), key=lambda candidate: (candidate.pos().y(), candidate.pos().x())):
+            source_width, source_height = item.source_size
+            scale_x = item.pixmap().width() / max(1, source_width)
+            scale_y = item.pixmap().height() / max(1, source_height)
+            position = item.scenePos()
+            source_to_board = np.array(
+                [[scale_x, 0.0, position.x()], [0.0, scale_y, position.y()], [0.0, 0.0, 1.0]],
+                dtype=np.float64,
+            )
+            hints.append(StitchLayoutHint(item.path, source_to_board, item.match_rect))
+        return hints
+
+    def set_crop_mode(self, enabled: bool) -> None:
+        self.crop_mode = enabled
+        self._sync_crop_overlays()
+
+    def set_crop_scope_all(self, enabled: bool) -> None:
+        self.crop_scope_all = enabled
+        if enabled:
+            selected = [item for item in self.items_in_board() if item.isSelected()]
+            if selected and selected[0].match_rect is not None:
+                self.crop_region_changed(selected[0])
+        self._sync_crop_overlays()
+
+    def _sync_crop_overlays(self) -> None:
+        for item in self.items_in_board():
+            item.crop_overlay.setVisible(self.crop_mode and (self.crop_scope_all or item.isSelected()))
+
+    def crop_region_changed(self, source: MergeBoardItem) -> None:
+        if self.crop_scope_all:
+            for item in self.items_in_board():
+                if item is not source:
+                    item.set_match_rect(source.match_rect, notify=False)
+        region = source.match_rect
+        if region is None:
+            self.crop_changed.emit("정합 영역이 원본 전체로 초기화되었습니다.")
+            return
+        x, y, width, height = region
+        self.crop_changed.emit(
+            f"정합 사용 영역: 왼쪽 {x:.0%}, 위 {y:.0%}, 너비 {width:.0%}, 높이 {height:.0%}"
+        )
+
+    def reset_crop_regions(self) -> None:
+        targets = self.items_in_board() if self.crop_scope_all else [
+            item for item in self.items_in_board() if item.isSelected()
+        ]
+        for item in targets:
+            item.set_match_rect(None, notify=False)
+        self._sync_crop_overlays()
+        if targets:
+            scope = "모든 이미지" if self.crop_scope_all else "선택 이미지"
+            self.crop_changed.emit(f"{scope}의 정합 영역을 초기화했습니다.")
+        else:
+            self.crop_changed.emit("자르기 영역을 초기화할 이미지를 먼저 선택하세요.")
+
     def add_paths(self, paths: list[str], drop_position: QPointF | None = None) -> None:
         existing = {item.path.casefold() for item in self.items_in_board()}
         added = 0
-        origin = drop_position or self.mapToScene(self.viewport().rect().center())
+        current_items = self.items_in_board()
+        common_region = next((item.match_rect for item in current_items if item.match_rect is not None), None)
+        if drop_position is not None:
+            origin = drop_position
+        elif current_items:
+            rightmost = max(item.sceneBoundingRect().right() for item in current_items)
+            origin = QPointF(rightmost + 24, min(item.sceneBoundingRect().top() for item in current_items))
+        else:
+            origin = self.mapToScene(self.viewport().rect().center())
+        cursor_x = origin.x()
         for raw_path in paths:
             path = str(Path(raw_path).resolve())
             if path.casefold() in existing or not Path(path).is_file():
@@ -126,14 +336,18 @@ class MergeBoardView(QGraphicsView):
                 continue
             full = preview_pixmap(image)
             board_pixmap = full.scaled(360, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            item = MergeBoardItem(path, board_pixmap, self)
-            item.setPos(origin + QPointF(34 * added, 28 * added))
+            item = MergeBoardItem(path, board_pixmap, (image.shape[1], image.shape[0]), self)
+            if self.crop_scope_all and common_region is not None:
+                item.set_match_rect(common_region, notify=False)
+            item.setPos(QPointF(cursor_x, origin.y()))
             item.setZValue(len(self.items_in_board()) + 1)
             self.scene().addItem(item)
+            cursor_x += max(48.0, board_pixmap.width() * 0.62)
             existing.add(path.casefold())
             added += 1
         if added:
             self.paths_changed.emit(len(self.items_in_board()))
+            self._sync_crop_overlays()
 
     def clear_board(self) -> None:
         self.scene().clear()
@@ -204,7 +418,29 @@ class PhotoMergeBoard(QWidget):
         self.align_button.clicked.connect(self.start_alignment)
         toolbar.addWidget(self.align_button)
         root.addLayout(toolbar)
-        hint = QLabel("왼쪽 썸네일을 끌어 놓으세요  ·  드래그: 위치 이동  ·  휠: 투명도  ·  Delete: 보드에서 제거  ·  잠시 올려두기: 크게 보기")
+        crop_toolbar = QHBoxLayout()
+        self.crop_button = QPushButton("정합 영역 자르기")
+        self.crop_button.setCheckable(True)
+        self.crop_button.setEnabled(False)
+        self.crop_button.setToolTip("PowerPoint 자르기처럼 손잡이를 끌어 정합과 완성 결과에 사용할 영역을 지정합니다.")
+        self.crop_button.toggled.connect(self._toggle_crop_mode)
+        crop_toolbar.addWidget(self.crop_button)
+        crop_toolbar.addWidget(QLabel("적용:"))
+        self.crop_scope = QComboBox()
+        self.crop_scope.addItems(["선택 이미지", "모든 이미지"])
+        self.crop_scope.setEnabled(False)
+        self.crop_scope.currentIndexChanged.connect(self._change_crop_scope)
+        crop_toolbar.addWidget(self.crop_scope)
+        self.crop_reset_button = QPushButton("자르기 초기화")
+        self.crop_reset_button.setEnabled(False)
+        self.crop_reset_button.clicked.connect(self._reset_crop_regions)
+        crop_toolbar.addWidget(self.crop_reset_button)
+        crop_help = QLabel("어두운 부분은 정합·완성 결과에서 제외 · 사용 영역의 원본 픽셀은 유지")
+        crop_help.setStyleSheet("color:#586069")
+        crop_toolbar.addWidget(crop_help)
+        crop_toolbar.addStretch(1)
+        root.addLayout(crop_toolbar)
+        hint = QLabel("왼쪽 썸네일을 끌어 놓으세요  ·  드래그: 위치 이동  ·  휠: 투명도  ·  Delete: 제거  ·  자르기: 정합 제외 영역 설정")
         hint.setStyleSheet("color:#586069;padding:2px")
         root.addWidget(hint)
         self.view = MergeBoardView()
@@ -219,6 +455,7 @@ class PhotoMergeBoard(QWidget):
         root.addLayout(bottom)
         self.view.paths_changed.connect(self._update_count)
         self.view.opacity_changed.connect(lambda value: self.status.setText(f"선택 이미지 투명도 {value}%"))
+        self.view.crop_changed.connect(self.status.setText)
 
     def add_paths(self, paths: list[str]) -> None:
         self.view.add_paths(paths)
@@ -234,16 +471,39 @@ class PhotoMergeBoard(QWidget):
     def _update_count(self, count: int) -> None:
         self.count_label.setText(f"보드 이미지 {count}장")
         self.align_button.setEnabled(count >= 2 and self.thread is None)
+        crop_enabled = count >= 1 and self.thread is None
+        self.crop_button.setEnabled(crop_enabled)
+        self.crop_scope.setEnabled(crop_enabled)
+        self.crop_reset_button.setEnabled(crop_enabled)
+
+    def _toggle_crop_mode(self, enabled: bool) -> None:
+        self.view.set_crop_mode(enabled)
+        if enabled:
+            self.status.setText("이미지를 선택하고 흰색 자르기 손잡이를 끌어 정합 사용 영역을 지정하세요.")
+        else:
+            self.status.setText("자르기 영역이 정합 설정에 반영되었습니다.")
+
+    def _change_crop_scope(self, index: int) -> None:
+        self.view.set_crop_scope_all(index == 1)
+        scope = "모든 이미지에 같은 비율" if index == 1 else "선택한 이미지에만"
+        self.status.setText(f"자르기 조절을 {scope}로 적용합니다.")
+
+    def _reset_crop_regions(self) -> None:
+        self.view.reset_crop_regions()
 
     def start_alignment(self) -> None:
         paths = self.view.paths()
         if len(paths) < 2 or self.thread is not None:
             return
+        self.crop_button.setChecked(False)
         self.status.setText("보드 이미지 자동 정렬 준비 중…")
         self.progress.setValue(0)
         self.align_button.setEnabled(False)
+        self.crop_button.setEnabled(False)
+        self.crop_scope.setEnabled(False)
+        self.crop_reset_button.setEnabled(False)
         self.thread = QThread(self)
-        self.worker = StitchWorker(paths, StitchOptions())
+        self.worker = StitchWorker(paths, StitchOptions(), self.view.layout_hints())
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._on_progress)
