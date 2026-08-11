@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRubberBand,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QStatusBar,
@@ -4234,8 +4235,10 @@ class MainWindow(QMainWindow):
         container_layout.addLayout(controls)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.thumbnail_scroll = scroll
         self.thumbnail_container = QWidget()
+        self.thumbnail_container.setMinimumWidth(0)
         self.thumbnail_layout = QGridLayout(self.thumbnail_container)
         self.thumbnail_layout.setContentsMargins(6, 6, 6, 6)
         self.thumbnail_layout.setHorizontalSpacing(6)
@@ -4594,6 +4597,7 @@ class MainWindow(QMainWindow):
         return sorted(paths, key=lambda item: cls._browser_image_sort_key(root, Path(item)))
 
     def _populate_thumbnails(self) -> None:
+        self.thumbnail_container.setFixedWidth(max(1, self.thumbnail_scroll.viewport().width()))
         self._clear_thumbnail_layout()
         self.thumbnail_buttons.clear()
         self.selected_thumbnail_paths = {
@@ -4620,6 +4624,10 @@ class MainWindow(QMainWindow):
                     col = 0
                 header_text = self._thumbnail_folder_label(folder)
                 header = QLabel(header_text)
+                header.setToolTip(header_text)
+                header.setMinimumWidth(0)
+                header.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                header.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 header.setStyleSheet(
                     "font-weight:700; font-size:13px; padding:8px 8px; "
                     "margin-top:8px; background:#203040; color:#ffffff; "
@@ -4880,6 +4888,7 @@ class MainWindow(QMainWindow):
     def _resize_thumbnail_buttons_to_viewport(self) -> None:
         if not hasattr(self, "thumbnail_buttons"):
             return
+        self.thumbnail_container.setFixedWidth(max(1, self.thumbnail_scroll.viewport().width()))
         thumb_width, thumb_height, icon_width, icon_height = self._thumbnail_dimensions()
         for path, button in self.thumbnail_buttons.items():
             button.setFixedSize(thumb_width, thumb_height)

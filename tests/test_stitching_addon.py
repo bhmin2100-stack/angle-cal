@@ -113,7 +113,9 @@ def test_photo_merge_addon_reuses_thumbnail_dock_and_central_board(tmp_path):
 
 def test_thumbnail_width_fills_viewport_for_each_column_count(tmp_path):
     app = QApplication.instance() or QApplication([])
-    image_path = tmp_path / "wide.png"
+    long_folder = tmp_path.joinpath(*(["very-long-folder-title"] * 4))
+    long_folder.mkdir(parents=True)
+    image_path = long_folder / "wide.png"
     _write(image_path, np.full((60, 180, 3), 180, dtype=np.uint8))
     window = MainWindow()
     try:
@@ -141,5 +143,6 @@ def test_thumbnail_width_fills_viewport_for_each_column_count(tmp_path):
             window.thumbnail_scroll.viewport().width() - margins.left() - margins.right()
         )
         assert max(size.width() for size in button.icon().availableSizes()) <= narrow_icon_width
+        assert window.thumbnail_scroll.horizontalScrollBar().maximum() == 0
     finally:
         window.close()
