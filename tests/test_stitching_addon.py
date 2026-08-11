@@ -2,11 +2,19 @@ from pathlib import Path
 import time
 import cv2
 import numpy as np
+import pytest
 
 from PySide6.QtWidgets import QApplication
 from angle_cal.app import MainWindow
 from angle_cal.photo_merge import PhotoMergeBoard
-from angle_cal.stitching import StitchOptions, save_stitch_result, stitch_paths
+from angle_cal.stitching import (
+    StitchLayoutHint,
+    StitchOptions,
+    StitchingNeedsManual,
+    detect_bottom_overlay_fraction,
+    save_stitch_result,
+    stitch_paths,
+)
 
 
 def _write(path: Path, image: np.ndarray) -> None:
@@ -35,6 +43,60 @@ def test_saved_result_has_alpha_mask_and_report(tmp_path):
     assert loaded.dtype == np.uint16 and loaded.shape[2] == 4
     assert mask.exists() and report.exists()
     assert "recalibration_required" in report.read_text(encoding="utf-8")
+
+
+def test_board_hint_prevents_false_full_overlay(tmp_path):
+    image = np.random.default_rng(91).integers(0, 256, (220, 300), dtype=np.uint8)
+    a, b = tmp_path / "same-a.png", tmp_path / "same-b.png"
+    _write(a, image)
+    _write(b, image)
+    hints = [
+        StitchLayoutHint(str(a), np.eye(3)),
+        StitchLayoutHint(str(b), np.array([[1.0, 0.0, 270.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])),
+    ]
+
+    with pytest.raises(StitchingNeedsManual):
+        stitch_paths([str(a), str(b)], layout_hints=hints)
+
+
+def test_unrelated_images_are_rejected_instead_of_composited(tmp_path):
+    first = np.random.default_rng(123).integers(0, 256, (220, 300), dtype=np.uint8)
+    second = np.random.default_rng(456).integers(0, 256, (220, 300), dtype=np.uint8)
+    a, b = tmp_path / "unrelated-a.png", tmp_path / "unrelated-b.png"
+    _write(a, first)
+    _write(b, second)
+
+    with pytest.raises(StitchingNeedsManual):
+        stitch_paths([str(a), str(b)])
+
+
+def test_repeated_sem_footer_is_excluded_from_alignment(tmp_path):
+    rng = np.random.default_rng(888)
+    scene = rng.integers(0, 256, (180, 420), dtype=np.uint8)
+    footer = np.zeros((40, 300), dtype=np.uint8)
+    cv2.line(footer, (0, 0), (299, 0), 180, 2)
+    cv2.line(footer, (24, 18), (124, 18), 255, 4)
+    cv2.putText(footer, "500 nm  15.0 kV", (145, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.38, 230, 1, cv2.LINE_AA)
+    left = np.vstack((scene[:, :300], footer))
+    right = np.vstack((scene[:, 120:], footer))
+    a, b = tmp_path / "sem-left.png", tmp_path / "sem-right.png"
+    _write(a, left)
+    _write(b, right)
+
+    detected = detect_bottom_overlay_fraction([left, right])
+    assert detected == pytest.approx(40 / 220, abs=0.035)
+    hints = [
+        StitchLayoutHint(str(a), np.eye(3), (0.0, 0.0, 1.0, 180 / 220)),
+        StitchLayoutHint(
+            str(b),
+            np.array([[1.0, 0.0, 120.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+            (0.0, 0.0, 1.0, 180 / 220),
+        ),
+    ]
+    result = stitch_paths([str(a), str(b)], layout_hints=hints)
+
+    assert result.output_size == (420, 180)
+    assert np.array_equal(result.image, scene)
 
 
 def test_multiple_addons_can_be_enabled_and_disabled():
@@ -110,6 +172,43 @@ def test_photo_merge_addon_reuses_thumbnail_dock_and_central_board(tmp_path):
         app.processEvents()
     finally:
         window.close()
+
+
+def test_photo_merge_board_crop_regions_support_individual_and_common_scope(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    first_path = tmp_path / "crop-first.png"
+    second_path = tmp_path / "crop-second.png"
+    _write(first_path, np.full((120, 180), 70, dtype=np.uint8))
+    _write(second_path, np.full((120, 180), 170, dtype=np.uint8))
+    board = PhotoMergeBoard()
+    board.add_paths([str(first_path), str(second_path)])
+    try:
+        items = sorted(board.view.items_in_board(), key=lambda item: item.path)
+        first, second = items
+        first.setSelected(True)
+        board.crop_button.click()
+        assert board.crop_button.isChecked()
+        assert first.crop_overlay.isVisible()
+        assert not second.crop_overlay.isVisible()
+
+        first.set_match_rect((0.05, 0.08, 0.9, 0.72))
+        assert first.match_rect == (0.05, 0.08, 0.9, 0.72)
+        assert second.match_rect is None
+
+        board.crop_scope.setCurrentIndex(1)
+        first.set_match_rect((0.1, 0.0, 0.8, 0.8))
+        assert second.match_rect == first.match_rect
+        assert all(item.crop_overlay.isVisible() for item in items)
+        assert [hint.match_rect for hint in board.view.layout_hints()] == [
+            (0.1, 0.0, 0.8, 0.8),
+            (0.1, 0.0, 0.8, 0.8),
+        ]
+
+        board.crop_reset_button.click()
+        assert all(item.match_rect is None for item in items)
+    finally:
+        board.close()
+        app.processEvents()
 
 
 def test_thumbnail_width_fills_viewport_for_each_column_count(tmp_path):
