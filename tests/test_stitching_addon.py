@@ -99,6 +99,7 @@ def test_photo_merge_addon_reuses_thumbnail_dock_and_central_board(tmp_path):
         assert len(window.photo_merge_board.view.items_in_board()) == 2
 
         item = window.photo_merge_board.view.items_in_board()[0]
+        assert not item.acceptHoverEvents()
         item.setPos(115, 75)
         item.setOpacity(0.44)
         item.setSelected(True)
@@ -144,5 +145,12 @@ def test_thumbnail_width_fills_viewport_for_each_column_count(tmp_path):
         )
         assert max(size.width() for size in button.icon().availableSizes()) <= narrow_icon_width
         assert window.thumbnail_scroll.horizontalScrollBar().maximum() == 0
+        window.thumbnail_hover_path = str(image_path)
+        window.thumbnail_hover_button = button
+        window._show_thumbnail_hover_preview()
+        assert window.thumbnail_hover_popup.isVisible()
+        assert window.thumbnail_hover_popup.pixmap().width() > button.iconSize().width()
+        window._hide_thumbnail_hover_preview()
+        assert not window.thumbnail_hover_popup.isVisible()
     finally:
         window.close()

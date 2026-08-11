@@ -4253,6 +4253,15 @@ class MainWindow(QMainWindow):
         self.thumbnail_resize_timer.setSingleShot(True)
         self.thumbnail_resize_timer.setInterval(80)
         self.thumbnail_resize_timer.timeout.connect(self._resize_thumbnail_buttons_to_viewport)
+        self.thumbnail_hover_path: Optional[str] = None
+        self.thumbnail_hover_button: Optional[QPushButton] = None
+        self.thumbnail_hover_timer = QTimer(self)
+        self.thumbnail_hover_timer.setSingleShot(True)
+        self.thumbnail_hover_timer.setInterval(550)
+        self.thumbnail_hover_timer.timeout.connect(self._show_thumbnail_hover_preview)
+        self.thumbnail_hover_popup = QLabel(None, Qt.WindowType.ToolTip)
+        self.thumbnail_hover_popup.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumbnail_hover_popup.setStyleSheet("background:#111827;border:2px solid #4cc9f0;padding:6px;")
         scroll.setWidget(self.thumbnail_container)
         container_layout.addWidget(scroll)
         dock.setWidget(container)
@@ -5001,9 +5010,50 @@ class MainWindow(QMainWindow):
             and event.type() == QEvent.Type.Resize
         ):
             self.thumbnail_resize_timer.start()
+        if watched in self.thumbnail_buttons.values():
+            if event.type() == QEvent.Type.Enter:
+                self.thumbnail_hover_path = next((path for path, button in self.thumbnail_buttons.items() if button is watched), None)
+                self.thumbnail_hover_button = watched
+                self.thumbnail_hover_timer.start()
+            elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
+                self._hide_thumbnail_hover_preview()
         if self._is_thumbnail_event_source(watched) and self._handle_thumbnail_event(watched, event):
             return True
         return super().eventFilter(watched, event)
+
+    def _show_thumbnail_hover_preview(self) -> None:
+        path = self.thumbnail_hover_path
+        button = self.thumbnail_hover_button
+        if not path or button is None or not Path(path).is_file():
+            return
+        image = read_image(path)
+        if image is None:
+            return
+        state = self.image_states.get(path) or self._load_image_format_state(path)
+        if state is not None:
+            rotation = float(state.get("image_rotation_degrees", 0.0) or 0.0)
+            steps = [float(value) for value in state.get("image_rotation_steps", [])]
+            image = self._image_with_rotation_steps(image, steps, rotation)
+        rgb = bgr_to_rgb8_for_display(image)
+        height, width = rgb.shape[:2]
+        qimage = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888).copy()
+        pixmap = QPixmap.fromImage(qimage).scaled(720, 520, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.thumbnail_hover_popup.setPixmap(pixmap)
+        self.thumbnail_hover_popup.adjustSize()
+        position = button.mapToGlobal(QPoint(button.width() + 10, 0))
+        screen = QApplication.screenAt(position)
+        if screen is not None:
+            area = screen.availableGeometry()
+            position.setX(min(position.x(), area.right() - self.thumbnail_hover_popup.width()))
+            position.setY(min(position.y(), area.bottom() - self.thumbnail_hover_popup.height()))
+        self.thumbnail_hover_popup.move(position)
+        self.thumbnail_hover_popup.show()
+
+    def _hide_thumbnail_hover_preview(self) -> None:
+        self.thumbnail_hover_timer.stop()
+        self.thumbnail_hover_popup.hide()
+        self.thumbnail_hover_path = None
+        self.thumbnail_hover_button = None
 
     def _is_thumbnail_event_source(self, watched) -> bool:
         if not hasattr(self, "thumbnail_container"):

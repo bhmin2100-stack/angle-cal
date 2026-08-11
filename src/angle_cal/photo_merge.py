@@ -3,7 +3,7 @@ from pathlib import Path
 import threading
 import cv2
 import numpy as np
-from PySide6.QtCore import QObject,QPointF,Qt,QThread,QTimer,Signal,Slot
+from PySide6.QtCore import QObject,QPointF,Qt,QThread,Signal,Slot
 from PySide6.QtGui import QImage,QKeyEvent,QPixmap,QWheelEvent
 from PySide6.QtWidgets import QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QGraphicsPixmapItem,QGraphicsScene,QGraphicsView,QHBoxLayout,QLabel,QListWidget,QListWidgetItem,QMessageBox,QProgressBar,QPushButton,QSplitter,QTableWidget,QTableWidgetItem,QVBoxLayout,QWidget
 from .stitching import StitchOptions,StitchResult,StitchingCancelled,StitchingNeedsManual,detect_bottom_overlay_fraction,read_raw_image,save_stitch_result,stitch_paths
@@ -78,28 +78,13 @@ class PhotoMergeDialog(QDialog):
 
 
 class MergeBoardItem(QGraphicsPixmapItem):
-    def __init__(self, path: str, pixmap: QPixmap, preview: QPixmap, view: "MergeBoardView") -> None:
+    def __init__(self, path: str, pixmap: QPixmap, view: "MergeBoardView") -> None:
         super().__init__(pixmap)
         self.path = path
-        self.preview = preview
         self.view = view
         self.setFlags(QGraphicsPixmapItem.GraphicsItemFlag.ItemIsMovable | QGraphicsPixmapItem.GraphicsItemFlag.ItemIsSelectable)
-        self.setAcceptHoverEvents(True)
         self.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self.setToolTip(Path(path).name)
-        self.hover_timer = QTimer()
-        self.hover_timer.setSingleShot(True)
-        self.hover_timer.setInterval(550)
-        self.hover_timer.timeout.connect(lambda: self.view.show_hover_preview(self))
-
-    def hoverEnterEvent(self, event) -> None:  # noqa: N802
-        self.hover_timer.start()
-        super().hoverEnterEvent(event)
-
-    def hoverLeaveEvent(self, event) -> None:  # noqa: N802
-        self.hover_timer.stop()
-        self.view.hide_hover_preview()
-        super().hoverLeaveEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         delta = 0.08 if event.delta() > 0 else -0.08
@@ -120,9 +105,6 @@ class MergeBoardView(QGraphicsView):
         self.setRenderHints(self.renderHints())
         self.setStyleSheet("QGraphicsView { background:#24282d; border:1px solid #8b949e; }")
         self.setSceneRect(-2500, -1800, 5000, 3600)
-        self.preview_popup = QLabel(None, Qt.WindowType.ToolTip)
-        self.preview_popup.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_popup.setStyleSheet("background:#111827; border:2px solid #4cc9f0; padding:6px;")
 
     def items_in_board(self) -> list[MergeBoardItem]:
         return [item for item in self.scene().items() if isinstance(item, MergeBoardItem)]
@@ -144,8 +126,7 @@ class MergeBoardView(QGraphicsView):
                 continue
             full = preview_pixmap(image)
             board_pixmap = full.scaled(360, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            large_preview = full.scaled(720, 520, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            item = MergeBoardItem(path, board_pixmap, large_preview, self)
+            item = MergeBoardItem(path, board_pixmap, self)
             item.setPos(origin + QPointF(34 * added, 28 * added))
             item.setZValue(len(self.items_in_board()) + 1)
             self.scene().addItem(item)
@@ -155,7 +136,6 @@ class MergeBoardView(QGraphicsView):
             self.paths_changed.emit(len(self.items_in_board()))
 
     def clear_board(self) -> None:
-        self.hide_hover_preview()
         self.scene().clear()
         self.paths_changed.emit(0)
 
@@ -166,18 +146,7 @@ class MergeBoardView(QGraphicsView):
                 self.scene().removeItem(item)
                 removed = True
         if removed:
-            self.hide_hover_preview()
             self.paths_changed.emit(len(self.items_in_board()))
-
-    def show_hover_preview(self, item: MergeBoardItem) -> None:
-        self.preview_popup.setPixmap(item.preview)
-        self.preview_popup.adjustSize()
-        cursor = self.mapToGlobal(self.mapFromScene(item.sceneBoundingRect().center()))
-        self.preview_popup.move(cursor.x() + 18, cursor.y() + 18)
-        self.preview_popup.show()
-
-    def hide_hover_preview(self) -> None:
-        self.preview_popup.hide()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Delete:
