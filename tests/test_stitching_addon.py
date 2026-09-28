@@ -4,10 +4,12 @@ import cv2
 import numpy as np
 import pytest
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QImage, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from angle_cal.app import MainWindow
+from angle_cal.band_registration import band_profiles, full_overlap_score, translation_candidates
 from angle_cal.photo_merge import PhotoMergeBoard
 from angle_cal.stitching import (
     StitchLayoutHint,
@@ -24,6 +26,32 @@ def _write(path: Path, image: np.ndarray) -> None:
     cv2.imencode(path.suffix, image)[1].tofile(str(path))
 
 
+def test_band_image_strips_match_graph_samples_and_source_regions():
+    yy, xx = np.mgrid[:90, :120]
+    first = (xx + yy).astype(np.uint8)
+    second = first + 12
+    valid = np.zeros(first.shape, dtype=bool)
+    valid[9:81, 12:108] = True
+    details = band_profiles(first, second, valid, with_regions=True)
+    assert len(details) == 6
+    assert {entry[4]["axis"] for entry in details} == {0, 1}
+    for name, a, b, score, detail in details:
+        x, y, width, height = detail["region"]
+        expected = first[y:y + height, x:x + width]
+        if detail["axis"] == 1:
+            expected = expected.T
+        assert np.array_equal(detail["first_strip"], expected)
+        assert np.allclose(detail["first_strip"].mean(axis=0), a)
+        assert np.allclose(detail["second_strip"].mean(axis=0), b)
+    # Invalid holes must not contribute to either the displayed strip or curve.
+    valid[20:35, 25:40] = False
+    for _, a, b, _, detail in band_profiles(first, second, valid, with_regions=True):
+        mask = detail["strip_mask"]
+        counts = mask.sum(axis=0)
+        assert np.allclose((detail["first_strip"] * mask).sum(axis=0) / counts, a)
+        assert np.allclose((detail["second_strip"] * mask).sum(axis=0) / counts, b)
+
+
 def test_integer_translation_preserves_original_uint16_pixels(tmp_path):
     rng = np.random.default_rng(42)
     scene = rng.integers(0, 65535, (180, 260), dtype=np.uint16)
@@ -34,6 +62,52 @@ def test_integer_translation_preserves_original_uint16_pixels(tmp_path):
     assert result.output_size == (260, 180)
     assert np.array_equal(result.image, scene)
     assert {p.mode for p in result.placements} == {"anchor", "exact translation"}
+
+
+def test_full_overlap_distinguishes_images_with_identical_band_means():
+    rng = np.random.default_rng(920)
+    yy, xx = np.mgrid[:120, :120]
+    base = 110 + 12 * np.sin(yy / 10) + 12 * np.sin(xx / 9)
+    # Each 2x2 texture has zero row/column sums. All six averaged bands
+    # match exactly even though the actual two-dimensional texture is inverted.
+    texture = np.kron(rng.choice([-1, 1], (60, 60)), np.array([[45, -45], [-45, 45]]))
+    first, wrong = base + texture, base - texture
+    valid = np.ones(first.shape, bool)
+    exposure = first.astype(np.float32) * 1.2 + 13
+    assert full_overlap_score(first, exposure, valid) > .999
+    assert all(score > .999 for _, _, _, score in band_profiles(first, wrong, valid))
+    assert full_overlap_score(first, wrong, valid) < .2
+
+
+def test_whole_area_registration_resolves_periodic_layers_with_local_texture(tmp_path):
+    yy, xx = np.mgrid[:260, :420]
+    scene = 110 + 30 * np.sin(2 * np.pi * yy / 20) + 10 * np.sin(xx / 15)
+    scene += np.random.default_rng(808).normal(0, 12, scene.shape)
+    scene = np.clip(scene, 0, 255).astype(np.uint8)
+    first, second = tmp_path / "area-a.png", tmp_path / "area-b.png"
+    _write(first, scene[:180])
+    _write(second, np.uint8(scene[80:].astype(np.float32) * .8 + 15))
+    result = stitch_paths([str(first), str(second)], StitchOptions(preserve_scale_bar=False))
+    assert result.output_size == (420, 260)
+    assert result.placements[1].transform[1, 2] == pytest.approx(80, abs=1)
+
+
+def test_tiny_perfect_overlap_is_not_a_translation_candidate():
+    scene = np.random.default_rng(391).integers(0, 255, (120, 380), dtype=np.uint8)
+    first, second = scene[:, :200], scene[:, 180:]
+    mask = np.full(first.shape, 255, np.uint8)
+    peaks = translation_candidates(first, second, mask, mask)
+    assert not any(abs(dx + 180) <= 2 and abs(dy) <= 2 for _, dx, dy in peaks)
+
+
+def test_truly_periodic_whole_area_still_requires_manual_region(tmp_path):
+    tile = np.random.default_rng(18).integers(30, 200, (20, 30), dtype=np.uint8)
+    repeated = np.tile(tile, (8, 8))
+    first, second = tmp_path / "repeat-a.png", tmp_path / "repeat-b.png"
+    _write(first, repeated)
+    _write(second, np.roll(repeated, 7, axis=0))
+    with pytest.raises(StitchingNeedsManual, match="영역 전체"):
+        stitch_paths([str(first), str(second)])
 
 
 def test_saved_result_has_alpha_mask_and_report(tmp_path):
@@ -111,7 +185,7 @@ def test_bright_mold_layers_without_dark_footer_are_not_cropped():
     assert detect_bottom_overlay_fraction([image]) == 0.0
 
 
-def test_multiple_addons_open_independent_checked_windows():
+def test_multiple_addons_open_menu_tabs_and_preserve_board():
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     try:
@@ -120,23 +194,148 @@ def test_multiple_addons_open_independent_checked_windows():
         window.addon_actions["trench_analyzer"].setChecked(True)
         app.processEvents()
 
-        assert window.ribbon_tabs.count() == 5
+        assert window.ribbon_tabs.count() == 7
         assert window.addon_actions["photo_merge"].isChecked()
         assert window.addon_actions["trench_analyzer"].isChecked()
-        assert window.addon_windows["photo_merge"].isVisible()
-        assert window.addon_windows["trench_analyzer"].isVisible()
-        assert window.addon_windows["photo_merge"].windowTitle() == "AngleCal 애드온 - 사진 합치기"
+        assert window.ribbon_tabs.tabText(5) == "사진 합치기"
+        assert window.ribbon_tabs.tabText(6) == "Trench 자동분석기"
+        board = window.photo_merge_board
+        assert board.window() is window
+        window.ribbon_tabs.setCurrentIndex(5)
+        assert window.workspace_stack.currentWidget() is board
+        window.ribbon_tabs.setCurrentIndex(0)
+        assert window.workspace_stack.currentWidget() is window.canvas
+        window.ribbon_tabs.setCurrentIndex(5)
+        assert window.workspace_stack.currentWidget() is board
 
         window.addon_actions["photo_merge"].setChecked(False)
         app.processEvents()
-        assert not window.addon_windows["photo_merge"].isVisible()
-        assert window.addon_windows["trench_analyzer"].isVisible()
-
-        window.addon_windows["trench_analyzer"].close()
-        app.processEvents()
-        assert not window.addon_actions["trench_analyzer"].isChecked()
+        assert window.ribbon_tabs.count() == 6
+        assert window.workspace_stack.currentWidget() is window.canvas
+        assert window.ribbon_tabs.tabText(5) == "Trench 자동분석기"
+        window.addon_actions["photo_merge"].setChecked(True)
+        assert window.ribbon_tabs.count() == 7
+        assert window.photo_merge_board is board
+        assert window.workspace_stack.currentWidget() is board
+        window.addon_actions["photo_merge"].setChecked(False)
+        window.addon_actions["trench_analyzer"].setChecked(False)
+        assert window.ribbon_tabs.count() == 5
     finally:
         window.close()
+
+
+@pytest.mark.parametrize("focus_target", ["view", "crop_button", "band_scroll", "ribbon_tabs"])
+def test_delete_key_in_main_window_removes_only_board_selection(tmp_path, monkeypatch, focus_target):
+    app = QApplication.instance() or QApplication([])
+    path = tmp_path / "board-delete.png"
+    _write(path, np.full((80, 120), 100, dtype=np.uint8))
+    window = MainWindow()
+    canvas_calls = []
+    monkeypatch.setattr(window.canvas, "selected_line_ids", lambda: canvas_calls.append(True) or [])
+    try:
+        window.addon_actions["photo_merge"].setChecked(True)
+        board = window.photo_merge_board
+        board.add_paths([str(path)])
+        item = board.view.items_in_board()[0]
+        item.setSelected(True)
+        item.set_match_rect((.1, .1, .8, .8))
+        window.show()
+        window.activateWindow()
+        app.processEvents()
+        target = window.ribbon_tabs if focus_target == "ribbon_tabs" else getattr(board, focus_target)
+        target.setFocus()
+        app.processEvents()
+        QTest.keyClick(target, Qt.Key.Key_Delete)
+        app.processEvents()
+        assert not board.view.items_in_board()
+        assert board.count_label.text() == "보드 이미지 0장"
+        assert not canvas_calls
+        assert path.exists()
+        # Returning to the analysis tab restores its original Delete action.
+        window.ribbon_tabs.setCurrentIndex(0)
+        window.delete_action.trigger()
+        assert canvas_calls
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_blank_board_click_finishes_crop_and_keeps_keyboard_selection(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    path = tmp_path / "crop-finish.png"
+    _write(path, np.full((100, 150), 100, dtype=np.uint8))
+    window = MainWindow()
+    try:
+        window.addon_actions["photo_merge"].setChecked(True)
+        board = window.photo_merge_board
+        board.add_paths([str(path)])
+        item = board.view.items_in_board()[0]
+        item.setPos(0, 0)
+        window.show()
+        window.activateWindow()
+        app.processEvents()
+        board.view.centerOn(item.sceneBoundingRect().center())
+        center = board.view.mapFromScene(item.sceneBoundingRect().center())
+        QTest.mouseClick(board.view.viewport(), Qt.MouseButton.LeftButton, pos=center)
+        assert item.isSelected()
+        QTest.mouseClick(board.crop_button, Qt.MouseButton.LeftButton)
+        assert board.view.crop_mode
+        assert board.view.hasFocus()
+        item.set_match_rect((.2, .2, .6, .6))
+        # Clicking the image itself must not finish editing.
+        QTest.mouseClick(board.view.viewport(), Qt.MouseButton.LeftButton, pos=center)
+        assert board.crop_button.isChecked()
+        blank = board.view.mapFromScene(QPointF(-30, -30))
+        assert board.view.itemAt(blank) is None
+        QTest.mouseClick(board.view.viewport(), Qt.MouseButton.LeftButton, pos=blank)
+        app.processEvents()
+        assert not board.crop_button.isChecked()
+        assert not board.view.crop_mode
+        assert not item.crop_overlay.isVisible()
+        assert item.isSelected()
+        assert item.pixmap().width() < item.original_pixmap.width()
+        QTest.keyClick(board.view, Qt.Key.Key_Right)
+        assert item.pos() == QPointF(10, 0)
+        assert item.match_rect == (.2, .2, .6, .6)
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_board_arrow_keys_move_selected_group_with_ctrl_fine_steps(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    paths = [tmp_path / f"move-{index}.png" for index in range(3)]
+    for path in paths:
+        _write(path, np.full((100, 150), 100, dtype=np.uint8))
+    window = MainWindow()
+    try:
+        window.addon_actions["photo_merge"].setChecked(True)
+        board = window.photo_merge_board
+        board.add_paths([str(path) for path in paths])
+        items = sorted(board.view.items_in_board(), key=lambda item: item.path)
+        items[0].setSelected(True)
+        items[1].setSelected(True)
+        items[0].set_match_rect((.1, .1, .8, .8))
+        window.show()
+        window.activateWindow()
+        app.processEvents()
+        board.view.setFocus()
+        board.view.scale(2, 2)
+        unchanged = items[2].pos()
+        for modifiers, step in ((Qt.KeyboardModifier.NoModifier, 10),
+                                (Qt.KeyboardModifier.ControlModifier, 1)):
+            for key, dx, dy in ((Qt.Key.Key_Left, -1, 0), (Qt.Key.Key_Right, 1, 0),
+                               (Qt.Key.Key_Up, 0, -1), (Qt.Key.Key_Down, 0, 1)):
+                before = [item.pos() for item in items[:2]]
+                QTest.keyClick(board.view, key, modifiers)
+                for item, position in zip(items[:2], before):
+                    assert item.pos() == position + QPointF(dx * step, dy * step)
+                assert items[2].pos() == unchanged
+                assert board.view.profile_timer.isActive()
+        assert items[0].match_rect == (.1, .1, .8, .8)
+    finally:
+        window.close()
+        app.processEvents()
 
 
 def test_photo_merge_button_starts_worker_and_finishes(tmp_path):
@@ -181,8 +380,8 @@ def test_photo_merge_addon_reuses_thumbnail_dock_and_central_board(tmp_path):
         window.addon_actions["photo_merge"].setChecked(True)
 
         assert window.photo_merge_board is not None
-        assert window.addon_windows["photo_merge"].isVisible()
-        assert window.workspace_stack.currentWidget() is window.canvas
+        assert window.ribbon_tabs.currentWidget() is window.addon_pages["photo_merge"]
+        assert window.workspace_stack.currentWidget() is window.photo_merge_board
         window.open_photo_merge_dialog()
         assert len(window.photo_merge_board.view.items_in_board()) == 2
 
@@ -230,14 +429,43 @@ def test_photo_merge_board_crop_hides_excluded_area_after_completion(tmp_path):
 
         board.crop_button.click()
         assert not board.crop_button.isChecked()
+        full = QRectF(first.original_pixmap.rect())
+        visible = QRectF(full.width() * .1, 0, full.width() * .8, full.height() * .8)
+        assert first.boundingRect() == visible.adjusted(-.5, -.5, .5, .5)
         image = first.pixmap().toImage()
-        assert image.pixelColor(0, image.height() // 2).alpha() == 0
+        assert image.width() == int(visible.width())
+        assert image.height() == int(visible.height())
+        assert image.pixelColor(0, image.height() // 2).alpha() == 255
         assert image.pixelColor(image.width() // 2, image.height() // 2).alpha() == 255
+        assert not first.contains(QPointF(1, full.height() / 2))
+        transform = board.view.layout_hints()[0].source_to_board.copy()
+        position = first.pos()
+
+        # Render the scene: excluded pixels must show the background, including
+        # while the cropped item is selected (no original-size selection box).
+        second.setVisible(False)
+        rendered = QImage(int(full.width()), int(full.height()), QImage.Format.Format_ARGB32)
+        rendered.fill(Qt.GlobalColor.magenta)
+        painter = QPainter(rendered)
+        board.view.scene().render(painter, full, first.original_scene_rect())
+        painter.end()
+        assert rendered.pixelColor(1, rendered.height() // 2).name() == "#ff00ff"
+        assert rendered.pixelColor(rendered.width() // 2, rendered.height() // 2).name() == "#464646"
+
+        board.crop_button.click()
+        assert first.boundingRect() == full.adjusted(-.5, -.5, .5, .5)
+        assert first.crop_overlay.crop_rect() == visible
+        assert first.pos() == position
+        assert np.array_equal(board.view.layout_hints()[0].source_to_board, transform)
+        board.crop_button.click()
+        assert first.boundingRect() == visible.adjusted(-.5, -.5, .5, .5)
 
         first.setSelected(True)
         board.crop_reset_button.click()
         assert first.match_rect is None
         assert second.match_rect is None
+        assert first.boundingRect() == full.adjusted(-.5, -.5, .5, .5)
+        assert first.offset() == QPointF()
     finally:
         board.close()
         app.processEvents()
@@ -310,6 +538,14 @@ def test_photo_merge_board_has_band_panel_zoom_and_delete_shortcuts(tmp_path):
         board.view._emit_band_profiles()
         assert board.band_graph.selected_name == Path(items[0].path).name
         assert board.band_graph.profiles
+        for entry in board.band_graph.profiles:
+            assert entry["first_strip_image"].width() == len(entry["first"])
+            assert entry["second_strip_image"].width() == len(entry["second"])
+            assert not entry["first_image"].isNull()
+            x, y, width, height = entry["first_region"]
+            assert x >= 0 and y >= 0
+            assert x + width <= entry["first_image"].width()
+            assert y + height <= entry["first_image"].height()
 
         before = board.view.transform().m11()
         board.view.zoom_by(120)

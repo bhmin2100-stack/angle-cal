@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QObject,QPointF,QRectF,Qt,QThread,QTimer,Signal,Slot
 from PySide6.QtGui import QColor,QImage,QKeyEvent,QPainter,QPainterPath,QPen,QPixmap,QPolygonF,QWheelEvent
-from PySide6.QtWidgets import QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QGraphicsItem,QGraphicsPixmapItem,QGraphicsScene,QGraphicsView,QHBoxLayout,QLabel,QListWidget,QListWidgetItem,QMessageBox,QProgressBar,QPushButton,QSplitter,QTableWidget,QTableWidgetItem,QVBoxLayout,QWidget
+from PySide6.QtWidgets import QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QGraphicsItem,QGraphicsPixmapItem,QGraphicsScene,QGraphicsView,QHBoxLayout,QLabel,QListWidget,QListWidgetItem,QMessageBox,QProgressBar,QPushButton,QScrollArea,QSplitter,QTableWidget,QTableWidgetItem,QVBoxLayout,QWidget
 from .band_registration import band_profiles
 from .stitching import StitchLayoutHint,StitchOptions,StitchResult,StitchingCancelled,StitchingNeedsManual,detect_bottom_overlay_fraction,read_raw_image,save_stitch_result,save_stitch_result_auto,stitch_paths
 
@@ -95,7 +95,7 @@ class CropOverlayItem(QGraphicsItem):
         self.hide()
 
     def boundingRect(self) -> QRectF:  # noqa: N802
-        return self.owner.boundingRect()
+        return QRectF(self.owner.original_pixmap.rect())
 
     def crop_rect(self) -> QRectF:
         full = self.boundingRect()
@@ -218,7 +218,7 @@ class MergeBoardItem(QGraphicsPixmapItem):
         self.crop_overlay = CropOverlayItem(self)
 
     def set_match_rect_from_display(self, rect: QRectF) -> None:
-        full = self.boundingRect()
+        full = QRectF(self.original_pixmap.rect())
         normalized = (
             (rect.left() - full.left()) / max(1.0, full.width()),
             (rect.top() - full.top()) / max(1.0, full.height()),
@@ -231,12 +231,14 @@ class MergeBoardItem(QGraphicsPixmapItem):
         self.match_rect = region
         self.refresh_display(self.view.crop_mode)
         self.crop_overlay.update()
+        self.view.request_profile_update()
         if notify:
             self.view.crop_region_changed(self)
 
     def refresh_display(self, crop_active: bool) -> None:
         if crop_active or self.match_rect is None:
             self.setPixmap(self.original_pixmap)
+            self.setOffset(0, 0)
             return
         x, y, width, height = self.match_rect
         full = QRectF(self.original_pixmap.rect())
@@ -246,12 +248,14 @@ class MergeBoardItem(QGraphicsPixmapItem):
             width * full.width(),
             height * full.height(),
         )
-        cropped = QPixmap(self.original_pixmap.size())
-        cropped.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(cropped)
-        painter.drawPixmap(visible, self.original_pixmap, visible)
-        painter.end()
-        self.setPixmap(cropped)
+        # Shrink the actual item, including its selection border and hit area.
+        # Keep the original local origin so crop/re-edit never shifts the image.
+        pixels = visible.toAlignedRect().intersected(self.original_pixmap.rect())
+        self.setPixmap(self.original_pixmap.copy(pixels))
+        self.setOffset(pixels.topLeft())
+
+    def original_scene_rect(self) -> QRectF:
+        return self.mapRectToScene(QRectF(self.original_pixmap.rect()))
 
     def itemChange(self, change, value):  # noqa: N802
         result = super().itemChange(change, value)
@@ -283,6 +287,7 @@ class BandProfileGraph(QWidget):
     def set_profiles(self, selected_name: str, profiles: list[dict[str, object]]) -> None:
         self.selected_name = selected_name
         self.profiles = profiles[:4]
+        self.setMinimumHeight(42 + max(1, len(self.profiles)) * 242)
         self.update()
 
     @staticmethod
@@ -300,40 +305,91 @@ class BandProfileGraph(QWidget):
             for index, value in enumerate(values)
         ])
 
+    @staticmethod
+    def _gray_image(values: np.ndarray, mask: np.ndarray | None = None) -> QImage:
+        gray = np.ascontiguousarray(np.clip(values, 0, 255), dtype=np.uint8)
+        rgba = np.empty((*gray.shape, 4), dtype=np.uint8)
+        rgba[..., :3] = gray[..., None]
+        rgba[..., 3] = 255 if mask is None else np.uint8(mask) * 255
+        return QImage(rgba.data, gray.shape[1], gray.shape[0], rgba.strides[0],
+                      QImage.Format.Format_RGBA8888).copy()
+
+    @staticmethod
+    def _source_preview(painter, area, image, region, color):
+        scale = min(area.width() / image.width(), area.height() / image.height())
+        target = QRectF(area.center().x() - image.width() * scale / 2,
+                        area.top(), image.width() * scale, image.height() * scale)
+        painter.drawImage(target, image)
+        x, y, width, height = region
+        box = QRectF(target.left() + x * scale, target.top() + y * scale,
+                     width * scale, height * scale)
+        outside = QPainterPath()
+        outside.addRect(target)
+        inside = QPainterPath()
+        inside.addRect(box)
+        painter.fillPath(outside.subtracted(inside), QColor(0, 0, 0, 110))
+        painter.setPen(QPen(color, 2))
+        painter.drawRect(box)
+
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#f7f9fb"))
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(QColor("#24292f"))
-        painter.drawText(12, 22, f"선택: {self.selected_name or '없음'}")
+        painter.drawText(12, 22, painter.fontMetrics().elidedText(
+            f"선택: {self.selected_name or '없음'}", Qt.TextElideMode.ElideMiddle, self.width() - 24))
         if not self.profiles:
             painter.setPen(QColor("#6e7781"))
             painter.drawText(QRectF(12, 42, self.width() - 24, 90), Qt.TextFlag.TextWordWrap,
                              "이미지를 선택하고 다른 이미지와 겹치면 밝기 밴드 비교가 표시됩니다.")
             return
-        top = 38.0
-        block_height = max(74.0, min(128.0, (self.height() - top - 12.0) / len(self.profiles)))
+        blue, red = QColor("#0969da"), QColor("#cf222e")
         for index, entry in enumerate(self.profiles):
-            block_top = top + index * block_height
-            title = str(entry["title"])
-            score = float(entry["score"])
+            top = 38.0 + index * 242.0
+            width = self.width() - 28.0
             painter.setPen(QColor("#24292f"))
-            painter.drawText(QRectF(12, block_top, self.width() - 24, 20),
-                             Qt.AlignmentFlag.AlignLeft, f"{title}  ·  일치 {max(0, score) * 100:.0f}%")
-            plot = QRectF(14, block_top + 24, self.width() - 28, block_height - 32)
+            title = f"{entry['band_name']} · 일치 {max(0, float(entry['score'])) * 100:.0f}%"
+            painter.drawText(QRectF(14, top, width, 20), Qt.AlignmentFlag.AlignLeft, title)
+            # Full-image context shows exactly where each sampled band lies.
+            for column, (key, label, color) in enumerate((
+                ("first", "선택", blue), ("second", "비교", red),
+            )):
+                left = 14 + column * (width / 2 + 3)
+                painter.setPen(color)
+                text = f"{label}: {self.selected_name if key == 'first' else entry['other_name']}"
+                painter.drawText(QRectF(left, top + 21, width / 2 - 6, 18),
+                                 Qt.AlignmentFlag.AlignLeft, painter.fontMetrics().elidedText(
+                                     text, Qt.TextElideMode.ElideMiddle, int(width / 2 - 6)))
+                self._source_preview(painter, QRectF(left, top + 42, width / 2 - 6, 64),
+                                     entry[key + "_image"], entry[key + "_region"], color)
+            plot = QRectF(14, top + 112, width, 96)
             painter.fillRect(plot, QColor("#ffffff"))
-            painter.setPen(QPen(QColor("#d0d7de"), 1.0))
+            # The two real image strips share the graph's horizontal sample axis.
+            painter.save()
+            painter.setOpacity(.42)
+            painter.drawImage(QRectF(plot.left(), plot.top(), plot.width(), plot.height() / 2),
+                              entry["first_strip_image"])
+            painter.drawImage(QRectF(plot.left(), plot.center().y(), plot.width(), plot.height() / 2),
+                              entry["second_strip_image"])
+            painter.restore()
+            painter.setPen(QPen(QColor("#d0d7de"), 1))
             painter.drawRect(plot)
+            painter.drawLine(QPointF(plot.left(), plot.center().y()), QPointF(plot.right(), plot.center().y()))
             first = np.asarray(entry["first"], np.float64)
             second = np.asarray(entry["second"], np.float64)
-            if not len(first) or not len(second):
-                continue
             low = float(min(first.min(), second.min()))
             high = float(max(first.max(), second.max()))
-            painter.setPen(QPen(QColor("#0969da"), 1.6))
-            painter.drawPolyline(self._points(first, plot, low, high))
-            painter.setPen(QPen(QColor("#cf222e"), 1.6))
-            painter.drawPolyline(self._points(second, plot, low, high))
+            for values, color in ((first, blue), (second, red)):
+                points = self._points(values, plot, low, high)
+                painter.setPen(QPen(QColor("#ffffff"), 3.8))
+                painter.drawPolyline(points)
+                painter.setPen(QPen(color, 1.8))
+                painter.drawPolyline(points)
+            painter.setPen(QColor("#57606a"))
+            direction = "가로: 왼쪽 → 오른쪽" if entry["axis"] == 0 else "세로: 위 → 아래 (가로로 펼침)"
+            painter.drawText(QRectF(14, top + 211, width, 18), Qt.AlignmentFlag.AlignLeft, direction)
+            painter.drawText(QRectF(14, top + 227, width, 15), Qt.AlignmentFlag.AlignLeft,
+                             "배경 띠: 위=선택 · 아래=비교 / 선: 밝기")
 
 
 
@@ -341,6 +397,7 @@ class MergeBoardView(QGraphicsView):
     paths_changed = Signal(int)
     opacity_changed = Signal(int)
     crop_changed = Signal(str)
+    crop_finish_requested = Signal()
     band_profiles_changed = Signal(str, object)
 
     def __init__(self, parent=None) -> None:
@@ -370,8 +427,8 @@ class MergeBoardView(QGraphicsView):
         hints = []
         for item in sorted(self.items_in_board(), key=lambda candidate: (candidate.pos().y(), candidate.pos().x())):
             source_width, source_height = item.source_size
-            scale_x = item.pixmap().width() / max(1, source_width)
-            scale_y = item.pixmap().height() / max(1, source_height)
+            scale_x = item.original_pixmap.width() / max(1, source_width)
+            scale_y = item.original_pixmap.height() / max(1, source_height)
             position = item.scenePos()
             source_to_board = np.array(
                 [[scale_x, 0.0, position.x()], [0.0, scale_y, position.y()], [0.0, 0.0, 1.0]],
@@ -383,6 +440,7 @@ class MergeBoardView(QGraphicsView):
     def set_crop_mode(self, enabled: bool) -> None:
         self.crop_mode = enabled
         self._sync_crop_overlays()
+        self.request_profile_update()
 
     def _sync_crop_overlays(self) -> None:
         for item in self.items_in_board():
@@ -456,18 +514,26 @@ class MergeBoardView(QGraphicsView):
         self.scene().clear()
         self.paths_changed.emit(0)
 
-    def delete_selected(self) -> None:
-        removed = False
+    def delete_selected(self) -> int:
+        removed = 0
         for item in list(self.scene().selectedItems()):
             if isinstance(item, MergeBoardItem):
                 self.scene().removeItem(item)
-                removed = True
+                removed += 1
         if removed:
             self.paths_changed.emit(len(self.items_in_board()))
-            self.request_profile_update()
+            self.profile_timer.stop()
+            self._emit_band_profiles()
+        return removed
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self.setFocus(Qt.FocusReason.MouseFocusReason)
+        if (self.crop_mode and event.button() == Qt.MouseButton.LeftButton
+                and self.itemAt(event.position().toPoint()) is None):
+            self.crop_finish_requested.emit()
+            # Keep the cropped image selected so it can be nudged immediately.
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
@@ -475,6 +541,20 @@ class MergeBoardView(QGraphicsView):
             self.delete_selected()
             event.accept()
             return
+        directions = {
+            Qt.Key.Key_Left: (-1, 0), Qt.Key.Key_Right: (1, 0),
+            Qt.Key.Key_Up: (0, -1), Qt.Key.Key_Down: (0, 1),
+        }
+        if (event.key() in directions and event.modifiers() in
+                (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ControlModifier)):
+            selected = [item for item in self.items_in_board() if item.isSelected()]
+            if selected:
+                step = 1.0 if event.modifiers() & Qt.KeyboardModifier.ControlModifier else 10.0
+                dx, dy = directions[event.key()]
+                for item in selected:
+                    item.moveBy(dx * step, dy * step)
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
@@ -500,7 +580,7 @@ class MergeBoardView(QGraphicsView):
         if item.match_rect is None:
             return mask
         x, y, region_width, region_height = item.match_rect
-        bounds = item.sceneBoundingRect()
+        bounds = item.original_scene_rect()
         allowed = QRectF(
             bounds.left() + x * bounds.width(),
             bounds.top() + y * bounds.height(),
@@ -514,7 +594,7 @@ class MergeBoardView(QGraphicsView):
 
     @staticmethod
     def _overlap_array(item: MergeBoardItem, rect: QRectF) -> np.ndarray:
-        bounds = item.sceneBoundingRect()
+        bounds = item.original_scene_rect()
         left = max(0, int(round(rect.left() - bounds.left())))
         top = max(0, int(round(rect.top() - bounds.top())))
         right = min(item.gray_preview.shape[1], left + int(round(rect.width())))
@@ -543,10 +623,27 @@ class MergeBoardView(QGraphicsView):
             first, second = first[:height, :width], second[:height, :width]
             valid = self._region_mask(primary, overlap, width, height)
             valid &= self._region_mask(other, overlap, width, height)
-            profiles = band_profiles(first, second, valid)
-            for name, profile_a, profile_b, score in profiles[:2]:
+            profiles = band_profiles(first, second, valid, with_regions=True)
+            for name, profile_a, profile_b, score, detail in profiles[:2]:
+                regions = {}
+                for key, item in (("first", primary), ("second", other)):
+                    bounds = item.original_scene_rect()
+                    x, y, band_width, band_height = detail["region"]
+                    regions[key + "_region"] = (
+                        max(0, int(round(overlap.left() - bounds.left()))) + x,
+                        max(0, int(round(overlap.top() - bounds.top()))) + y,
+                        band_width, band_height,
+                    )
                 entries.append({
                     "title": f"{Path(other.path).name} · {name}",
+                    "band_name": name,
+                    "other_name": Path(other.path).name,
+                    "axis": detail["axis"],
+                    **regions,
+                    "first_image": BandProfileGraph._gray_image(primary.gray_preview),
+                    "second_image": BandProfileGraph._gray_image(other.gray_preview),
+                    "first_strip_image": BandProfileGraph._gray_image(detail["first_strip"], detail["strip_mask"]),
+                    "second_strip_image": BandProfileGraph._gray_image(detail["second_strip"], detail["strip_mask"]),
                     "first": profile_a,
                     "second": profile_b,
                     "score": score,
@@ -616,7 +713,8 @@ class PhotoMergeBoard(QWidget):
         crop_toolbar.addWidget(crop_help)
         crop_toolbar.addStretch(1)
         root.addLayout(crop_toolbar)
-        hint = QLabel("왼쪽 썸네일을 끌어 놓으세요  ·  드래그: 위치 이동  ·  휠: 투명도  ·  Ctrl+휠: 확대/축소  ·  Delete: 제거")
+        hint = QLabel("드래그: 이동 · 방향키: 10px · Ctrl+방향키: 1px · 휠: 투명도 · Ctrl+휠: 확대/축소 · Delete: 제거 · 빈 보드 클릭: 자르기 완료")
+        hint.setWordWrap(True)
         hint.setStyleSheet("color:#586069;padding:2px")
         root.addWidget(hint)
         workspace = QSplitter(Qt.Orientation.Horizontal)
@@ -628,12 +726,16 @@ class PhotoMergeBoard(QWidget):
         side_title = QLabel("정합 밴드 비교")
         side_title.setStyleSheet("font-size:15px;font-weight:700")
         side_layout.addWidget(side_title)
-        side_help = QLabel("선택 이미지와 겹친 이미지의 밝기·경계 밴드를 비교합니다. 파랑은 선택 이미지, 빨강은 맞닿은 이미지입니다.")
+        side_help = QLabel("자동 정합은 겹친 영역 전체를 비교합니다. 아래 밴드는 확인용입니다. 파랑은 선택 이미지, 빨강은 비교 이미지이며, 테두리 영역의 실제 띠를 그래프에 겹쳐 표시합니다.")
         side_help.setWordWrap(True)
         side_help.setStyleSheet("color:#586069")
         side_layout.addWidget(side_help)
         self.band_graph = BandProfileGraph()
-        side_layout.addWidget(self.band_graph, 1)
+        self.band_scroll = QScrollArea()
+        self.band_scroll.setWidgetResizable(True)
+        self.band_scroll.setWidget(self.band_graph)
+        self.band_scroll.setMinimumWidth(330)
+        side_layout.addWidget(self.band_scroll, 1)
         workspace.addWidget(side)
         workspace.setStretchFactor(0, 1)
         workspace.setStretchFactor(1, 0)
@@ -650,6 +752,7 @@ class PhotoMergeBoard(QWidget):
         self.view.paths_changed.connect(self._update_count)
         self.view.opacity_changed.connect(lambda value: self.status.setText(f"선택 이미지 투명도 {value}%"))
         self.view.crop_changed.connect(self.status.setText)
+        self.view.crop_finish_requested.connect(lambda: self.crop_button.setChecked(False))
         self.view.band_profiles_changed.connect(self.band_graph.set_profiles)
 
     def add_paths(self, paths: list[str]) -> None:
@@ -668,6 +771,7 @@ class PhotoMergeBoard(QWidget):
 
     def _toggle_crop_mode(self, enabled: bool) -> None:
         self.view.set_crop_mode(enabled)
+        self.view.setFocus(Qt.FocusReason.OtherFocusReason)
         self.crop_button.setText("자르기 완료" if enabled else "정합 영역 자르기")
         if enabled:
             self.status.setText("이미지를 선택하고 흰색 자르기 손잡이를 끌어 정합 사용 영역을 지정하세요.")

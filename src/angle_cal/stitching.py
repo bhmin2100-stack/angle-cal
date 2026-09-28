@@ -9,7 +9,7 @@ from typing import Callable, Iterable
 import cv2
 import numpy as np
 
-from .band_registration import translation_candidates, band_profiles
+from .band_registration import translation_candidates, full_overlap_score, overlap_slices
 
 
 class StitchingError(RuntimeError):
@@ -407,17 +407,11 @@ def _pixel_correlation(
     warped = cv2.warpPerspective(gray_a, matrix, (gray_b.shape[1], gray_b.shape[0]), flags=cv2.INTER_LINEAR)
     valid = cv2.warpPerspective(mask_a, matrix, (gray_b.shape[1], gray_b.shape[0]), flags=cv2.INTER_NEAREST) > 0
     valid &= mask_b > 0
-    valid = cv2.erode(valid.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1).astype(bool)
-    if int(valid.sum()) < 256:
+    area_scale = abs(float(np.linalg.det(matrix[:2, :2])))
+    minimum = .22 * min(np.count_nonzero(mask_a) * area_scale, np.count_nonzero(mask_b))
+    if int(valid.sum()) < max(256, minimum):
         return -1.0
-    ys, xs = np.where(valid)
-    step = max(1, int(math.sqrt(len(xs) / 250_000)))
-    ys, xs = ys[::step], xs[::step]
-    intensity = _normalized_correlation(warped[ys, xs], gray_b[ys, xs])
-    gradient_a = cv2.Laplacian(warped, cv2.CV_32F, ksize=3)
-    gradient_b = cv2.Laplacian(gray_b, cv2.CV_32F, ksize=3)
-    gradient = _normalized_correlation(gradient_a[ys, xs], gradient_b[ys, xs])
-    return max(intensity, gradient)
+    return full_overlap_score(warped, gray_b, valid)
 
 
 def _candidate_matrices(source: np.ndarray, target: np.ndarray, options: StitchOptions):
@@ -459,44 +453,38 @@ def _candidate_matrices(source: np.ndarray, target: np.ndarray, options: StitchO
 
 def _phase_translation(index_a, index_b, images, match_masks, options, prior):
     gray_a, gray_b = _gray8(images[index_a]), _gray8(images[index_b])
-    # Global search is independent of board position. Re-rank close periodic
-    # peaks with multiple brightness/edge bands before declaring ambiguity.
+    # Coarse global search followed by full-overlap brightness/edge scoring.
+    # Board placement and diagnostic band graphs never influence the result.
     peaks = translation_candidates(gray_a, gray_b, match_masks[index_a], match_masks[index_b])
-    if not peaks or peaks[0][0] < .70:
-        return None
+    maximum_overlap = max(1, min(int(np.count_nonzero(match_masks[index_a])),
+                                 int(np.count_nonzero(match_masks[index_b]))))
     ranked = []
-    maximum_overlap = max(
-        1,
-        min(int(np.count_nonzero(match_masks[index_a])), int(np.count_nonzero(match_masks[index_b]))),
-    )
     for score, dx, dy in peaks:
-        matrix = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy], [0.0, 0.0, 1.0]])
-        warped = cv2.warpPerspective(gray_a, matrix, (gray_b.shape[1], gray_b.shape[0]))
-        mask = cv2.warpPerspective(match_masks[index_a], matrix, (gray_b.shape[1], gray_b.shape[0]))
-        valid = (mask > 0) & (match_masks[index_b] > 0)
-        overlap_pixels = int(valid.sum())
-        if overlap_pixels < maximum_overlap * 0.18:
+        if score < .70:
             continue
-        profiles = band_profiles(warped, gray_b, valid)
-        band_score = float(np.median([profile[3] for profile in profiles[:3]])) if profiles else score
-        if band_score < 0.45:
+        sa, sb = overlap_slices(gray_a.shape, gray_b.shape, dx, dy)
+        overlap_pixels = int(np.count_nonzero((match_masks[index_a][sa] > 0)
+                                              & (match_masks[index_b][sb] > 0)))
+        if overlap_pixels < max(64, maximum_overlap * .22):
             continue
-        combined = 0.65 * score + 0.35 * max(0.0, band_score)
-        ranked.append((combined, score, band_score, dx, dy, matrix, overlap_pixels))
+        ranked.append((score, overlap_pixels, dx, dy))
     if not ranked:
         return None
-    ranked.sort(reverse=True, key=lambda candidate: candidate[0])
-    combined, score, band_score, dx, dy, matrix, overlap_pixels = ranked[0]
-    if len(ranked) > 1 and combined - ranked[1][0] < 0.012:
+    # Prefer more supporting pixels for exact score ties, but never resolve a
+    # truly periodic ambiguity just by choosing the largest overlap.
+    ranked.sort(reverse=True)
+    score, overlap_pixels, dx, dy = ranked[0]
+    if len(ranked) > 1 and score - ranked[1][0] < .006:
         raise StitchingNeedsManual(
-            "반복 무늬의 여러 위치가 비슷하게 일치합니다. 고유한 트랜치 경계가 포함되도록 정합 영역을 지정하세요."
+            "겹친 영역 전체를 비교해도 여러 위치가 비슷하게 일치합니다. "
+            "서로 다른 특징이 포함되도록 정합 영역을 지정하세요."
         )
     if overlap_pixels / maximum_overlap > .96 and score > .995:
         raise StitchingNeedsManual(
             "두 이미지가 거의 완전히 같아 확장 방향을 결정할 수 없습니다. 서로 다른 영역이 포함된 이미지를 사용하세요."
         )
-    confidence = min(.99, combined)
-    return _PairAlignment(index_a, index_b, matrix, 0, 0.0, confidence, "exact translation")
+    matrix = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy], [0.0, 0.0, 1.0]])
+    return _PairAlignment(index_a, index_b, matrix, 0, 0.0, min(.99, score), "exact translation")
 
 
 def _align_pair(
@@ -541,18 +529,11 @@ def _align_pair(
         pixel_score = _pixel_correlation(
             images[index_a], images[index_b], matrix, match_masks[index_a], match_masks[index_b]
         )
-        if pixel_score < options.min_pixel_correlation:
+        if pixel_score < max(.55, options.min_pixel_correlation):
             continue
 
         complexity_penalty = {"translation": 0.0, "affine": 0.035, "perspective": 0.09}[kind]
-        confidence = (
-            0.42 * min(1.0, count / 40.0)
-            + 0.18 * min(1.0, ratio)
-            + 0.18 * min(1.0, coverage * 4.0)
-            + 0.30 * max(0.0, pixel_score)
-            - 0.06 * min(1.0, mean_error / max(options.ransac_threshold, 1e-6))
-            - complexity_penalty
-        )
+        confidence = pixel_score - complexity_penalty
 
         mode = "Lanczos affine" if kind == "affine" else "Lanczos perspective"
         if kind == "translation":
@@ -617,6 +598,7 @@ def stitch_paths(
 
     manual_links = manual_links or {}
     edges: list[_PairAlignment] = []
+    ambiguous_pairs = {}
     pair_total = len(images) * (len(images) - 1) // 2
     pair_index = 0
     for index_a in range(len(images)):
@@ -629,9 +611,13 @@ def stitch_paths(
                 edges.append(_PairAlignment(index_a, index_b, matrix, 0, 0.0, 2.0, "manual Lanczos"))
                 continue
             # Board coordinates intentionally do not influence registration.
-            # They are a UI arrangement only; image-derived band/edge evidence
+            # They are a UI arrangement only; image-derived full-overlap evidence
             # must produce the same transform after arbitrary board movement.
-            aligned = _align_pair(index_a, index_b, images, match_masks, features, options, None)
+            try:
+                aligned = _align_pair(index_a, index_b, images, match_masks, features, options, None)
+            except StitchingNeedsManual as exc:
+                ambiguous_pairs[(index_a, index_b)] = str(exc)
+                aligned = None
             if aligned is not None:
                 edges.append(aligned)
             if progress:
@@ -651,9 +637,12 @@ def stitch_paths(
                 candidates.append((edge.confidence, edge.source, transforms[edge.target] @ edge.matrix, edge))
         if not candidates:
             missing = next(index for index in range(len(images)) if index not in transforms)
+            for (a, b), reason in ambiguous_pairs.items():
+                if (a in transforms) != (b in transforms):
+                    raise StitchingNeedsManual(reason, (a, b))
             raise StitchingNeedsManual(
                 "자동 정렬을 신뢰할 수 없어 결과 생성을 중단했습니다. "
-                "보드에서 실제 겹침 위치에 더 가깝게 배치하거나, 무늬가 뚜렷한 겹침 영역을 사용해 주세요.",
+                "두 이미지에 공통으로 보이는 특징이 충분히 포함되도록 정합 영역을 지정해 주세요.",
                 (0, missing),
             )
         _, node, matrix, edge = max(candidates, key=lambda item: item[0])
@@ -747,6 +736,7 @@ def save_stitch_result(path, result):
                 "version": 2,
                 "confidence": result.confidence,
                 "confidence_kind": "heuristic registration quality, not probability",
+                "registration_metric": "full-overlap normalized brightness and 2-D edges; bands are display-only",
                 "image_count": len(result.placements),
                 "scale_bar_source": result.scale_bar_source,
                 "notes": result.notes,

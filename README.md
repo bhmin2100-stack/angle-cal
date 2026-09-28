@@ -104,3 +104,24 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -q
 QT_QPA_PLATFORM=offscreen .venv/bin/python -c "from PySide6.QtWidgets import QApplication; from angle_cal.app import MainWindow; app=QApplication([]); print(MainWindow().windowTitle())"
 ```
+
+
+## Photo merge registration
+
+Automatic alignment searches translations independently of board placement. Each refined
+candidate is scored using the entire valid overlap: 70% normalized brightness correlation
+and 30% signed 2-D edge correlation. Normalization tolerates brightness gain/offset changes;
+no individual band or sparse pixel sample determines the final translation score.
+Cropped areas and detected instrument footers are excluded. Candidates need at least
+22% of the smaller valid image area in common. Feature-based affine/perspective fallback
+also validates the full overlap, with a penalty for more complex transforms.
+
+Band graphs are diagnostic only: source previews mark the sampled regions and real image
+strips share the graph's horizontal axis. Nearly tied whole-area matches still require
+additional distinguishing image content. Ambiguous pairs are skipped when other reliable
+pairs connect all images; a disconnected set is not silently composited. Reported alignment
+percentages are heuristic quality scores, not probabilities.
+
+Board controls: click empty board space to finish cropping while retaining the selection;
+arrow keys move selected images by 10 board pixels, Ctrl+arrow keys by 1. Delete removes
+only selected board items. Add-ons open as menu tabs in the main window.
