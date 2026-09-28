@@ -77,6 +77,23 @@ ADDON_DEFINITIONS = (
     AddonDefinition("trench_analyzer", "Trench 자동분석기"),
     AddonDefinition("cliff_angle_analyzer", "Cliff angle 분석기"),
 )
+
+
+class AddonWindow(QMainWindow):
+    closed = Signal(str)
+
+    def __init__(self, addon_id: str, title: str, parent=None) -> None:
+        super().__init__(parent)
+        self.addon_id = addon_id
+        self.setWindowTitle(f"AngleCal 애드온 - {title}")
+        self.resize(1000, 720)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+
+    def closeEvent(self, event) -> None:
+        self.closed.emit(self.addon_id)
+        super().closeEvent(event)
+
+
 from .image_ops import (
     Point,
     acute_angle_difference,
@@ -3040,7 +3057,7 @@ class MainWindow(QMainWindow):
         self.selected_thumbnail_paths: set[str] = set()
         self.enabled_addon_ids: set[str] = set()
         self.addon_actions: dict[str, QAction] = {}
-        self.addon_pages: dict[str, QWidget] = {}
+        self.addon_windows: dict[str, AddonWindow] = {}
         self.photo_merge_dialog: Optional[PhotoMergeDialog] = None
         self.photo_merge_board: Optional[PhotoMergeBoard] = None
         self._thumbnail_anchor_path: Optional[str] = None
@@ -3512,18 +3529,6 @@ class MainWindow(QMainWindow):
         quick_recognize_button = QPushButton("인식")
         quick_recognize_button.clicked.connect(self.recognize_edges)
         quick_row.addWidget(quick_recognize_button)
-        self.addon_button = QToolButton()
-        self.addon_button.setText("애드온")
-        self.addon_button.setToolTip("사진 합치기, Trench 자동분석기, Cliff angle 분석기를 켜거나 끕니다.")
-        self.addon_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        addon_menu = QMenu(self.addon_button)
-        for definition in ADDON_DEFINITIONS:
-            action = addon_menu.addAction(definition.title)
-            action.setCheckable(True)
-            action.toggled.connect(lambda enabled, addon_id=definition.addon_id: self.set_addon_enabled(addon_id, enabled))
-            self.addon_actions[definition.addon_id] = action
-        self.addon_button.setMenu(addon_menu)
-        quick_row.addWidget(self.addon_button)
         quick_row.addStretch(1)
 
         self.ribbon_tabs = QTabWidget()
@@ -3554,6 +3559,21 @@ class MainWindow(QMainWindow):
         export_group.addWidget(self._button_for_action(self.export_favorite_images_action))
         export_group.addWidget(self._button_for_action(self.export_favorite_data_action))
         export_group.addWidget(self._button_for_action(self.check_updates_action))
+        addon_group = group(file_page, "애드온")
+        self.addon_button = QToolButton()
+        self.addon_button.setText("애드온 ▼")
+        self.addon_button.setToolTip("애드온을 체크하면 별도 창에서 실행됩니다. 여러 개를 동시에 열 수 있습니다.")
+        self.addon_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        addon_menu = QMenu(self.addon_button)
+        for definition in ADDON_DEFINITIONS:
+            action = addon_menu.addAction(definition.title)
+            action.setCheckable(True)
+            action.toggled.connect(
+                lambda enabled, addon_id=definition.addon_id: self.set_addon_enabled(addon_id, enabled)
+            )
+            self.addon_actions[definition.addon_id] = action
+        self.addon_button.setMenu(addon_menu)
+        addon_group.addWidget(self.addon_button)
         self.ribbon_tabs.addTab(file_page, "파일")
 
         edge_page = page()
@@ -3811,62 +3831,72 @@ class MainWindow(QMainWindow):
             return
         if enabled:
             self.enabled_addon_ids.add(addon_id)
-            page = self.addon_pages.get(addon_id)
-            if page is None:
-                page = self._create_addon_page(addon_id)
-                self.addon_pages[addon_id] = page
-            ordered_index = next(i for i, item in enumerate(ADDON_DEFINITIONS) if item.addon_id == addon_id)
-            insert_at = 5 + sum(1 for item in ADDON_DEFINITIONS[:ordered_index] if item.addon_id in self.enabled_addon_ids)
-            if self.ribbon_tabs.indexOf(page) < 0:
-                self.ribbon_tabs.insertTab(insert_at, page, definition.title)
-            self.ribbon_tabs.setCurrentWidget(page)
+            window = self.addon_windows.get(addon_id)
+            if window is None:
+                window = self._create_addon_window(addon_id, definition.title)
+                self.addon_windows[addon_id] = window
+            window.show()
+            window.raise_()
+            window.activateWindow()
         else:
             self.enabled_addon_ids.discard(addon_id)
-            page = self.addon_pages.get(addon_id)
-            if page is not None and self.ribbon_tabs.indexOf(page) >= 0:
-                self.ribbon_tabs.removeTab(self.ribbon_tabs.indexOf(page))
+            window = self.addon_windows.get(addon_id)
+            if window is not None and window.isVisible():
+                window.hide()
 
-    def _create_addon_page(self, addon_id: str) -> QWidget:
-        page = QWidget()
-        layout = QHBoxLayout(page)
-        layout.setContentsMargins(8, 8, 8, 8)
+    def _create_addon_window(self, addon_id: str, title: str) -> AddonWindow:
+        window = AddonWindow(addon_id, title, self)
+        window.closed.connect(self._addon_window_closed)
         if addon_id == "photo_merge":
-            box = QGroupBox("사진 합치기 보드")
-            box_layout = QHBoxLayout(box)
-            description = QLabel("왼쪽 썸네일을 중앙 보드로 끌어 놓고 대강 배치한 뒤 맞추기를 누르세요.")
-            box_layout.addWidget(description)
-            add_button = QPushButton("선택 썸네일을 보드에 추가")
-            add_button.clicked.connect(self.open_photo_merge_dialog)
-            box_layout.addWidget(add_button)
-            layout.addWidget(box)
-            if self.photo_merge_board is None:
-                self.photo_merge_board = PhotoMergeBoard(self)
-                self.photo_merge_board.result_ready.connect(self._show_photo_merge_result)
-                self.workspace_stack.addWidget(self.photo_merge_board)
+            self.photo_merge_board = PhotoMergeBoard(window)
+            self.photo_merge_board.result_ready.connect(self._show_photo_merge_result)
+            window.setCentralWidget(self.photo_merge_board)
         else:
-            title = next(item.title for item in ADDON_DEFINITIONS if item.addon_id == addon_id)
+            placeholder = QWidget(window)
+            layout = QVBoxLayout(placeholder)
+            heading = QLabel(title)
+            heading.setStyleSheet("font-size:18px;font-weight:700")
+            layout.addWidget(heading)
             layout.addWidget(QLabel(f"{title} 기능은 준비 중입니다."))
-        layout.addStretch(1)
-        return page
+            layout.addStretch(1)
+            window.setCentralWidget(placeholder)
+        return window
+
+    def _addon_window_closed(self, addon_id: str) -> None:
+        action = self.addon_actions.get(addon_id)
+        if action is not None and action.isChecked():
+            action.setChecked(False)
 
     def open_photo_merge_dialog(self) -> None:
+        action = self.addon_actions.get("photo_merge")
+        if action is not None and not action.isChecked():
+            action.setChecked(True)
         paths = [path for path in self.browser_image_paths if path in self.selected_thumbnail_paths]
         if not paths and self.image_path:
             paths = [self.image_path]
         if self.photo_merge_board is not None:
             self.photo_merge_board.add_paths(paths)
-            self.workspace_stack.setCurrentWidget(self.photo_merge_board)
+        window = self.addon_windows.get("photo_merge")
+        if window is not None:
+            window.show()
+            window.raise_()
+            window.activateWindow()
 
     def _ribbon_tab_changed(self, _index: int) -> None:
-        current_page = self.ribbon_tabs.currentWidget()
-        photo_page = self.addon_pages.get("photo_merge")
-        if current_page is photo_page and self.photo_merge_board is not None:
-            self.workspace_stack.setCurrentWidget(self.photo_merge_board)
-        else:
-            self.workspace_stack.setCurrentWidget(self.canvas)
+        self.workspace_stack.setCurrentWidget(self.canvas)
 
     def _show_photo_merge_result(self, result: object) -> None:
         if not hasattr(result, "image"):
+            return
+        saved_path = getattr(result, "saved_path", None)
+        if saved_path and Path(saved_path).exists():
+            self._open_merged_image(saved_path)
+            confidence = float(getattr(result, "confidence", 0.0)) * 100.0
+            image_count = len(getattr(result, "placements", []))
+            scale_note = " · 스케일바 보존" if getattr(result, "scale_bar_source", None) else " · 스케일 재보정 필요"
+            self._set_status(
+                f"합친 이미지 자동 저장 및 추가: {Path(saved_path).name} · 정합 {confidence:.0f}% · {image_count}장{scale_note}"
+            )
             return
         self._save_current_image_state()
         self.image_bgr = result.image
@@ -3890,11 +3920,20 @@ class MainWindow(QMainWindow):
         resolved = str(Path(path).resolve())
         if resolved not in self.browser_image_paths:
             self.browser_image_paths.append(resolved)
-            self.browser_image_paths.sort(key=lambda value: Path(value).name.casefold())
-            self.populate_thumbnails()
+            self.browser_image_paths = self._sort_browser_paths(self.browser_root, self.browser_image_paths)
+        combined_group = "Combined Pictures"
+        if resolved not in self.favorite_image_paths:
+            self.favorite_image_paths.append(resolved)
+        self.favorite_image_groups[resolved] = combined_group
+        if combined_group not in self.favorite_group_order:
+            self.favorite_group_order.append(combined_group)
+        self.current_favorite_group = combined_group
+        self.current_browser_index = self.browser_image_paths.index(resolved)
+        self._populate_thumbnails()
+        self._refresh_favorite_tabs()
         self.nm_per_px = None
         self._load_image_path(resolved, preserve_calibration=False)
-        self._set_status("합친 이미지를 열었습니다. 혼합 배율 결과이므로 스케일 재보정이 필요합니다.")
+        self._set_status("합친 이미지를 저장하고 썸네일과 Combined Pictures 탭에 추가했습니다.")
 
     def _button_for_action(self, action: QAction) -> QPushButton:
         button = QPushButton(action.text())
@@ -8335,6 +8374,12 @@ def main() -> None:
         return
     app = QApplication(sys.argv)
     app.setApplicationName("Angle Cal")
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        icon_path = Path(sys._MEIPASS) / "angle_cal" / "assets" / "anglecal_icon.png"
+    else:
+        icon_path = Path(__file__).resolve().parent / "assets" / "anglecal_icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

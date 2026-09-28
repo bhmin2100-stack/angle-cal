@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 import pytest
 
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from angle_cal.app import MainWindow
 from angle_cal.photo_merge import PhotoMergeBoard
@@ -13,6 +15,7 @@ from angle_cal.stitching import (
     StitchingNeedsManual,
     detect_bottom_overlay_fraction,
     save_stitch_result,
+    save_stitch_result_auto,
     stitch_paths,
 )
 
@@ -34,9 +37,9 @@ def test_integer_translation_preserves_original_uint16_pixels(tmp_path):
 
 
 def test_saved_result_has_alpha_mask_and_report(tmp_path):
-    image = np.random.default_rng(7).integers(0, 65535, (150, 150), dtype=np.uint16)
+    image = np.random.default_rng(7).integers(0, 65535, (150, 220), dtype=np.uint16)
     a, b = tmp_path / "a.tif", tmp_path / "b.tif"
-    _write(a, image); _write(b, image)
+    _write(a, image[:, :160]); _write(b, image[:, 60:])
     result = stitch_paths([str(a), str(b)], StitchOptions(min_matches=4, ratio_test=.9))
     output, mask, report = save_stitch_result(tmp_path / "merged.tif", result)
     loaded = cv2.imdecode(np.fromfile(output, np.uint8), cv2.IMREAD_UNCHANGED)
@@ -95,23 +98,43 @@ def test_repeated_sem_footer_is_excluded_from_alignment(tmp_path):
     ]
     result = stitch_paths([str(a), str(b)], layout_hints=hints)
 
-    assert result.output_size == (420, 180)
-    assert np.array_equal(result.image, scene)
+    assert result.output_size == (420, 220)
+    assert np.array_equal(result.image[:180], scene)
+    assert result.scale_bar_source in {str(a), str(b)}
+    assert np.count_nonzero(result.image[180:]) > 0
 
 
-def test_multiple_addons_can_be_enabled_and_disabled():
+def test_bright_mold_layers_without_dark_footer_are_not_cropped():
+    height, width = 300, 420
+    yy, _ = np.mgrid[:height, :width]
+    image = np.uint8(np.clip(125 + 55 * (np.sin(yy / 5.0) > 0), 0, 255))
+    assert detect_bottom_overlay_fraction([image]) == 0.0
+
+
+def test_multiple_addons_open_independent_checked_windows():
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     try:
         assert window.ribbon_tabs.count() == 5
         window.addon_actions["photo_merge"].setChecked(True)
         window.addon_actions["trench_analyzer"].setChecked(True)
-        assert window.ribbon_tabs.count() == 7
-        assert window.ribbon_tabs.tabText(5) == "사진 합치기"
-        assert window.ribbon_tabs.tabText(6) == "Trench 자동분석기"
+        app.processEvents()
+
+        assert window.ribbon_tabs.count() == 5
+        assert window.addon_actions["photo_merge"].isChecked()
+        assert window.addon_actions["trench_analyzer"].isChecked()
+        assert window.addon_windows["photo_merge"].isVisible()
+        assert window.addon_windows["trench_analyzer"].isVisible()
+        assert window.addon_windows["photo_merge"].windowTitle() == "AngleCal 애드온 - 사진 합치기"
+
         window.addon_actions["photo_merge"].setChecked(False)
-        assert window.ribbon_tabs.count() == 6
-        assert window.ribbon_tabs.tabText(5) == "Trench 자동분석기"
+        app.processEvents()
+        assert not window.addon_windows["photo_merge"].isVisible()
+        assert window.addon_windows["trench_analyzer"].isVisible()
+
+        window.addon_windows["trench_analyzer"].close()
+        app.processEvents()
+        assert not window.addon_actions["trench_analyzer"].isChecked()
     finally:
         window.close()
 
@@ -135,7 +158,9 @@ def test_photo_merge_button_starts_worker_and_finishes(tmp_path):
             time.sleep(0.01)
         assert captured
         assert captured[0].output_size == (420, 220)
-        assert dialog.status.text().startswith("합치기 완료:")
+        assert dialog.status.text().startswith("합치기 완료")
+        assert "align_" in Path(captured[0].saved_path).name
+        assert "2imgs" in Path(captured[0].saved_path).name
     finally:
         dialog.close()
         app.processEvents()
@@ -156,7 +181,8 @@ def test_photo_merge_addon_reuses_thumbnail_dock_and_central_board(tmp_path):
         window.addon_actions["photo_merge"].setChecked(True)
 
         assert window.photo_merge_board is not None
-        assert window.workspace_stack.currentWidget() is window.photo_merge_board
+        assert window.addon_windows["photo_merge"].isVisible()
+        assert window.workspace_stack.currentWidget() is window.canvas
         window.open_photo_merge_dialog()
         assert len(window.photo_merge_board.view.items_in_board()) == 2
 
@@ -174,7 +200,7 @@ def test_photo_merge_addon_reuses_thumbnail_dock_and_central_board(tmp_path):
         window.close()
 
 
-def test_photo_merge_board_crop_regions_support_individual_and_common_scope(tmp_path):
+def test_photo_merge_board_crop_hides_excluded_area_after_completion(tmp_path):
     app = QApplication.instance() or QApplication([])
     first_path = tmp_path / "crop-first.png"
     second_path = tmp_path / "crop-second.png"
@@ -195,19 +221,132 @@ def test_photo_merge_board_crop_regions_support_individual_and_common_scope(tmp_
         assert first.match_rect == (0.05, 0.08, 0.9, 0.72)
         assert second.match_rect is None
 
-        board.crop_scope.setCurrentIndex(1)
         first.set_match_rect((0.1, 0.0, 0.8, 0.8))
-        assert second.match_rect == first.match_rect
-        assert all(item.crop_overlay.isVisible() for item in items)
+        assert second.match_rect is None
         assert [hint.match_rect for hint in board.view.layout_hints()] == [
             (0.1, 0.0, 0.8, 0.8),
-            (0.1, 0.0, 0.8, 0.8),
+            None,
         ]
 
+        board.crop_button.click()
+        assert not board.crop_button.isChecked()
+        image = first.pixmap().toImage()
+        assert image.pixelColor(0, image.height() // 2).alpha() == 0
+        assert image.pixelColor(image.width() // 2, image.height() // 2).alpha() == 255
+
+        first.setSelected(True)
         board.crop_reset_button.click()
-        assert all(item.match_rect is None for item in items)
+        assert first.match_rect is None
+        assert second.match_rect is None
     finally:
         board.close()
+        app.processEvents()
+
+
+def test_registration_is_reproducible_after_arbitrary_board_moves(tmp_path):
+    height, width = 240, 560
+    yy, xx = np.mgrid[:height, :width]
+    scene = 104 + 18 * np.sin(yy / 7.0) + 8 * np.sin(yy / 2.5)
+    scene += 32 * np.exp(-((xx - 280) / 18.0) ** 2)
+    scene += np.random.default_rng(902).normal(0, 8.0, scene.shape)
+    scene[:, 258:264] -= 28
+    scene[:, 296:302] += 24
+    cv2.circle(scene, (278, 82), 12, 52, -1)
+    scene = np.clip(scene, 0, 255).astype(np.uint8)
+    left = scene[:, :380]
+    right = cv2.GaussianBlur(scene[:, 180:], (3, 3), 0)
+    right = np.clip(right.astype(np.float32) * 0.82 + 19, 0, 255).astype(np.uint8)
+    a, b = tmp_path / "repro-left.png", tmp_path / "repro-right.png"
+    _write(a, left)
+    _write(b, right)
+
+    first_hints = [
+        StitchLayoutHint(str(a), np.eye(3)),
+        StitchLayoutHint(str(b), np.array([[1, 0, 180], [0, 1, 0], [0, 0, 1]], np.float64)),
+    ]
+    moved_hints = [
+        StitchLayoutHint(str(a), np.array([[1, 0, -700], [0, 1, 420], [0, 0, 1]], np.float64)),
+        StitchLayoutHint(str(b), np.array([[1, 0, 900], [0, 1, -360], [0, 0, 1]], np.float64)),
+    ]
+    first = stitch_paths([str(a), str(b)], layout_hints=first_hints)
+    moved = stitch_paths([str(a), str(b)], layout_hints=moved_hints)
+
+    assert first.output_size == moved.output_size
+    assert first.confidence == pytest.approx(moved.confidence, abs=1e-9)
+    assert all(
+        np.allclose(a_placement.transform, b_placement.transform)
+        for a_placement, b_placement in zip(first.placements, moved.placements)
+    )
+
+
+def test_checked_in_low_contrast_vnand_samples_preserve_one_scale_bar():
+    sample_dir = Path(__file__).resolve().parents[1] / "samples" / "photo_merge" / "reproducibility"
+    paths = [str(sample_dir / f"vnand_low_contrast_capture_{index}.png") for index in (1, 2, 3)]
+    result = stitch_paths(paths)
+
+    assert result.output_size == (520, 1140)
+    assert result.confidence >= 0.90
+    assert result.scale_bar_source is not None
+    assert [placement.mode for placement in result.placements] == [
+        "anchor",
+        "exact translation",
+        "exact translation",
+    ]
+
+
+def test_photo_merge_board_has_band_panel_zoom_and_delete_shortcuts(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    scene = np.random.default_rng(55).integers(0, 256, (180, 360), dtype=np.uint8)
+    first_path, second_path = tmp_path / "band-a.png", tmp_path / "band-b.png"
+    _write(first_path, scene[:, :260])
+    _write(second_path, scene[:, 100:])
+    board = PhotoMergeBoard()
+    board.add_paths([str(first_path), str(second_path)])
+    try:
+        assert not hasattr(board, "crop_scope")
+        assert "이미지 불러오기" not in {button.text() for button in board.findChildren(type(board.align_button))}
+        items = board.view.items_in_board()
+        items[0].setSelected(True)
+        board.view._emit_band_profiles()
+        assert board.band_graph.selected_name == Path(items[0].path).name
+        assert board.band_graph.profiles
+
+        before = board.view.transform().m11()
+        board.view.zoom_by(120)
+        assert board.view.transform().m11() > before
+
+        board.view.setFocus()
+        QTest.keyClick(board.view, Qt.Key.Key_Delete)
+        app.processEvents()
+        assert len(board.view.items_in_board()) == 1
+    finally:
+        board.close()
+        app.processEvents()
+
+
+def test_saved_merge_is_added_to_thumbnails_and_combined_tab(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    scene = np.random.default_rng(77).integers(0, 256, (180, 420), dtype=np.uint8)
+    first, second = tmp_path / "source-left.png", tmp_path / "source-right.png"
+    _write(first, scene[:, :300])
+    _write(second, scene[:, 120:])
+    result = stitch_paths([str(first), str(second)])
+    saved = save_stitch_result_auto(result)
+    window = MainWindow()
+    try:
+        window.browser_root = tmp_path
+        window.browser_image_paths = [str(first), str(second)]
+        window._populate_thumbnails()
+        window._show_photo_merge_result(result)
+        resolved = str(saved.resolve())
+        assert window.image_path == resolved
+        assert resolved in window.browser_image_paths
+        assert resolved in window.thumbnail_buttons
+        assert resolved in window.favorite_image_paths
+        assert window.favorite_image_groups[resolved] == "Combined Pictures"
+        assert "align_" in saved.name and "2imgs" in saved.name
+    finally:
+        window.close()
         app.processEvents()
 
 

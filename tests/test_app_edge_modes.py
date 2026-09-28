@@ -3006,7 +3006,16 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         assert window.thumbnail_columns_combo.findData(3) >= 0
         file_groups = window.ribbon_tabs.widget(0).findChildren(QGroupBox)
         file_group_titles = [group.title() for group in file_groups]
-        assert file_group_titles == ["불러오기 / 저장", "내보내기"]
+        assert file_group_titles == ["불러오기 / 저장", "내보내기", "애드온"]
+        addon_group = next(group for group in file_groups if group.title() == "애드온")
+        assert window.addon_button in addon_group.findChildren(type(window.addon_button))
+        assert window.addon_button.menu() is not None
+        assert [action.text() for action in window.addon_button.menu().actions()] == [
+            "사진 합치기",
+            "Trench 자동분석기",
+            "Cliff angle 분석기",
+        ]
+        assert all(action.isCheckable() for action in window.addon_button.menu().actions())
         export_group = next(group for group in file_groups if group.title() == "내보내기")
         assert [button.text() for button in export_group.findChildren(QPushButton)] == [
             "Data Export",

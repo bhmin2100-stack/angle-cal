@@ -9,7 +9,7 @@ a = Analysis(
     ["run_angle_cal.py"],
     pathex=[".", "src"],
     binaries=[],
-    datas=[],
+    datas=[("src/angle_cal/assets/anglecal_icon.png", "angle_cal/assets")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -38,4 +38,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="src/angle_cal/assets/anglecal_icon.ico",
 )
