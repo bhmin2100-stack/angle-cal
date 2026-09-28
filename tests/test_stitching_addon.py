@@ -10,6 +10,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from angle_cal.app import MainWindow
 from angle_cal.band_registration import band_profiles, full_overlap_score, translation_candidates
+import angle_cal.band_registration as band_registration_module
 from angle_cal.photo_merge import PhotoMergeBoard
 from angle_cal.stitching import (
     StitchLayoutHint,
@@ -123,6 +124,26 @@ def test_tiny_perfect_overlap_is_not_a_translation_candidate():
     mask = np.full(first.shape, 255, np.uint8)
     peaks = translation_candidates(first, second, mask, mask)
     assert not any(abs(dx + 180) <= 2 and abs(dy) <= 2 for _, dx, dy in peaks)
+
+
+def test_translation_candidates_verify_each_final_position_only_once(monkeypatch):
+    rng = np.random.default_rng(392)
+    tile = rng.integers(5000, 55000, (20, 30), dtype=np.uint16)
+    scene = np.tile(tile, (40, 30)) + rng.integers(0, 5, (800, 900), dtype=np.uint16)
+    first, second = scene[:600], scene[200:]
+    mask = np.full(first.shape, 255, np.uint8)
+    calls = 0
+    original = band_registration_module.full_overlap_score
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(band_registration_module, "full_overlap_score", counted)
+    peaks = band_registration_module.translation_candidates(first, second, mask, mask)
+    assert peaks
+    assert calls <= 32
 
 
 def test_truly_periodic_whole_area_merges_with_warning(tmp_path):

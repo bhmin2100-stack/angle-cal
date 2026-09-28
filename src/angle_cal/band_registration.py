@@ -122,8 +122,46 @@ def full_overlap_score(a, b, valid, gradients_a=None, gradients_b=None):
     return .70 * brightness + .30 * edges
 
 
+def _position_score(a, b, ma, mb, dx, dy, sample_step, minimum_pixels):
+    """Cheap brightness score used only to narrow an integer candidate position."""
+    slices = overlap_slices(a.shape, b.shape, dx, dy)
+    if slices is None:
+        return -1.0
+    sa, sb = slices
+    first = a[sa][::sample_step, ::sample_step]
+    second = b[sb][::sample_step, ::sample_step]
+    valid = ((ma[sa] > 0) & (mb[sb] > 0))[::sample_step, ::sample_step]
+    if np.count_nonzero(valid) < minimum_pixels:
+        return -1.0
+    return correlation(first[valid], second[valid])
+
+
+def _refine_positions(positions, a, b, ma, mb, level_scale, radius, sample_step):
+    refined = []
+    minimum_pixels = max(
+        64,
+        .22 * min(
+            np.count_nonzero(ma[::sample_step, ::sample_step]),
+            np.count_nonzero(mb[::sample_step, ::sample_step]),
+        ),
+    )
+    for px, py in positions:
+        center_x, center_y = round(px * level_scale), round(py * level_scale)
+        best = None
+        for dy in range(center_y - radius, center_y + radius + 1):
+            for dx in range(center_x - radius, center_x + radius + 1):
+                score = _position_score(
+                    a, b, ma, mb, dx, dy, sample_step, minimum_pixels
+                )
+                if best is None or score > best[0]:
+                    best = (score, dx, dy)
+        if best is not None and best[0] > -1:
+            refined.append((round(best[1] / level_scale), round(best[2] / level_scale)))
+    return list(dict.fromkeys(refined))
+
+
 def translation_candidates(a, b, ma, mb):
-    """Global peaks, followed by full-resolution integer refinement; no board prior."""
+    """Find global peaks cheaply, then verify each final position over every overlap pixel."""
     scale = min(1.0, 480/max(*a.shape, *b.shape))
     def small(x, mask=False):
         return cv2.resize(x.astype(np.float64), None, fx=scale, fy=scale,
@@ -139,25 +177,55 @@ def translation_candidates(a, b, ma, mb):
             break
         peaks.append((round((bb.shape[1]-1-x)/scale), round((bb.shape[0]-1-y)/scale)))
         surface[max(0,y-radius):y+radius+1, max(0,x-radius):x+radius+1] = -1
+    max_dimension = max(*a.shape, *b.shape)
+    positions = list(dict.fromkeys(peaks))
+
+    # The coarse 480 px FFT can leave several native pixels of uncertainty.
+    # Resolve it on a larger level while sampling pixels; this stage proposes
+    # positions only and never determines the reported alignment score.
+    refinement_scale = min(1.0, 1600 / max_dimension)
+    resolved_scale = scale
+    if refinement_scale > scale * 1.05:
+        def refinement_image(x, mask=False):
+            return cv2.resize(
+                x.astype(np.float64), None, fx=refinement_scale, fy=refinement_scale,
+                interpolation=cv2.INTER_NEAREST if mask else cv2.INTER_AREA,
+            )
+        level_a, level_b = refinement_image(a), refinement_image(b)
+        level_ma = refinement_image(ma > 0, True)
+        level_mb = refinement_image(mb > 0, True)
+        level_radius = max(2, int(np.ceil(.5 * refinement_scale / scale)) + 1)
+        level_step = max(2, int(np.ceil(max(level_a.shape + level_b.shape) / 600)))
+        positions = _refine_positions(
+            positions, level_a, level_b, level_ma, level_mb,
+            refinement_scale, level_radius, level_step,
+        )
+        resolved_scale = refinement_scale
+
+    # Pin each proposal to a native integer coordinate with a sparse positional
+    # pass. The full-resolution score below still reads every valid pixel.
+    if resolved_scale < 1.0:
+        position_radius = max(1, int(np.ceil(.5 / resolved_scale)) + 1)
+        position_step = max(2, int(np.ceil(max_dimension / 600)))
+        positions = _refine_positions(
+            positions, a, b, ma, mb, 1.0, position_radius, position_step,
+        )
+
     refined = []
     gradients_a, gradients_b = image_gradients(a), image_gradients(b)
     minimum_pixels = max(64, .22 * min(np.count_nonzero(ma), np.count_nonzero(mb)))
-    reach = max(2, int(np.ceil(1/scale)))
-    for px, py in peaks:
-        best = None
-        for dy in range(py-reach, py+reach+1):
-            for dx in range(px-reach, px+reach+1):
-                slices = overlap_slices(a.shape, b.shape, dx, dy)
-                if slices is None:
-                    continue
-                sa, sb = slices
-                valid = (ma[sa] > 0) & (mb[sb] > 0)
-                if valid.sum() < minimum_pixels:
-                    continue
-                score = full_overlap_score(a[sa], b[sb], valid,
-                                           gradients_a[sa], gradients_b[sb])
-                if best is None or score > best[0]:
-                    best = (score, dx, dy)
-        if best is not None and not any(abs(best[1]-p[1]) < 4 and abs(best[2]-p[2]) < 4 for p in refined):
-            refined.append(best)
+    for dx, dy in positions:
+        slices = overlap_slices(a.shape, b.shape, dx, dy)
+        if slices is None:
+            continue
+        sa, sb = slices
+        valid = (ma[sa] > 0) & (mb[sb] > 0)
+        if valid.sum() < minimum_pixels:
+            continue
+        score = full_overlap_score(
+            a[sa], b[sb], valid, gradients_a[sa], gradients_b[sb]
+        )
+        candidate = (score, dx, dy)
+        if not any(abs(dx-p[1]) < 4 and abs(dy-p[2]) < 4 for p in refined):
+            refined.append(candidate)
     return sorted(refined, reverse=True)

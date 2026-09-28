@@ -127,6 +127,11 @@ Scores have no 99% cap and are displayed to two decimal places (including 99.99%
 Reported percentages are heuristic quality scores, not probabilities or a guarantee of
 correct physical placement; subpixel translation is not searched by this path.
 
+Candidate positioning uses a 480 px global search followed by sampled 1600 px and native
+integer refinement. Each resulting candidate is then scored exactly once using every valid
+native overlap pixel. This bounds expensive full-resolution verification at 32 passes per
+image pair while retaining native-depth final scores.
+
 The merge board's outer-edge option is enabled by default. Registration still uses the
 selected crop rectangles, while composition restores the area above the topmost image's
 crop and below the bottommost image's crop. Horizontal crop bounds and every interior
