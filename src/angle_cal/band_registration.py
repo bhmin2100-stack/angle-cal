@@ -94,9 +94,9 @@ def _ncc_surface(a, b, ma, mb):
 
 def image_gradients(image):
     """Signed 2-D edges, smoothed to tolerate modest acquisition noise/blur."""
-    smooth = cv2.GaussianBlur(image.astype(np.float32), (0, 0), 1.0)
-    return np.stack((cv2.Sobel(smooth, cv2.CV_32F, 1, 0),
-                     cv2.Sobel(smooth, cv2.CV_32F, 0, 1)), axis=-1)
+    smooth = cv2.GaussianBlur(image.astype(np.float64), (0, 0), 1.0)
+    return np.stack((cv2.Sobel(smooth, cv2.CV_64F, 1, 0),
+                     cv2.Sobel(smooth, cv2.CV_64F, 0, 1)), axis=-1)
 
 
 def full_overlap_score(a, b, valid, gradients_a=None, gradients_b=None):
@@ -126,13 +126,13 @@ def translation_candidates(a, b, ma, mb):
     """Global peaks, followed by full-resolution integer refinement; no board prior."""
     scale = min(1.0, 480/max(*a.shape, *b.shape))
     def small(x, mask=False):
-        return cv2.resize(x.astype(np.float32), None, fx=scale, fy=scale,
+        return cv2.resize(x.astype(np.float64), None, fx=scale, fy=scale,
                           interpolation=cv2.INTER_NEAREST if mask else cv2.INTER_AREA)
     aa, bb = small(a), small(b)
     surface = _ncc_surface(aa, bb, small(ma > 0, True), small(mb > 0, True))
     peaks = []
     radius = max(5, round(8*scale))
-    for _ in range(12):
+    for _ in range(32):
         y, x = np.unravel_index(np.argmax(surface), surface.shape)
         score = surface[y, x]
         if score < .45:

@@ -3886,7 +3886,7 @@ class MainWindow(QMainWindow):
             image_count = len(getattr(result, "placements", []))
             scale_note = " · 스케일바 보존" if getattr(result, "scale_bar_source", None) else " · 스케일 재보정 필요"
             self._set_status(
-                f"합친 이미지 자동 저장 및 추가: {Path(saved_path).name} · 정합 {confidence:.0f}% · {image_count}장{scale_note}"
+                f"합친 이미지 자동 저장 및 추가: {Path(saved_path).name} · 정합 {confidence:.2f}% · {image_count}장{scale_note}"
             )
             return
         self._save_current_image_state()

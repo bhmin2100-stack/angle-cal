@@ -76,6 +76,7 @@ class StitchResult:
     scale_bar_source: str | None = None
     notes: list[str] = field(default_factory=list)
     saved_path: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -87,6 +88,7 @@ class _PairAlignment:
     reprojection_error: float
     confidence: float
     mode: str
+    warnings: list[str] = field(default_factory=list)
 
 
 def read_raw_image(path):
@@ -95,6 +97,15 @@ def read_raw_image(path):
     if image is None:
         raise StitchingError(f"이미지를 읽을 수 없습니다: {path}")
     return image
+
+
+def _gray_precise(image):
+    """Keep native tonal differences for scoring, without clipping or quantization."""
+    values = image.astype(np.float64)
+    gray = (values[..., 0] * .114 + values[..., 1] * .587 + values[..., 2] * .299
+            if values.ndim == 3 else values)
+    lo, hi = float(gray.min()), float(gray.max())
+    return (gray - lo) * (255.0 / (hi - lo)) if hi > lo else np.zeros_like(gray)
 
 
 def _gray8(image):
@@ -402,8 +413,8 @@ def _pixel_correlation(
     mask_a: np.ndarray,
     mask_b: np.ndarray,
 ) -> float:
-    gray_a = _gray8(image_a)
-    gray_b = _gray8(image_b)
+    gray_a = _gray_precise(image_a)
+    gray_b = _gray_precise(image_b)
     warped = cv2.warpPerspective(gray_a, matrix, (gray_b.shape[1], gray_b.shape[0]), flags=cv2.INTER_LINEAR)
     valid = cv2.warpPerspective(mask_a, matrix, (gray_b.shape[1], gray_b.shape[0]), flags=cv2.INTER_NEAREST) > 0
     valid &= mask_b > 0
@@ -452,7 +463,7 @@ def _candidate_matrices(source: np.ndarray, target: np.ndarray, options: StitchO
 
 
 def _phase_translation(index_a, index_b, images, match_masks, options, prior):
-    gray_a, gray_b = _gray8(images[index_a]), _gray8(images[index_b])
+    gray_a, gray_b = _gray_precise(images[index_a]), _gray_precise(images[index_b])
     # Coarse global search followed by full-overlap brightness/edge scoring.
     # Board placement and diagnostic band graphs never influence the result.
     peaks = translation_candidates(gray_a, gray_b, match_masks[index_a], match_masks[index_b])
@@ -470,21 +481,23 @@ def _phase_translation(index_a, index_b, images, match_masks, options, prior):
         ranked.append((score, overlap_pixels, dx, dy))
     if not ranked:
         return None
-    # Prefer more supporting pixels for exact score ties, but never resolve a
-    # truly periodic ambiguity just by choosing the largest overlap.
+    # Rank unrounded scores; supporting area breaks exact ties only.
     ranked.sort(reverse=True)
     score, overlap_pixels, dx, dy = ranked[0]
+    warnings = []
     if len(ranked) > 1 and score - ranked[1][0] < .006:
-        raise StitchingNeedsManual(
-            "겹친 영역 전체를 비교해도 여러 위치가 비슷하게 일치합니다. "
-            "서로 다른 특징이 포함되도록 정합 영역을 지정하세요."
+        warnings.append(
+            f"반복 구조의 여러 위치가 비슷하게 일치하여 최고점 후보를 선택했습니다. "
+            f"선택 {score * 100:.2f}%, 다음 후보 {ranked[1][0] * 100:.2f}% "
+            f"(차이 {(score - ranked[1][0]) * 100:.6f}%p). 연결 위치를 확인하세요."
         )
     if overlap_pixels / maximum_overlap > .96 and score > .995:
-        raise StitchingNeedsManual(
-            "두 이미지가 거의 완전히 같아 확장 방향을 결정할 수 없습니다. 서로 다른 영역이 포함된 이미지를 사용하세요."
+        warnings.append(
+            "두 이미지가 거의 완전히 겹치는 위치의 점수가 가장 높습니다. "
+            "최고점 위치로 합쳤으므로 결과가 거의 확장되지 않을 수 있습니다."
         )
     matrix = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy], [0.0, 0.0, 1.0]])
-    return _PairAlignment(index_a, index_b, matrix, 0, 0.0, min(.99, score), "exact translation")
+    return _PairAlignment(index_a, index_b, matrix, 0, 0.0, float(np.clip(score, 0, 1)), "exact translation", warnings)
 
 
 def _align_pair(
@@ -626,6 +639,7 @@ def stitch_paths(
     transforms = {0: np.eye(3)}
     metadata = {0: (0, 0.0, "anchor")}
     used_confidences = []
+    used_warnings = []
     while len(transforms) < len(images):
         candidates = []
         for edge in edges:
@@ -647,6 +661,10 @@ def stitch_paths(
             )
         _, node, matrix, edge = max(candidates, key=lambda item: item[0])
         used_confidences.append(min(1.0, max(0.0, edge.confidence)))
+        used_warnings.extend(
+            f"{Path(paths[edge.source]).name} ↔ {Path(paths[edge.target]).name}: {warning}"
+            for warning in edge.warnings
+        )
         transforms[node] = matrix
         metadata[node] = (edge.inlier_count, edge.reprojection_error, edge.mode)
 
@@ -706,6 +724,7 @@ def stitch_paths(
         if progress:
             progress("compose", index, len(images), f"원본 픽셀 배치 {index + 1}/{len(images)}")
     result = StitchResult(output, valid, placements, (width, height), min(used_confidences, default=0.0))
+    result.warnings = used_warnings
     if options.preserve_scale_bar and options.overlay_crop_fraction > 0:
         _preserve_footer(result, images, match_masks, options.overlay_crop_fraction)
     return result
@@ -740,6 +759,7 @@ def save_stitch_result(path, result):
                 "image_count": len(result.placements),
                 "scale_bar_source": result.scale_bar_source,
                 "notes": result.notes,
+                "warnings": result.warnings,
                 "scale_status": "recalibration_required",
                 "output_size": result.output_size,
                 "sources": [
@@ -847,8 +867,8 @@ def _preserve_footer(result, images, masks, crop_fraction: float = 0.0):
 def save_stitch_result_auto(result):
     """Reserve a unique filename alongside the canonical source, without overwrite."""
     source = Path(result.placements[0].path)
-    confidence = int(round(float(np.clip(result.confidence, 0.0, 1.0)) * 100))
-    stem = f"{source.stem[:96]}_combined_align_{confidence:03d}pct_{len(result.placements)}imgs"
+    confidence = float(np.clip(result.confidence, 0.0, 1.0)) * 100
+    stem = f"{source.stem[:96]}_combined_align_{confidence:.2f}pct_{len(result.placements)}imgs"
     index = 0
     while True:
         path = source.with_name(stem + (f"_{index}" if index else "") + ".tif")

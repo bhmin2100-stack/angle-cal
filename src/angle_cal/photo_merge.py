@@ -9,6 +9,17 @@ from PySide6.QtWidgets import QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QGr
 from .band_registration import band_profiles
 from .stitching import StitchLayoutHint,StitchOptions,StitchResult,StitchingCancelled,StitchingNeedsManual,detect_bottom_overlay_fraction,read_raw_image,save_stitch_result,save_stitch_result_auto,stitch_paths
 
+def show_alignment_warning(parent, result):
+    if not result.warnings:
+        return
+    dialog = QMessageBox(QMessageBox.Icon.Warning, "합치기 완료 · 정합 주의",
+                         "최고 정합점수 후보로 합치기를 완료했습니다.\n\n" + "\n\n".join(result.warnings)
+                         + "\n\n정합점수는 위치가 맞을 확률이 아닙니다.",
+                         QMessageBox.StandardButton.Ok, parent.window())
+    parent.alignment_warning = dialog
+    dialog.setModal(False)
+    dialog.show()
+
 def preview_pixmap(image):
     shown=image
     if shown.dtype!=np.uint8:
@@ -65,6 +76,7 @@ class PhotoMergeDialog(QDialog):
         self.result=result;self.progress.setValue(100);self.status.setText(f"완료: {result.output_size[0]} × {result.output_size[1]} px · 스케일 재보정 필요");self.save.setEnabled(True);self.preview.setPixmap(preview_pixmap(result.image).scaled(self.preview.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation));self.table.setRowCount(len(result.placements))
         for r,p in enumerate(result.placements):
             for c,v in enumerate((Path(p.path).name,p.mode,p.inlier_count,f"{p.reprojection_error:.3f}")):self.table.setItem(r,c,QTableWidgetItem(str(v)))
+        show_alignment_warning(self, result)
     def _on_stitch_failed(self,message):self.status.setText(message);QMessageBox.warning(self,"사진 합치기",message)
     def _on_manual_required(self,message):self.status.setText("수동 보정 필요");QMessageBox.information(self,"수동 정렬 필요",message+"\n수동 기준점 편집기는 다음 업데이트에서 연결됩니다.")
     def thread_finished(self):self.thread.deleteLater();self.thread=None;self.worker=None;self.start.setEnabled(True);self.cancel.setEnabled(False)
@@ -348,7 +360,7 @@ class BandProfileGraph(QWidget):
             top = 38.0 + index * 242.0
             width = self.width() - 28.0
             painter.setPen(QColor("#24292f"))
-            title = f"{entry['band_name']} · 일치 {max(0, float(entry['score'])) * 100:.0f}%"
+            title = f"{entry['band_name']} · 일치 {max(0, float(entry['score'])) * 100:.2f}%"
             painter.drawText(QRectF(14, top, width, 20), Qt.AlignmentFlag.AlignLeft, title)
             # Full-image context shows exactly where each sampled band lies.
             for column, (key, label, color) in enumerate((
@@ -817,9 +829,10 @@ class PhotoMergeBoard(QWidget):
             return
         self.progress.setValue(100)
         self.status.setText(
-            f"합치기 완료 · 정합 {result.confidence * 100:.0f}% · {len(result.placements)}장 · {saved.name}"
+            f"합치기 완료 · 정합 {result.confidence * 100:.2f}% · {len(result.placements)}장 · {saved.name}"
         )
         self.result_ready.emit(result)
+        show_alignment_warning(self, result)
 
     def _on_failed(self, message: str) -> None:
         self.status.setText(message)

@@ -117,10 +117,15 @@ Cropped areas and detected instrument footers are excluded. Candidates need at l
 also validates the full overlap, with a penalty for more complex transforms.
 
 Band graphs are diagnostic only: source previews mark the sampled regions and real image
-strips share the graph's horizontal axis. Nearly tied whole-area matches still require
-additional distinguishing image content. Ambiguous pairs are skipped when other reliable
-pairs connect all images; a disconnected set is not silently composited. Reported alignment
-percentages are heuristic quality scores, not probabilities.
+strips share the graph's horizontal axis. Nearly tied whole-area matches and almost complete
+overlays use the highest unrounded candidate score and display a nonblocking warning after
+merging. Exact ties prefer more overlapping pixels. Selected-pair warnings are saved in the
+JSON report. Disconnected sets without a usable match still cannot be composited.
+Native tonal differences (including 16-bit input) are scored in float64 without 8-bit
+quantization; up to 32 coarse peaks receive full-resolution integer-position refinement.
+Scores have no 99% cap and are displayed to two decimal places (including 99.99% or 100.00%).
+Reported percentages are heuristic quality scores, not probabilities or a guarantee of
+correct physical placement; subpixel translation is not searched by this path.
 
 Board controls: click empty board space to finish cropping while retaining the selection;
 arrow keys move selected images by 10 board pixels, Ctrl+arrow keys by 1. Delete removes

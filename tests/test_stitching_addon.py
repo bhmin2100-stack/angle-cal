@@ -100,14 +100,15 @@ def test_tiny_perfect_overlap_is_not_a_translation_candidate():
     assert not any(abs(dx + 180) <= 2 and abs(dy) <= 2 for _, dx, dy in peaks)
 
 
-def test_truly_periodic_whole_area_still_requires_manual_region(tmp_path):
+def test_truly_periodic_whole_area_merges_with_warning(tmp_path):
     tile = np.random.default_rng(18).integers(30, 200, (20, 30), dtype=np.uint8)
     repeated = np.tile(tile, (8, 8))
     first, second = tmp_path / "repeat-a.png", tmp_path / "repeat-b.png"
     _write(first, repeated)
     _write(second, np.roll(repeated, 7, axis=0))
-    with pytest.raises(StitchingNeedsManual, match="영역 전체"):
-        stitch_paths([str(first), str(second)])
+    result = stitch_paths([str(first), str(second)])
+    assert result.confidence > .9999
+    assert result.warnings
 
 
 def test_saved_result_has_alpha_mask_and_report(tmp_path):
@@ -122,7 +123,7 @@ def test_saved_result_has_alpha_mask_and_report(tmp_path):
     assert "recalibration_required" in report.read_text(encoding="utf-8")
 
 
-def test_board_hint_prevents_false_full_overlay(tmp_path):
+def test_identical_images_choose_full_overlay_with_warning_despite_board_hint(tmp_path):
     image = np.random.default_rng(91).integers(0, 256, (220, 300), dtype=np.uint8)
     a, b = tmp_path / "same-a.png", tmp_path / "same-b.png"
     _write(a, image)
@@ -132,8 +133,53 @@ def test_board_hint_prevents_false_full_overlay(tmp_path):
         StitchLayoutHint(str(b), np.array([[1.0, 0.0, 270.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])),
     ]
 
-    with pytest.raises(StitchingNeedsManual):
-        stitch_paths([str(a), str(b)], layout_hints=hints)
+    result = stitch_paths([str(a), str(b)], layout_hints=hints)
+    assert result.output_size == (300, 220)
+    assert result.confidence == pytest.approx(1.0)
+    assert result.warnings
+
+
+def test_nearly_identical_uint16_repetition_uses_sub_8bit_differences(tmp_path):
+    rng = np.random.default_rng(510)
+    tile = rng.integers(5000, 55000, (20, 30), dtype=np.uint16)
+    scene = np.tile(tile, (14, 8)) + rng.integers(0, 5, (280, 240), dtype=np.uint16)
+    a, b = tmp_path / "precise-a.tif", tmp_path / "precise-b.tif"
+    _write(a, scene[:200])
+    _write(b, scene[80:])
+    result = stitch_paths([str(a), str(b)], StitchOptions(preserve_scale_bar=False))
+    assert result.output_size == (240, 280)
+    assert result.placements[1].transform[1, 2] == 80
+    assert result.confidence > .9999
+    assert result.warnings  # Near ties warn but do not override the best score.
+    assert np.array_equal(result.image, scene)
+
+
+def test_board_saves_precise_score_and_shows_nonblocking_warning(tmp_path):
+    import json
+    from angle_cal.stitching import StitchResult, StitchPlacement
+    app = QApplication.instance() or QApplication([])
+    source = tmp_path / "input.png"
+    image = np.arange(400, dtype=np.uint8).reshape(20, 20)
+    _write(source, image)
+    result = StitchResult(image, np.full(image.shape, 255, np.uint8),
+                          [StitchPlacement(str(source), np.eye(3), "anchor", 0, 0)],
+                          (20, 20), .99994, warnings=["Near tied candidates"])
+    board = PhotoMergeBoard()
+    received = []
+    board.result_ready.connect(received.append)
+    board._on_finished(result)
+    app.processEvents()
+    assert received == [result]
+    assert "99.99%" in board.status.text()
+    saved = Path(result.saved_path)
+    assert saved.exists() and "99.99pct" in saved.name
+    report = json.loads(saved.with_suffix(".stitch.json").read_text(encoding="utf-8"))
+    assert report["confidence"] == .99994
+    assert report["warnings"] == result.warnings
+    assert board.alignment_warning.isVisible()
+    assert not board.alignment_warning.isModal()
+    board.alignment_warning.close()
+    board.close()
 
 
 def test_unrelated_images_are_rejected_instead_of_composited(tmp_path):
