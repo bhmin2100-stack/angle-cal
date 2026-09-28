@@ -30,6 +30,7 @@ class StitchingNeedsManual(StitchingError):
 class StitchOptions:
     overlay_crop_fraction: float = 0.0
     preserve_scale_bar: bool = True
+    preserve_outer_edges: bool = True
     normalize_tone: bool = True
     min_matches: int = 8
     ratio_test: float = 0.75
@@ -292,6 +293,37 @@ def _match_mask(
     if right > left and bottom > top:
         mask[top:bottom, left:right] = 255
     return mask
+
+
+def _composition_masks(match_masks, transforms, preserve_outer_edges: bool):
+    """Restore only the vertical outside edges after registration is complete."""
+    masks = [mask.copy() for mask in match_masks]
+    if not preserve_outer_edges:
+        return masks, None, None
+    extents = []
+    bounds = []
+    for index, mask in enumerate(match_masks):
+        valid_points = cv2.findNonZero(mask)
+        if valid_points is None:
+            bounds.append(None)
+            continue
+        left, top, width, height = cv2.boundingRect(valid_points)
+        bounds.append((left, top, width, height))
+        corners = np.float32(
+            [[[left, top], [left + width, top],
+              [left + width, top + height], [left, top + height]]]
+        )
+        placed = cv2.perspectiveTransform(corners, transforms[index])[0]
+        extents.append((float(placed[:, 1].min()), float(placed[:, 1].max()), index))
+    if not extents:
+        return masks, None, None
+    top_index = min(extents, key=lambda entry: entry[0])[2]
+    bottom_index = max(extents, key=lambda entry: entry[1])[2]
+    left, top, width, height = bounds[top_index]
+    masks[top_index][:top, left:left + width] = 255
+    left, top, width, height = bounds[bottom_index]
+    masks[bottom_index][top + height:, left:left + width] = 255
+    return masks, top_index, bottom_index
 
 
 def _prior_for_pair(path_a: str, path_b: str, hints: dict[str, np.ndarray]) -> np.ndarray | None:
@@ -668,9 +700,12 @@ def stitch_paths(
         transforms[node] = matrix
         metadata[node] = (edge.inlier_count, edge.reprojection_error, edge.mode)
 
+    compose_masks, top_index, bottom_index = _composition_masks(
+        match_masks, transforms, options.preserve_outer_edges
+    )
     corners = []
     for index, image in enumerate(images):
-        valid_points = cv2.findNonZero(match_masks[index])
+        valid_points = cv2.findNonZero(compose_masks[index])
         if valid_points is None:
             raise StitchingError(f"정합에 사용할 영역이 비어 있습니다: {paths[index]}")
         left, top, width, height = cv2.boundingRect(valid_points)
@@ -698,22 +733,25 @@ def stitch_paths(
         )
         if exact:
             offset_x, offset_y = np.round(matrix[:2, 2]).astype(int)
-            valid_points = cv2.findNonZero(match_masks[index])
+            valid_points = cv2.findNonZero(compose_masks[index])
             left, top, region_width, region_height = cv2.boundingRect(valid_points)
             x, y = offset_x + left, offset_y + top
             warped = np.zeros_like(output)
             mask = np.zeros_like(valid)
             source_region = image[top : top + region_height, left : left + region_width]
-            source_mask = match_masks[index][top : top + region_height, left : left + region_width]
+            source_mask = compose_masks[index][top : top + region_height, left : left + region_width]
             warped[y : y + region_height, x : x + region_width] = source_region
             mask[y : y + region_height, x : x + region_width] = source_mask
         else:
             warped = cv2.warpPerspective(image, matrix, (width, height), flags=cv2.INTER_LANCZOS4)
             mask = cv2.warpPerspective(
-                match_masks[index], matrix, (width, height), flags=cv2.INTER_NEAREST
+                compose_masks[index], matrix, (width, height), flags=cv2.INTER_NEAREST
             )
+        score_mask = cv2.warpPerspective(
+            match_masks[index], matrix, (width, height), flags=cv2.INTER_NEAREST
+        )
         gain, offset, sharpening = 1.0, 0.0, 0.0
-        common = (mask > 0) & (valid > 0)
+        common = (score_mask > 0) & (valid > 0)
         if options.normalize_tone and common.sum() >= 256:
             warped, gain, offset, sharpening = _match_tone(warped, output, common)
         take = (mask > 0) & (valid == 0)
@@ -725,7 +763,14 @@ def stitch_paths(
             progress("compose", index, len(images), f"원본 픽셀 배치 {index + 1}/{len(images)}")
     result = StitchResult(output, valid, placements, (width, height), min(used_confidences, default=0.0))
     result.warnings = used_warnings
-    if options.preserve_scale_bar and options.overlay_crop_fraction > 0:
+    if (
+        options.preserve_outer_edges
+        and bottom_index is not None
+        and _scale_bar_footer_start(images[bottom_index]) is not None
+    ):
+        result.scale_bar_source = paths[bottom_index]
+        result.notes.append("맨 아래 이미지의 원본 하단 끝단과 스케일바를 제자리에서 보존")
+    if options.preserve_scale_bar and options.overlay_crop_fraction > 0 and not options.preserve_outer_edges:
         _preserve_footer(result, images, match_masks, options.overlay_crop_fraction)
     return result
 

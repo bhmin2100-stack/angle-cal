@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QObject,QPointF,QRectF,Qt,QThread,QTimer,Signal,Slot
 from PySide6.QtGui import QColor,QImage,QKeyEvent,QPainter,QPainterPath,QPen,QPixmap,QPolygonF,QWheelEvent
-from PySide6.QtWidgets import QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QGraphicsItem,QGraphicsPixmapItem,QGraphicsScene,QGraphicsView,QHBoxLayout,QLabel,QListWidget,QListWidgetItem,QMessageBox,QProgressBar,QPushButton,QScrollArea,QSplitter,QTableWidget,QTableWidgetItem,QVBoxLayout,QWidget
+from PySide6.QtWidgets import QCheckBox,QDialog,QDoubleSpinBox,QFileDialog,QFormLayout,QGraphicsItem,QGraphicsPixmapItem,QGraphicsScene,QGraphicsView,QHBoxLayout,QLabel,QListWidget,QListWidgetItem,QMessageBox,QProgressBar,QPushButton,QScrollArea,QSplitter,QTableWidget,QTableWidgetItem,QVBoxLayout,QWidget
 from .band_registration import band_profiles
 from .stitching import StitchLayoutHint,StitchOptions,StitchResult,StitchingCancelled,StitchingNeedsManual,detect_bottom_overlay_fraction,read_raw_image,save_stitch_result,save_stitch_result_auto,stitch_paths
 
@@ -46,7 +46,7 @@ class PhotoMergeDialog(QDialog):
         super().__init__(parent);self.setWindowTitle("사진 합치기");self.resize(1080,700);self.result=None;self.thread=None;self.worker=None
         root=QVBoxLayout(self);split=QSplitter();left=QWidget();ll=QVBoxLayout(left);ll.addWidget(QLabel("입력 이미지 (2~20장, 순서 무관)"));self.list=QListWidget();ll.addWidget(self.list,1)
         row=QHBoxLayout();add=QPushButton("파일 추가");add.clicked.connect(self.choose);remove=QPushButton("선택 제거");remove.clicked.connect(self.remove);row.addWidget(add);row.addWidget(remove);ll.addLayout(row)
-        form=QFormLayout();self.crop=QDoubleSpinBox();self.crop.setRange(0,45);self.crop.setSuffix(" %");form.addRow("하단 장비 정보 제거",self.crop);ll.addLayout(form);detect=QPushButton("장비 정보 띠 자동 감지");detect.clicked.connect(self.detect);ll.addWidget(detect)
+        form=QFormLayout();self.crop=QDoubleSpinBox();self.crop.setRange(0,45);self.crop.setSuffix(" %");form.addRow("하단 장비 정보 제거",self.crop);self.preserve_outer_edges=QCheckBox("맨 위·아래 이미지의 바깥 끝단 보존");self.preserve_outer_edges.setChecked(True);form.addRow("완성 결과",self.preserve_outer_edges);ll.addLayout(form);detect=QPushButton("장비 정보 띠 자동 감지");detect.clicked.connect(self.detect);ll.addWidget(detect)
         right=QWidget();rl=QVBoxLayout(right);self.preview=QLabel("이미지를 추가하고 자동 합치기를 실행하세요.");self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter);self.preview.setMinimumSize(500,350);self.preview.setStyleSheet("background:#202124;color:#ddd");rl.addWidget(self.preview,1)
         self.table=QTableWidget(0,4);self.table.setHorizontalHeaderLabels(["이미지","처리","인라이어","오차(px)"]);self.table.setMaximumHeight(180);rl.addWidget(self.table);split.addWidget(left);split.addWidget(right);split.setStretchFactor(1,1);root.addWidget(split,1)
         self.status=QLabel("대기 중");self.progress=QProgressBar();root.addWidget(self.status);root.addWidget(self.progress);actions=QHBoxLayout();self.start=QPushButton("자동 합치기");self.start.clicked.connect(self.start_stitch);self.cancel=QPushButton("취소");self.cancel.setEnabled(False);self.cancel.clicked.connect(self.cancel_stitch);self.save=QPushButton("저장 후 AngleCal에서 열기");self.save.setEnabled(False);self.save.clicked.connect(self.save_result);close=QPushButton("닫기");close.clicked.connect(self.reject)
@@ -66,7 +66,7 @@ class PhotoMergeDialog(QDialog):
         except Exception as exc:QMessageBox.warning(self,"장비 정보 감지",str(exc))
     def start_stitch(self):
         if len(self.paths())<2:QMessageBox.information(self,"사진 합치기","이미지를 2장 이상 추가하세요.");return
-        self.result=None;self.save.setEnabled(False);self.start.setEnabled(False);self.cancel.setEnabled(True);self.status.setText("합치기 준비 중…");self.progress.setValue(0);self.thread=QThread(self);self.worker=StitchWorker(self.paths(),StitchOptions(self.crop.value()/100));self.worker.moveToThread(self.thread);self.thread.started.connect(self.worker.run);self.worker.progress.connect(self.on_progress);self.worker.finished.connect(self._on_stitch_finished);self.worker.failed.connect(self._on_stitch_failed);self.worker.manual.connect(self._on_manual_required)
+        self.result=None;self.save.setEnabled(False);self.start.setEnabled(False);self.cancel.setEnabled(True);self.preserve_outer_edges.setEnabled(False);self.status.setText("합치기 준비 중…");self.progress.setValue(0);self.thread=QThread(self);self.worker=StitchWorker(self.paths(),StitchOptions(self.crop.value()/100, preserve_outer_edges=self.preserve_outer_edges.isChecked()));self.worker.moveToThread(self.thread);self.thread.started.connect(self.worker.run);self.worker.progress.connect(self.on_progress);self.worker.finished.connect(self._on_stitch_finished);self.worker.failed.connect(self._on_stitch_failed);self.worker.manual.connect(self._on_manual_required)
         for signal in (self.worker.finished,self.worker.failed,self.worker.manual):signal.connect(self.thread.quit)
         self.thread.finished.connect(self.worker.deleteLater);self.thread.finished.connect(self.thread_finished);self.thread.start()
     def cancel_stitch(self):
@@ -79,7 +79,7 @@ class PhotoMergeDialog(QDialog):
         show_alignment_warning(self, result)
     def _on_stitch_failed(self,message):self.status.setText(message);QMessageBox.warning(self,"사진 합치기",message)
     def _on_manual_required(self,message):self.status.setText("수동 보정 필요");QMessageBox.information(self,"수동 정렬 필요",message+"\n수동 기준점 편집기는 다음 업데이트에서 연결됩니다.")
-    def thread_finished(self):self.thread.deleteLater();self.thread=None;self.worker=None;self.start.setEnabled(True);self.cancel.setEnabled(False)
+    def thread_finished(self):self.thread.deleteLater();self.thread=None;self.worker=None;self.start.setEnabled(True);self.cancel.setEnabled(False);self.preserve_outer_edges.setEnabled(True)
     def save_result(self):
         if self.result is None:return
         path,_=QFileDialog.getSaveFileName(self,"합친 이미지 저장","merged.tif","TIFF (*.tif *.tiff);;PNG (*.png)")
@@ -720,6 +720,10 @@ class PhotoMergeBoard(QWidget):
         self.crop_reset_button.setEnabled(False)
         self.crop_reset_button.clicked.connect(self._reset_crop_regions)
         crop_toolbar.addWidget(self.crop_reset_button)
+        self.preserve_outer_edges = QCheckBox("맨 위의 위쪽 · 맨 아래의 아래쪽 보존")
+        self.preserve_outer_edges.setChecked(True)
+        self.preserve_outer_edges.setToolTip("정합 영역은 그대로 사용하고, 완성 결과에서 가장 바깥쪽 상·하단만 원본으로 복원합니다.")
+        crop_toolbar.addWidget(self.preserve_outer_edges)
         crop_help = QLabel("어두운 부분은 정합·완성 결과에서 제외 · 사용 영역의 원본 픽셀은 유지")
         crop_help.setStyleSheet("color:#586069")
         crop_toolbar.addWidget(crop_help)
@@ -803,8 +807,10 @@ class PhotoMergeBoard(QWidget):
         self.align_button.setEnabled(False)
         self.crop_button.setEnabled(False)
         self.crop_reset_button.setEnabled(False)
+        self.preserve_outer_edges.setEnabled(False)
         self.thread = QThread(self)
-        self.worker = StitchWorker(paths, StitchOptions(), self.view.layout_hints())
+        options = StitchOptions(preserve_outer_edges=self.preserve_outer_edges.isChecked())
+        self.worker = StitchWorker(paths, options, self.view.layout_hints())
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._on_progress)
@@ -843,4 +849,5 @@ class PhotoMergeBoard(QWidget):
             self.thread.deleteLater()
         self.thread = None
         self.worker = None
+        self.preserve_outer_edges.setEnabled(True)
         self._update_count(len(self.view.items_in_board()))

@@ -92,6 +92,31 @@ def test_whole_area_registration_resolves_periodic_layers_with_local_texture(tmp
     assert result.placements[1].transform[1, 2] == pytest.approx(80, abs=1)
 
 
+def test_outer_edge_option_preserves_only_top_and_bottom_source_edges(tmp_path):
+    scene = np.random.default_rng(821).integers(0, 65535, (300, 120), dtype=np.uint16)
+    top_path, bottom_path = tmp_path / "a-top.tif", tmp_path / "b-bottom.tif"
+    _write(top_path, scene[:200])
+    _write(bottom_path, scene[100:])
+    hints = [
+        StitchLayoutHint(str(top_path), np.eye(3), (0.0, 0.1, 1.0, 0.8)),
+        StitchLayoutHint(str(bottom_path), np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 100.0], [0.0, 0.0, 1.0]]),
+                         (0.0, 0.1, 1.0, 0.8)),
+    ]
+    cropped = stitch_paths(
+        [str(top_path), str(bottom_path)],
+        StitchOptions(preserve_scale_bar=False, preserve_outer_edges=False),
+        layout_hints=hints,
+    )
+    preserved = stitch_paths(
+        [str(top_path), str(bottom_path)],
+        StitchOptions(preserve_scale_bar=False, preserve_outer_edges=True),
+        layout_hints=hints,
+    )
+    assert cropped.output_size == (120, 260)
+    assert preserved.output_size == (120, 300)
+    assert np.array_equal(preserved.image, scene)
+
+
 def test_tiny_perfect_overlap_is_not_a_translation_candidate():
     scene = np.random.default_rng(391).integers(0, 255, (120, 380), dtype=np.uint8)
     first, second = scene[:, :200], scene[:, 180:]
@@ -393,7 +418,10 @@ def test_photo_merge_button_starts_worker_and_finishes(tmp_path):
     dialog = PhotoMergeBoard()
     dialog.add_paths([str(left_path), str(right_path)])
     try:
+        assert dialog.preserve_outer_edges.isChecked()
+        dialog.preserve_outer_edges.setChecked(False)
         dialog.align_button.click()
+        assert dialog.worker.options.preserve_outer_edges is False
         assert dialog.status.text() == "보드 이미지 자동 정렬 준비 중…"
         deadline = time.monotonic() + 5.0
         captured = []

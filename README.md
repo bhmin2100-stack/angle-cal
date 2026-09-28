@@ -127,6 +127,11 @@ Scores have no 99% cap and are displayed to two decimal places (including 99.99%
 Reported percentages are heuristic quality scores, not probabilities or a guarantee of
 correct physical placement; subpixel translation is not searched by this path.
 
+The merge board's outer-edge option is enabled by default. Registration still uses the
+selected crop rectangles, while composition restores the area above the topmost image's
+crop and below the bottommost image's crop. Horizontal crop bounds and every interior
+image crop remain in effect. Turning the option off applies the crop masks to every edge.
+
 Board controls: click empty board space to finish cropping while retaining the selection;
 arrow keys move selected images by 10 board pixels, Ctrl+arrow keys by 1. Delete removes
 only selected board items. Add-ons open as menu tabs in the main window.
