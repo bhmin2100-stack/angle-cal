@@ -2336,7 +2336,7 @@ def test_favorite_images_show_as_tabs_and_switch_images(tmp_path):
         window.close()
 
 
-def test_thumbnail_context_menu_adds_and_removes_favorite_without_switching_image(tmp_path):
+def test_thumbnail_context_menu_adds_removes_favorite_and_opens_saved_folder_without_switching_image(tmp_path, monkeypatch):
     path_a = tmp_path / "a.png"
     path_b = tmp_path / "b.png"
     cv2.imwrite(str(path_a), np.zeros((80, 120, 3), dtype=np.uint8))
@@ -2356,6 +2356,12 @@ def test_thumbnail_context_menu_adds_and_removes_favorite_without_switching_imag
 
         menu = window._favorite_menu_for_path(str(path_b))
         assert menu.actions()[0].text() == "즐겨찾기에 저장"
+        folder_action = next(action for action in menu.actions() if action.text() == "저장된 폴더 열기")
+        opened_urls = []
+        monkeypatch.setattr(app_module.QDesktopServices, "openUrl", lambda url: opened_urls.append(url) or True)
+        folder_action.trigger()
+        assert Path(opened_urls[0].toLocalFile()).resolve() == tmp_path.resolve()
+        assert window.image_path == str(path_a)
         menu.actions()[0].trigger()
 
         assert window.image_path == str(path_a)

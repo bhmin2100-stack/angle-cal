@@ -4884,7 +4884,25 @@ class MainWindow(QMainWindow):
         else:
             action = menu.addAction("즐겨찾기에 저장")
             action.triggered.connect(lambda checked=False, selected_path=path: self.add_favorite_image(selected_path))
+        menu.addSeparator()
+        folder_action = menu.addAction("저장된 폴더 열기")
+        folder_action.triggered.connect(
+            lambda checked=False, selected_path=path: self.open_saved_image_folder(selected_path)
+        )
         return menu
+
+    def open_saved_image_folder(self, path: str) -> bool:
+        image_path = Path(path).expanduser()
+        if not image_path.is_file():
+            QMessageBox.warning(self, "저장된 폴더 열기", "이미지 파일을 찾을 수 없습니다.")
+            return False
+        folder = image_path.resolve().parent
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        if opened:
+            self._set_status(f"저장된 폴더 열기: {folder}")
+            return True
+        QMessageBox.warning(self, "저장된 폴더 열기", f"폴더를 열지 못했습니다.\n{folder}")
+        return False
 
     def add_favorite_image(self, path: Optional[str] = None) -> None:
         target = path or self.image_path
