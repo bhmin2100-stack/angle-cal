@@ -303,7 +303,7 @@ def test_multiple_addons_open_menu_tabs_and_preserve_board():
         window.addon_actions["photo_merge"].setChecked(False)
         app.processEvents()
         assert window.ribbon_tabs.count() == 6
-        assert window.workspace_stack.currentWidget() is window.canvas
+        assert window.workspace_stack.currentWidget() is window.trench_panel
         assert window.ribbon_tabs.tabText(5) == "Trench 자동분석기"
         window.addon_actions["photo_merge"].setChecked(True)
         assert window.ribbon_tabs.count() == 7

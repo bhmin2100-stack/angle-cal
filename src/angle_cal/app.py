@@ -64,6 +64,7 @@ from PySide6.QtWidgets import (
 
 from . import updater
 from .photo_merge import PhotoMergeBoard, PhotoMergeDialog
+from .trench_panel import TrenchPanel
 
 
 @dataclass(frozen=True)
@@ -3045,6 +3046,10 @@ class MainWindow(QMainWindow):
         self.addon_pages: dict[str, QWidget] = {}
         self.photo_merge_dialog: Optional[PhotoMergeDialog] = None
         self.photo_merge_board: Optional[PhotoMergeBoard] = None
+        self.trench_panel: Optional[TrenchPanel] = None
+        self.trench_state: dict = {}
+        self._trench_dock_visibility: dict[QDockWidget, bool] = {}
+        self._trench_action_enabled: dict[QAction, bool] = {}
         self._thumbnail_anchor_path: Optional[str] = None
         self._thumbnail_drag_origin: Optional[QPoint] = None
         self._thumbnail_drag_active = False
@@ -3848,6 +3853,17 @@ class MainWindow(QMainWindow):
                 self.photo_merge_board = PhotoMergeBoard(self)
                 self.photo_merge_board.result_ready.connect(self._show_photo_merge_result)
                 self.workspace_stack.addWidget(self.photo_merge_board)
+        elif addon_id == "trench_analyzer":
+            box = QGroupBox("Trench 형상 분석")
+            box_layout = QHBoxLayout(box)
+            description = QLabel("한 Trench의 CD · Depth · 전체/국부 Bowing · Nega slope · 입구 각도/곡률")
+            description.setWordWrap(True)
+            box_layout.addWidget(description)
+            layout.addWidget(box)
+            if self.trench_panel is None:
+                self.trench_panel = TrenchPanel(self)
+                self.trench_panel.state_changed.connect(self._trench_state_changed)
+                self.workspace_stack.addWidget(self.trench_panel)
         else:
             title = next(item.title for item in ADDON_DEFINITIONS if item.addon_id == addon_id)
             layout.addWidget(QLabel(f"{title} 기능은 준비 중입니다."))
@@ -3871,10 +3887,40 @@ class MainWindow(QMainWindow):
     def _ribbon_tab_changed(self, _index: int) -> None:
         current_page = self.ribbon_tabs.currentWidget()
         photo_page = self.addon_pages.get("photo_merge")
+        trench_active = current_page is self.addon_pages.get("trench_analyzer") and self.trench_panel is not None
+        if trench_active and not self._trench_dock_visibility:
+            for dock in self.findChildren(QDockWidget):
+                if self.dockWidgetArea(dock) == Qt.DockWidgetArea.RightDockWidgetArea:
+                    self._trench_dock_visibility[dock] = not dock.isHidden()
+                    dock.hide()
+            for name in ("delete_action", "undo_action", "copy_action", "paste_action", "copy_format_action",
+                         "save_structure_action", "paste_structure_action", "group_action", "ungroup_action"):
+                action = getattr(self, name, None)
+                if action is not None:
+                    self._trench_action_enabled[action] = action.isEnabled()
+                    action.setEnabled(False)
+        elif not trench_active and self._trench_dock_visibility:
+            for dock, visible in self._trench_dock_visibility.items():
+                dock.setVisible(visible)
+            self._trench_dock_visibility.clear()
+            for action, enabled in self._trench_action_enabled.items():
+                action.setEnabled(enabled)
+            self._trench_action_enabled.clear()
         if current_page is photo_page and self.photo_merge_board is not None:
             self.workspace_stack.setCurrentWidget(self.photo_merge_board)
+        elif current_page is self.addon_pages.get("trench_analyzer") and self.trench_panel is not None:
+            self.trench_panel.set_image(self.image_bgr, self.image_path, self.nm_per_px, self.trench_state)
+            self.workspace_stack.setCurrentWidget(self.trench_panel)
         else:
             self.workspace_stack.setCurrentWidget(self.canvas)
+
+    def _trench_state_changed(self, state: dict) -> None:
+        self.trench_state = {**state, "rotation": self.image_rotation_degrees}
+
+    def closeEvent(self, event) -> None:
+        if self.trench_panel is not None:
+            self.trench_panel.wait_for_worker()
+        super().closeEvent(event)
 
     def _show_photo_merge_result(self, result: object) -> None:
         if not hasattr(result, "image"):
@@ -3892,6 +3938,7 @@ class MainWindow(QMainWindow):
         self._save_current_image_state()
         self.image_bgr = result.image
         self.image_path = None
+        self.trench_state = {}
         self.project_path = None
         self.records.clear()
         self._counter = 1
@@ -4374,6 +4421,7 @@ class MainWindow(QMainWindow):
             self.image_bgr = self._image_with_rotation_steps(image, self.image_rotation_steps, self.image_rotation_degrees)
         else:
             self.nm_per_px = previous_nm_per_px if preserve_calibration else None
+            self.trench_state = {}
             self.image_rotation_degrees = 0.0
             self.image_rotation_steps = []
             self.records.clear()
@@ -4402,6 +4450,7 @@ class MainWindow(QMainWindow):
             "records": [asdict(record) for record in self.records.values()],
             "counter": self._counter,
             "nm_per_px": self.nm_per_px,
+            "trench": self.trench_state,
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "image_adjustments": self._image_adjustment_state(),
             "image_rotation_degrees": self.image_rotation_degrees,
@@ -4414,6 +4463,7 @@ class MainWindow(QMainWindow):
         self.records = {item["id"]: line_record_from_dict(item) for item in state.get("records", [])}
         self._counter = int(state.get("counter", len(self.records) + 1))
         self.nm_per_px = state.get("nm_per_px")
+        self.trench_state = dict(state.get("trench") or {})
         self.hidden_angle_measurements = set(state.get("hidden_angle_measurements", []))
         self.image_rotation_degrees = float(state.get("image_rotation_degrees", 0.0) or 0.0)
         self.image_rotation_steps = [float(value) for value in state.get("image_rotation_steps", [])]
@@ -4425,6 +4475,7 @@ class MainWindow(QMainWindow):
             "records": [asdict(record) for record in self.records.values()],
             "counter": self._counter,
             "nm_per_px": self.nm_per_px,
+            "trench": self.trench_state,
             "hidden_angle_measurements": list(self.hidden_angle_measurements),
             "image_adjustments": self._image_adjustment_state(),
             "image_rotation_degrees": self.image_rotation_degrees,
@@ -4476,6 +4527,7 @@ class MainWindow(QMainWindow):
             "records": records,
             "counter": int(counter) if counter is not None else len(records) + 1,
             "nm_per_px": state.get("nm_per_px"),
+            "trench": dict(state.get("trench") or {}),
             "hidden_angle_measurements": list(state.get("hidden_angle_measurements", [])),
             "image_adjustments": dict(state.get("image_adjustments", {})),
             "image_rotation_degrees": float(state.get("image_rotation_degrees", 0.0) or 0.0),
@@ -7641,8 +7693,19 @@ class MainWindow(QMainWindow):
         view_state = self._canvas_view_state() if keep_view else None
         self.canvas.set_image(self._pixmap_from_bgr(self._adjusted_image_bgr()))
         self._restore_canvas_view_state(view_state)
+        if self.trench_state and self.trench_state.get("rotation", 0.0) != self.image_rotation_degrees:
+            self.trench_state = {**self.trench_state, "roi": None, "corner_rois": [None, None],
+                                 "corner_spans": [None, None], "corner_results": None,
+                                 "rotation": self.image_rotation_degrees}
+        if self.trench_panel is not None:
+            self.trench_panel.set_image(self.image_bgr, self.image_path, self.nm_per_px, self.trench_state)
 
     def set_current_tool(self, tool: str) -> None:
+        if self.trench_panel is not None and self.workspace_stack.currentWidget() is self.trench_panel:
+            if tool in ("select", "pan"):
+                self.trench_panel.roi_button.setChecked(False)
+                return
+            self.ribbon_tabs.setCurrentIndex(0)
         self.current_tool = tool
         self.canvas.set_tool(tool)
         if hasattr(self, "tool_buttons") and tool in self.tool_buttons:
