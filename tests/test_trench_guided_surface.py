@@ -152,3 +152,11 @@ def test_curved_field_only_guide_is_not_mistaken_for_a_wall():
     assert r.field_angles[0]['source']=='guide' and r.field_angles[0]['status']=='valid'
     assert r.corners[0]['status']=='unconfirmed'
     assert r.depth_px is not None
+
+
+def test_guided_radius_search_size_restricts_only_radius_not_field_angle():
+    im=rounded_trench(60);g=surface_guide(60)
+    a=analyze(im,g);b=analyze(im,g,corner_window_px=6)
+    assert all(c['status']=='valid' for c in a.corners)
+    assert all(c['status']=='unconfirmed' for c in b.corners)
+    assert [f['angle_deg'] for f in a.field_angles]==[f['angle_deg'] for f in b.field_angles]

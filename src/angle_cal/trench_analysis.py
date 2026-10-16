@@ -473,7 +473,7 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
                                       options.corner_rois[i], options.corner_spans[i], options.bright_trench)
                for i, (side, edge) in enumerate((("left", left), ("right", right)))]
     if guides:
-        field_angles,corners=measure_guided_surfaces(guides,traces,options,y,left,right,field_angles,corners)
+        field_angles,corners=measure_guided_surfaces(guides,traces,options,y,left,right,field_angles,corners,image.shape)
         angles=[item['angle_deg'] for item in field_angles]
     if any(item['angle_status']!='valid' for item in field_angles):
         warnings.append("일부 Field 또는 각도가 미확정입니다. Field / 각도 탭에서 측정 구간과 이유를 확인하세요.")

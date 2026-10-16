@@ -75,7 +75,7 @@ def _corner(points, side, roi, span, spread, connected):
     return result
 
 
-def measure_guided_surfaces(guides,traces,options,y,left,right,fields,corners):
+def measure_guided_surfaces(guides,traces,options,y,left,right,fields,corners,image_shape):
     """Replace only sides whose guide deliberately includes a Field support."""
     # Surface segmentation and angle support never depend on the R editor's
     # independent search rectangle or arc start/end fractions.
@@ -109,7 +109,12 @@ def measure_guided_surfaces(guides,traces,options,y,left,right,fields,corners):
         fields[side_index]=item
         # A generous display ROI is independent of the user's arc selection.
         default_roi=(max(0,int(anchor-reach*1.8)),max(0,int(top-reach*.5)),int(reach*3.6),int(reach*2.4))
-        roi=options.corner_rois[side_index] or default_roi
+        corner_reach=max(32,options.corner_window_px*3)
+        x0=anchor-corner_reach*(1.8 if side=='left' else .7)
+        x1=anchor+corner_reach*(.7 if side=='left' else 1.8)
+        x0,y0=max(0,int(x0)),max(0,int(top-corner_reach*.5))
+        x1,y1=min(image_shape[1],int(x1)),min(image_shape[0],int(top+corner_reach*1.9))
+        roi=options.corner_rois[side_index] or (x0,y0,x1-x0,y1-y0)
         spread=float(np.median(spread_values)) if spread_values else None
         corners[side_index]=_corner([],side,roi,options.corner_spans[side_index],spread,False)
         if not candidates:continue
