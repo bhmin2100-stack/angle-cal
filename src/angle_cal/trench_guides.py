@@ -11,12 +11,12 @@ def normalize_guides(guides, image_shape=None):
     result = []
     for guide in guides or ():
         try:
-            side = guide['side']
+            side = guide.get('side','contour')
             points = np.asarray(guide.get('points', [guide.get('start'),guide.get('end')]), float)
             radius = float(guide['half_width_px'])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError('가이드의 좌우·끝점·인식 폭을 확인하세요.') from exc
-        if (side not in ('left', 'right') or points.ndim!=2 or points.shape[1:]!=(2,) or not 2<=len(points)<=200
+        if (side not in ('left', 'right','contour') or points.ndim!=2 or points.shape[1:]!=(2,) or not 2<=len(points)<=200
                 or not np.isfinite(points).all() or not math.isfinite(radius) or not 1 <= radius <= 300):
             raise ValueError('가이드 좌표와 인식 폭(1~300 px)이 올바르지 않습니다.')
         if np.any(np.linalg.norm(np.diff(points,axis=0),axis=1)<.1):
@@ -150,11 +150,13 @@ def prepare_guide_bands(guides, top, height):
     per_guide=[{yy:guide_intervals(g,yy) for yy in range(top,top+height)} for g in guides]
     bands={(yy-top,side):_merge_intervals([b for g,rows in zip(guides,per_guide) if g['side']==side for b in rows[yy]])
            for yy in range(top,top+height) for side in ('left','right')}
+    bands.update({(yy-top,'contour'):_merge_intervals([b for rows in per_guide for b in rows[yy]])
+                  for yy in range(top,top+height)})
     return bands,per_guide
 
 
 def row_bands(guides, y, side):
-    return _merge_intervals([interval for g in guides if g['side']==side for interval in guide_intervals(g,y)])
+    return _merge_intervals([interval for g in guides if side=='contour' or g['side']==side for interval in guide_intervals(g,y)])
 
 
 def in_bands(x, bands):

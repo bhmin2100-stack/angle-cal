@@ -61,7 +61,7 @@ class TrenchGuideEditor(QObject):
         self.guides = []
         self.selected = -1
         self.drawing = False
-        self.side = 'left'
+        self.side = 'contour'
         self.radius = 12.
         self.items = []
         self.drag = None
@@ -152,7 +152,7 @@ class TrenchGuideEditor(QObject):
         self.clear_render()
         guides=self.guides + ([preview] if preview else [])
         for i,guide in enumerate(guides):
-            color=QColor('#39ded7' if guide['side']=='left' else '#ffab62')
+            color=QColor('#79dfb6')
             if len(guide['points'])>=2:
                 path=guide_sweep_path(guide)
                 brush=QColor(color);brush.setAlpha(42 if i!=self.selected else 65)
@@ -167,7 +167,7 @@ class TrenchGuideEditor(QObject):
                 handle=self.view.scene().addEllipse(-4,-4,8,8,pen,color)
                 handle.setFlag(handle.GraphicsItemFlag.ItemIgnoresTransformations,True)
                 handle.setPos(QPointF(*p));self.items.append(handle)
-            label=self.view.scene().addSimpleText(f"{'좌' if guide['side']=='left' else '우'} {i+1} · ±{guide['half_width_px']:g}px")
+            label=self.view.scene().addSimpleText(f"윤곽 {i+1} · ±{guide['half_width_px']:g}px")
             label.setBrush(color);label.setFlag(label.GraphicsItemFlag.ItemIgnoresTransformations,True)
             label.setPos(QPointF(*guide['points'][0])+QPointF(5,-20));self.items.append(label)
         for item in self.items:item.setZValue(500)

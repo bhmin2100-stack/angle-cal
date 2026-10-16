@@ -177,7 +177,6 @@ def app():
 
 
 def draw_curve(panel,app,side,points):
-    panel.guide_side.setCurrentIndex(0 if side=='left' else 1)
     panel.guide_button.setChecked(True);app.processEvents()
     for p in points[:-1]:
         QTest.mouseClick(panel.view.viewport(),Qt.MouseButton.LeftButton,pos=panel.view.mapFromScene(*p))
@@ -260,7 +259,7 @@ def test_project_roundtrip_and_rotation_clear_curve_guides(app,tmp_path,monkeypa
     w.close()
 
 
-def test_ribbon_starts_each_wall_curve_from_other_analysis_tab(app, tmp_path):
+def test_ribbon_starts_side_independent_contour_from_other_analysis_tab(app, tmp_path):
     import cv2
     from PySide6.QtWidgets import QPushButton
     from angle_cal.app import MainWindow
@@ -269,17 +268,15 @@ def test_ribbon_starts_each_wall_curve_from_other_analysis_tab(app, tmp_path):
     w=MainWindow();w.resize(1280,850);w.show()
     w.addon_actions['trench_analyzer'].setChecked(True);app.processEvents()
     panel=w.trench_panel
-    left=w.findChild(QPushButton,'trench_left_curve_guide')
-    right=w.findChild(QPushButton,'trench_right_curve_guide')
-    assert left.isVisible() and right.isVisible()
-    left.click()
+    button=w.findChild(QPushButton,'trench_contour_guide')
+    assert button.isVisible()
+    button.click()
     assert not panel.guide_editor.drawing
     w._load_image_path(str(image_path));app.processEvents()
-    for side,button in [('left',left),('right',right)]:
-        panel.image_tabs.setCurrentIndex(2)
-        button.click();app.processEvents()
-        assert panel.image_tabs.currentIndex()==0
-        assert panel.guide_editor.drawing and panel.guide_editor.side==side
-        QTest.keyClick(panel.view,Qt.Key.Key_Escape)
-        assert not panel.guide_editor.drawing
+    panel.image_tabs.setCurrentIndex(2)
+    button.click();app.processEvents()
+    assert panel.image_tabs.currentIndex()==0
+    assert panel.guide_editor.drawing and panel.guide_editor.side=='contour'
+    QTest.keyClick(panel.view,Qt.Key.Key_Escape)
+    assert not panel.guide_editor.drawing
     w.close()

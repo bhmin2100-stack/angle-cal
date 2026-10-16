@@ -486,19 +486,17 @@ class TrenchGraph(QWidget):
         if self.mode == "shape":
             # Both walls share one X axis, so their separation is the measured
             # CD. Do not normalize or center each wall independently.
-            cavity = QPainterPath()
-            cavity.moveTo(point(r.left[0], r.y[0]))
-            for x, y in zip(r.left[1:], r.y[1:]):
-                cavity.lineTo(point(x, y))
-            for x, y in zip(r.right[::-1], r.y[::-1]):
-                cavity.lineTo(point(x, y))
-            cavity.closeSubpath()
-            painter.fillPath(cavity, QColor(0, 125, 146, 25))
+            for block in np.split(np.arange(len(r.y)),np.flatnonzero(np.diff(r.y)>1.5)+1):
+                cavity = QPainterPath(point(r.left[block[0]],r.y[block[0]]))
+                for i in block[1:]:cavity.lineTo(point(r.left[i],r.y[i]))
+                for i in block[::-1]:cavity.lineTo(point(r.right[i],r.y[i]))
+                cavity.closeSubpath()
+                painter.fillPath(cavity, QColor(0, 125, 146, 25))
         for values, ys, color in series:
             path = QPainterPath()
             stride = max(1, len(ys) // 2000)
             for j, index in enumerate(range(0, len(ys), stride)):
-                if j == 0:
+                if j == 0 or (ys is r.y and np.any(np.diff(ys[index-stride:index+1])>1.5)):
                     path.moveTo(point(values[index], ys[index]))
                 else:
                     path.lineTo(point(values[index], ys[index]))
@@ -597,9 +595,7 @@ class TrenchPanel(QWidget):
         guide_layout = QVBoxLayout(self.guide_bar)
         guide_layout.setContentsMargins(0,0,0,0)
         guide_actions = QHBoxLayout()
-        self.guide_side = QComboBox()
-        self.guide_side.addItem('왼쪽 벽','left');self.guide_side.addItem('오른쪽 벽','right')
-        guide_actions.addWidget(self.guide_side)
+        guide_actions.addWidget(QLabel('통합 윤곽'))
         self.guide_button=QPushButton('곡선 가이드 그리기');self.guide_button.setCheckable(True)
         guide_actions.addWidget(self.guide_button)
         self.guide_selection=QComboBox();self.guide_selection.setMinimumWidth(130)
@@ -619,7 +615,6 @@ class TrenchPanel(QWidget):
         root.insertWidget(1,self.guide_bar)
         self.guide_bar.setEnabled(False)
         self.guide_button.toggled.connect(self._guide_mode)
-        self.guide_side.currentIndexChanged.connect(lambda _:setattr(self.guide_editor,'side',self.guide_side.currentData()))
         self.guide_width.valueChanged.connect(self.guide_editor.set_radius)
         self.guide_selection.currentIndexChanged.connect(lambda i:self.guide_editor.select(i-1))
         self.guide_delete.clicked.connect(self.guide_editor.remove_selected)
@@ -804,7 +799,8 @@ class TrenchPanel(QWidget):
                 "field_angles":self.result.field_angles if self.result is not None else None,
                 "corner_rois": list(self.corner_rois), "corner_spans": list(self.corner_spans),
                 "corner_results": self.result.corners if self.result is not None else None,
-                "wall_guides":list(normalize_guides(self.guide_editor.guides))}
+                "wall_guides":list(normalize_guides(self.guide_editor.guides)),
+                "guide_traces":self.result.guide_traces if self.result is not None else []}
 
     def _roi_mode(self, enabled):
         if enabled:self.guide_editor.set_drawing(False)
@@ -819,12 +815,11 @@ class TrenchPanel(QWidget):
     def _guide_mode_changed(self, enabled):
         self.guide_button.blockSignals(True);self.guide_button.setChecked(enabled);self.guide_button.blockSignals(False)
 
-    def start_wall_guide(self, side):
+    def start_contour_guide(self):
         """Open the same curve editor from the Trench ribbon."""
         if self.image is None:
             self.hint.setText('먼저 Trench 이미지를 불러오세요.')
             return
-        self.guide_side.setCurrentIndex(0 if side == 'left' else 1)
         self.guide_button.setChecked(True)
         self.image_tabs.setCurrentIndex(0)
         self.view.setFocus()
@@ -834,7 +829,7 @@ class TrenchPanel(QWidget):
         self.guide_selection.blockSignals(True)
         self.guide_selection.clear();self.guide_selection.addItem('가이드 선택')
         for i,g in enumerate(editor.guides):
-            self.guide_selection.addItem(f"{'좌' if g['side']=='left' else '우'} {i+1} · {len(g['points'])}점")
+            self.guide_selection.addItem(f"윤곽 {i+1} · {len(g['points'])}점")
         self.guide_selection.setCurrentIndex(editor.selected+1)
         self.guide_selection.blockSignals(False)
         self.guide_width.blockSignals(True)
@@ -846,7 +841,7 @@ class TrenchPanel(QWidget):
     def _guides_changed(self):
         self._guide_selection_changed()
         self._settings_changed()
-        self.guide_hint.setText(f'곡선 가이드 {len(self.guide_editor.guides)}개 · 곡선이 있는 높이는 띠 안에서만 인식, 나머지는 자동 · 경계 인식을 눌러 적용하세요.')
+        self.guide_hint.setText(f'윤곽 가이드 {len(self.guide_editor.guides)}개 · 좌우 지정 없이 곡선을 따라 연결 윤곽 추적 · 경계 인식을 눌러 적용하세요.')
 
     def set_image(self, image, path: str, nm_per_px=None, state=None) -> None:
         key = (id(image), path)
@@ -1024,6 +1019,8 @@ class TrenchPanel(QWidget):
                  f"국부 Nega 구간 {len(r.local_bowing)}개 · 경계값 {r.threshold:.1f}"]
         if self.step_spin.value() / factor < 1:
             lines.append("1 px 미만 간격은 경계 보간값입니다.")
+        for index,trace in enumerate(r.guide_traces):
+            lines.append(f"윤곽 {index+1} 추적 {trace['trace_coverage']:.0%} · {trace['reason']}")
         if r.warnings:
             lines += ["", *r.warnings]
         self.summary_label.setText("\n".join(lines))
@@ -1070,13 +1067,20 @@ class TrenchPanel(QWidget):
         if r is None:
             return
         factor,unit=self._factor()
+        for trace in r.guide_traces:
+            for segment in trace['segments']:
+                if len(segment)<2:continue
+                path=QPainterPath(QPointF(*segment[0]))
+                for point in segment[1:]:path.lineTo(QPointF(*point))
+                self.overlays.append(scene.addPath(path,_pen('#ffe38a',1.2)))
         for item in r.field_angles:
             self.overlays.extend(draw_field_angle(scene,item,factor,unit))
         for edge, color in ((r.left, "#39ded7"), (r.right, "#ffab62"),
                             (r.left_reference, "#9cdfcc"), (r.right_reference, "#efcfa3")):
             path = QPainterPath(QPointF(edge[0], r.y[0]))
-            for xx, yy in zip(edge[1:], r.y[1:]):
-                path.lineTo(float(xx), float(yy))
+            for previous_y,xx,yy in zip(r.y[:-1],edge[1:],r.y[1:]):
+                if yy-previous_y>1.5:path.moveTo(float(xx),float(yy))
+                else:path.lineTo(float(xx),float(yy))
             self.overlays.append(scene.addPath(path, _pen(color, 1.5, color in ("#9cdfcc", "#efcfa3"))))
         for yy, ll, rr in list(zip(r.sample_y, r.sample_left, r.sample_right))[::max(1, len(r.sample_y) // 160)]:
             self.overlays.append(scene.addLine(ll, yy, rr, yy, _pen("#a0c5ff", .7)))

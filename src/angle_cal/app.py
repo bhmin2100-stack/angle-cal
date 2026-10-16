@@ -3864,14 +3864,13 @@ class MainWindow(QMainWindow):
                 self.trench_panel = TrenchPanel(self)
                 self.trench_panel.state_changed.connect(self._trench_state_changed)
                 self.workspace_stack.addWidget(self.trench_panel)
-            guide_box = QGroupBox("곡선 가이드 · 점 클릭 → 마지막 더블클릭")
+            guide_box = QGroupBox("윤곽 가이드 · 더블클릭 종료")
             guide_layout = QHBoxLayout(guide_box)
-            for side, label in (("left", "왼쪽 곡선 가이드"), ("right", "오른쪽 곡선 가이드")):
-                button = QPushButton(label)
-                button.setObjectName(f"trench_{side}_curve_guide")
-                button.setToolTip("벽을 따라 점을 클릭하고 마지막 점에서 더블클릭하세요. 휠로 인식 폭을 조절합니다.")
-                button.clicked.connect(lambda _checked=False, side=side: self.trench_panel.start_wall_guide(side))
-                guide_layout.addWidget(button)
+            button = QPushButton("곡선 가이드 그리기")
+            button.setObjectName("trench_contour_guide")
+            button.setToolTip("좌우 지정 없이 벽·바닥을 따라 점을 클릭하고 마지막 점에서 더블클릭하세요. 휠로 인식 폭을 조절합니다.")
+            button.clicked.connect(self.trench_panel.start_contour_guide)
+            guide_layout.addWidget(button)
             layout.addWidget(guide_box)
         else:
             title = next(item.title for item in ADDON_DEFINITIONS if item.addon_id == addon_id)
@@ -7706,6 +7705,7 @@ class MainWindow(QMainWindow):
             self.trench_state = {**self.trench_state, "roi": None, "corner_rois": [None, None],
                                  "corner_spans": [None, None], "corner_results": None,
                                  "wall_guides": [],
+                                 "guide_traces": [],
                                  "rotation": self.image_rotation_degrees}
         if self.trench_panel is not None:
             self.trench_panel.set_image(self.image_bgr, self.image_path, self.nm_per_px, self.trench_state)

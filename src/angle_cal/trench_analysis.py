@@ -18,7 +18,8 @@ import numpy as np
 from .image_ops import to_gray
 from .trench_corner import measure_entrance_corner
 from .trench_surface import measure_field_angles, connect_entrance
-from .trench_guides import normalize_guides, prepare_guide_bands, in_bands, guided_edges
+from .trench_guides import normalize_guides, prepare_guide_bands, in_bands
+from .trench_contour import trace_guide, guided_cavity_profile
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class TrenchResult:
     local_bowing: list[dict]
     field_angles: list[dict] = field(default_factory=list)
     guide_diagnostics: list[dict] = field(default_factory=list)
+    guide_traces: list[dict] = field(default_factory=list)
 
     def summary(self) -> dict:
         return {
@@ -98,6 +100,8 @@ class TrenchResult:
             "local_bowing": self.local_bowing,
             "field_angles": self.field_angles,
             "guide_diagnostics": self.guide_diagnostics,
+            "guide_traces": self.guide_traces,
+            "guide_method": "ordered_normal_contour_then_cavity_classification" if self.guide_traces else "automatic",
             "field_length_units":{unit:[{key.replace("_px","_"+unit):item.get(key)*factor if item.get(key) is not None else None
                                         for key in ("length_px","rms_px","wall_rms_px")} for item in self.field_angles]
                                   for unit,factor in (("nm",nm_per_px),("angstrom",(nm_per_px or 0)*10)) if factor},
@@ -123,6 +127,8 @@ def trench_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
             or not np.isfinite(np.r_[y, left, right, result.depth_px]).all()
             or np.any(left >= right) or np.any(np.diff(y) <= 0)):
         raise ValueError("좌우 윤곽 좌표가 유효하지 않습니다. 다시 분석하세요.")
+    if np.any(np.diff(y)>1.5):
+        raise ValueError("윤곽에 미검출 구간이 있어 GFE 형상을 연결할 수 없습니다. 가이드 위치·폭과 끊긴 경계를 확인하세요.")
     x0, top, width, _ = result.options.roi
     floor = top + result.depth_px
     if y[0] < top or y[-1] > floor or floor <= top:
@@ -218,6 +224,16 @@ def _smooth(values: np.ndarray, window: int) -> np.ndarray:
                        np.ones(radius * 2 + 1) / (radius * 2 + 1), "valid")
 
 
+def _profile_blocks(y):
+    return np.split(np.arange(len(y)),np.flatnonzero(np.diff(y)>1.5)+1)
+
+
+def _smooth_profile(values,y,window):
+    result=values.copy()
+    for block in _profile_blocks(y):result[block]=_smooth(values[block],window)
+    return result
+
+
 def find_local_bowing(y: np.ndarray, left: np.ndarray, right: np.ndarray,
                      smooth_px: int = 7, minimum_angle_deg: float = 1.0) -> list[dict]:
     """Re-entrant intervals: positive outward displacement as depth increases.
@@ -308,57 +324,56 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     ridge_image = cv2.GaussianBlur(ridge_image.astype(np.float32), (3, 3), 0)
     threshold = float(options.threshold or (np.percentile(normalized, 5) +
                       .28 * (np.percentile(normalized, 90) - np.percentile(normalized, 5))))
-    # Link overlapping intervals on successive rows. An unrelated trench cannot
-    # silently bridge a missing row or replace one of the selected walls.
-    tracks: list[list[tuple[int, float, float]]] = []
-    active: list[int] = []
-    for row_index, row in enumerate(normalized):
-        candidates = _runs(row, threshold)
-        left_bands, right_bands = bands.get((row_index,'left'),[]), bands.get((row_index,'right'),[])
-        if left_bands or right_bands:
-            guided_left = guided_edges(ridge_image[row_index],left_bands,-1,x)[:1]
-            guided_right = guided_edges(ridge_image[row_index],right_bands,1,x)[:1]
-            if left_bands and right_bands:
-                candidates = [(l-x,r-x) for l in guided_left for r in guided_right if r-l>2]
-            elif left_bands:
-                candidates = [(l-x,r) for l in guided_left for old_l,r in candidates
-                              if r>l-x+2 and abs(old_l+x-l)<max(20,max(b-a for a,b in left_bands))]
-            else:
-                candidates = [(l,r-x) for r in guided_right for l,old_r in candidates
-                              if r-x>l+2 and abs(old_r+x-r)<max(20,max(b-a for a,b in right_bands))]
-        next_active: list[int] = []
-        used: set[int] = set()
-        for left, right in candidates:
-            choices = []
-            for track_id in active:
-                if track_id in used:
-                    continue
-                _, old_left, old_right = tracks[track_id][-1]
-                overlap = min(right, old_right) - max(left, old_left)
-                jump = abs((left + right - old_left - old_right) / 2)
-                if overlap > 0 and jump < max(4, width * .08):
-                    choices.append((jump, track_id))
-            if choices:
-                track_id = min(choices)[1]
-                tracks[track_id].append((row_index, left, right))
-                used.add(track_id)
-            else:
-                track_id = len(tracks)
-                tracks.append([(row_index, left, right)])
-            next_active.append(track_id)
-        active = next_active
-    candidates = [track for track in tracks if len(track) >= max(12, height * .2)]
-    if not candidates:
-        raise ValueError('가이드 인식 띠 안에서 연속된 양쪽 경계를 찾지 못했습니다. 선의 위치·폭과 좌우를 확인하세요.'
-                         if guides else "연속된 양쪽 측벽을 찾지 못했습니다. 한 Trench만 포함하도록 영역 또는 경계값을 조절하세요.")
-    def track_rank(track):
-        guided_count = sum(bool(bands.get((p[0],side))) for p in track for side in ('left','right'))
-        center = np.median([(p[1]+p[2])/2 for p in track])
-        return guided_count, len(track)*(1-.6*abs(center-width/2)/(width/2))
-    candidates.sort(key=track_rank, reverse=True)
-    track = np.asarray(candidates[0], dtype=float)
-    if guides and track_rank(candidates[0])[0]==0:
-        raise ValueError('그린 가이드 안에서 경계를 찾지 못했습니다. 가이드의 위치와 인식 폭을 확인하세요.')
+    traces=[]
+    if guides:
+        full_gray=to_gray(image)
+        full_ridge=(full_gray-low)*(255.0/(high-low))
+        if options.bright_trench:full_ridge=255-full_ridge
+        full_ridge=cv2.GaussianBlur(full_ridge.astype(np.float32),(3,3),0)
+        traces=[trace_guide(full_ridge,g,threshold) for g in guides]
+        if any(t['trace_coverage']<.3 or t['detected_points']<4 for t in traces):
+            raise ValueError('가이드 범위에서 이어지는 명암 경계를 찾지 못했습니다. 실제 윤곽을 포함하도록 위치·폭을 확인하세요.')
+        track=guided_cavity_profile([_runs(row,threshold) for row in normalized],ridge_image,
+                                    guides,bands,traces,(x,top,width,height),_rim_peak)
+        candidates=[track]
+    else:
+        # Link overlapping intervals on successive rows. An unrelated trench cannot
+        # silently bridge a missing row or replace one of the selected walls.
+        tracks: list[list[tuple[int, float, float]]] = []
+        active: list[int] = []
+        for row_index, row in enumerate(normalized):
+            candidates = _runs(row, threshold)
+            next_active: list[int] = []
+            used: set[int] = set()
+            for left, right in candidates:
+                choices = []
+                for track_id in active:
+                    if track_id in used:
+                        continue
+                    _, old_left, old_right = tracks[track_id][-1]
+                    overlap = min(right, old_right) - max(left, old_left)
+                    jump = abs((left + right - old_left - old_right) / 2)
+                    if overlap > 0 and jump < max(4, width * .08):
+                        choices.append((jump, track_id))
+                if choices:
+                    track_id = min(choices)[1]
+                    tracks[track_id].append((row_index, left, right))
+                    used.add(track_id)
+                else:
+                    track_id = len(tracks)
+                    tracks.append([(row_index, left, right)])
+                next_active.append(track_id)
+            active = next_active
+        candidates = [track for track in tracks if len(track) >= max(12, height * .2)]
+        if not candidates:
+            raise ValueError('가이드 인식 띠 안에서 연속된 양쪽 경계를 찾지 못했습니다. 선의 위치·폭과 좌우를 확인하세요.'
+                             if guides else "연속된 양쪽 측벽을 찾지 못했습니다. 한 Trench만 포함하도록 영역 또는 경계값을 조절하세요.")
+        def track_rank(track):
+            guided_count = sum(bool(bands.get((p[0],side))) for p in track for side in ('left','right'))
+            center = np.median([(p[1]+p[2])/2 for p in track])
+            return guided_count, len(track)*(1-.6*abs(center-width/2)/(width/2))
+        candidates.sort(key=track_rank, reverse=True)
+        track = np.asarray(candidates[0], dtype=float)
     # A rounded, shaded entrance can first appear as a tiny isolated dark tip.
     # Start the sidewall profile only when a usable full-width interval exists.
     widths = track[:, 2] - track[:, 1]
@@ -370,14 +385,14 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     if len(usable_start):
         track = track[int(usable_start[0]):]
     y = track[:, 0] + top
-    peak_left = np.array([l if bands.get((int(row),'left')) else _rim_peak(ridge_image[int(row)], l, -1) for row, l, r in track])
-    peak_right = np.array([r if bands.get((int(row),'right')) else _rim_peak(ridge_image[int(row)], r, 1) for row, l, r in track])
-    left = _smooth(peak_left + x, options.smooth_px)
-    right = _smooth(peak_right + x, options.smooth_px)
+    peak_left = np.array([l if guides else _rim_peak(ridge_image[int(row)], l, -1) for row, l, r in track])
+    peak_right = np.array([r if guides else _rim_peak(ridge_image[int(row)], r, 1) for row, l, r in track])
+    left = _smooth_profile(peak_left + x,y, options.smooth_px)
+    right = _smooth_profile(peak_right + x,y, options.smooth_px)
     for edge, raw, side in ((left,peak_left,'left'),(right,peak_right,'right')):
         for i, row in enumerate(track[:,0].astype(int)):
-            search = bands.get((row,side),[])
-            if search and not in_bands(edge[i],search):
+            search = bands.get((row,'contour'),[])
+            if search and in_bands(raw[i]+x,search) and not in_bands(edge[i],search):
                 edge[i] = raw[i]+x  # smoothing must not move outside a guide
     crossed = left>=right
     if crossed.any():
@@ -385,17 +400,20 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     if np.any(left>=right):
         raise ValueError('좌우 가이드 또는 경계가 교차합니다. 가이드의 좌우와 인식 폭을 확인하세요.')
     warnings: list[str] = []
+    if np.any(np.diff(y)>1.5):
+        warnings.append('윤곽에 미검출 구간이 있습니다. 해당 구간은 측정·CD 보간에서 제외하며 GFE 복사를 제한합니다.')
     diagnostics = []
     for index, guide in enumerate(guides):
         requested = [yy for yy,intervals in per_guide[index].items() if intervals]
-        edge = left if guide['side']=='left' else right
-        used = [[float(xx),float(yy)] for xx,yy in zip(edge,y)
+        used = [[float(xx),float(yy)] for yy,ll,rr in zip(y,left,right) for xx in (ll,rr)
                 if in_bands(xx,per_guide[index].get(int(yy),[]))]
-        coverage = len(used)/max(1,len(requested))
-        diagnostics.append(dict(index=index,side=guide['side'],requested_rows=len(requested),
-                                detected_rows=len(used),coverage=coverage,points=used))
-        if coverage<.8:
-            warnings.append(f"{'왼쪽' if guide['side']=='left' else '오른쪽'} 가이드 {index+1}: 경계 검출 {coverage:.0%}. 띠 안의 경계와 끊긴 구간을 확인하세요.")
+        detected_rows=len({p[1] for p in used})
+        coverage=detected_rows/max(1,len(requested))
+        diagnostics.append(dict(index=index,side='contour',requested_rows=len(requested),
+                                detected_rows=detected_rows,coverage=coverage,points=used,
+                                trace_coverage=traces[index]['trace_coverage'],trace_status=traces[index]['status']))
+        if coverage<.8 or traces[index]['status']!='valid':
+            warnings.append(f"윤곽 가이드 {index+1}: 범위 내 검출 {coverage:.0%}, 곡선 추적 {traces[index]['trace_coverage']:.0%}. 끊긴 구간을 확인하세요.")
     if len(candidates) > 1 and len(candidates[1]) >= len(track) * .6:
         warnings.append("긴 경계 후보가 여러 개입니다. 표시된 경계를 확인하거나 한 Trench로 영역을 좁히세요.")
     if y[0] - top > max(3, height * .03):
@@ -448,15 +466,23 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         warnings.append("일부 입구 R은 미확정입니다. 입구 곡률 탭에서 윤곽과 판정 이유를 확인하세요.")
     first_sample = math.ceil((y[0] - top) / options.step_px) * options.step_px
     sample_y = np.arange(first_sample, observed_depth + 1e-8, options.step_px) + top
+    if len(sample_y) and np.any(np.diff(y)>1.5):
+        high_index=np.clip(np.searchsorted(y,sample_y),1,len(y)-1)
+        missing=(y[high_index]-y[high_index-1]>1.5)&(sample_y>y[high_index-1]+1e-7)&(sample_y<y[high_index]-1e-7)
+        sample_y=sample_y[~missing]
     if not len(sample_y):
         warnings.append("CD 간격이 관찰 범위보다 큽니다. 간격을 줄여주세요.")
+    local=[]
+    for block in _profile_blocks(wall_y):
+        if len(block)>=3:
+            local.extend(find_local_bowing(wall_y[block],left[block],right[block],
+                                          max(7,options.smooth_px),options.negative_slope_deg))
     return TrenchResult(options, y, left, right, sample_y,
                         np.interp(sample_y, y, left), np.interp(sample_y, y, right),
                         left_ref, right_ref, depth, observed_depth,
                         max(0.0, float(left_bow[li])), max(0.0, float(right_bow[ri])),
                         float(y[li]), float(y[ri]), angles[0], angles[1], corners, threshold, warnings,
-                        find_local_bowing(wall_y, left[:last_wall + 1], right[:last_wall + 1],
-                                          max(7, options.smooth_px), options.negative_slope_deg), field_angles, diagnostics)
+                        local, field_angles, diagnostics, traces)
 
 
 def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float | None = None) -> None:
@@ -470,6 +496,9 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         writer.writerow(["metadata", "entrance_y_px", result.options.roi[1], "px"])
         writer.writerow(["metadata", "sidewall_end", 90, "% of detected profile"])
         writer.writerow(["metadata", "wall_guides", json.dumps(list(result.options.wall_guides),ensure_ascii=False), "px"])
+        writer.writerow(["metadata","guide_method","ordered_normal_contour_then_cavity_classification" if result.guide_traces else "automatic",""])
+        for index,trace in enumerate(result.guide_traces):
+            writer.writerow(["contour_trace",index+1,json.dumps(trace,ensure_ascii=False,allow_nan=False),"px"])
         for item in result.guide_diagnostics:
             writer.writerow(["guide",str(item['index']+1),json.dumps(item,ensure_ascii=False,allow_nan=False),"px"])
         for item in result.field_angles:
