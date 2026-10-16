@@ -29,6 +29,8 @@ def trace_guide(image, guide, threshold):
     valid=(xy[:,:,0]>=0)&(xy[:,:,0]<image.shape[1]-1)&(xy[:,:,1]>=0)&(xy[:,:,1]<image.shape[0]-1)
     profiles=cv2.remap(image.astype(np.float32,copy=False),xy[:,:,0].astype(np.float32),
                        xy[:,:,1].astype(np.float32),cv2.INTER_LINEAR,borderMode=cv2.BORDER_REPLICATE)
+    material=image[image>threshold+20]
+    material_level=float(np.percentile(material,75)) if len(material) else threshold+20
     candidates=[]
     ks=np.arange(6,len(offsets)-6)
     far=(ks>=15)&(ks+15<len(offsets))
@@ -48,7 +50,9 @@ def trace_guide(image, guide, threshold):
             supported=(invalid[ks+7]==invalid[ks-6])&(contrast>=8)
             a,b,c=profile[ks-1],profile[ks],profile[ks+1]
             prominence=b-np.maximum(before,after)
-            peaks=supported&(b>=np.maximum(a,c))&(b>np.minimum(a,c))&(prominence>=5)
+            # A broad material-layer plateau is not a resolved bright rim.
+            # Require a local crest before suppressing its gradient flanks.
+            peaks=supported&(b>=np.maximum(a,c))&(b-(a+c)/2>=.5)&(prominence>=5)
             ridge_indices=ks[peaks].tolist()
             for j in np.flatnonzero(peaks):
                 k=ks[j];denom=float(a[j]-2*b[j]+c[j])
@@ -61,10 +65,23 @@ def trace_guide(image, guide, threshold):
             steep&=(gradient>=np.abs(b-profile[ks-2])/2)&(gradient>=np.abs(profile[ks+2]-b)/2)
             for j in np.flatnonzero(steep):
                 k=ks[j]
-                found.append((offsets[k],float(.8*gradient[j]+.65*contrast[j]),'gradient',k))
+                before_g=abs(float(b[j]-profile[k-2]))/2
+                after_g=abs(float(profile[k+2]-b[j]))/2
+                denom=before_g-2*float(gradient[j])+after_g
+                shift=float(np.clip(.5*(before_g-after_g)/denom,-.5,.5)) if denom<-1e-6 else 0.
+                if abs(offsets[k]+shift)<=radius:
+                    found.append((offsets[k]+shift,float(.8*gradient[j]+.65*contrast[j]),'gradient',k))
         ranked=[]
-        ridges=[offsets[j] for j in ridge_indices]
         dark=np.flatnonzero((np.convolve(profile,np.ones(3)/3,'same')<=threshold+8)&valid[i])
+        barriers=ridge_indices[:]
+        # A bright rim must rise above the material background as well as
+        # the void. A finite bright layer plateau is otherwise mistaken for
+        # a crest halfway inside the solid. Other local peaks still block
+        # borrowing a cavity through an intervening real boundary.
+        resolved=[k for k in ridge_indices if profile[k]>=material_level+5]
+        ridge_indices=resolved
+        found=[candidate for candidate in found if candidate[2]!='ridge' or candidate[3] in resolved]
+        ridges=[offsets[j] for j in ridge_indices]
         for offset,strength,kind,k in sorted(found,key=lambda p:p[1],reverse=True):
             # Accept the first resolved boundary connected to nearby cavity
             # pixels. A farther/brighter material line behind another rim is
@@ -74,7 +91,7 @@ def trace_guide(image, guide, threshold):
             if len(before):nearest.append(int(before[-1]))
             if len(after):nearest.append(int(after[0]))
             connected=any(abs(seed-k)<=24 and profile[k]-profile[seed]>=12
-                          and not any(min(seed,k)<j<max(seed,k) for j in ridge_indices)
+                          and not any(min(seed,k)<j<max(seed,k) for j in barriers)
                           for seed in nearest)
             if not connected:continue
             # A resolved SEM rim measures at its bright crest, rather than
@@ -112,6 +129,21 @@ def trace_guide(image, guide, threshold):
             chosen[i]=(centers[i]+normals[i]*offset).tolist()
             if j:selected=int(parents[j][selected])
     segments=[]
+    spreads=[]
+    for i,point in sorted(chosen.items()):
+        profile=profiles[i];derivative=np.abs(np.gradient(profile))
+        offset=float(np.dot(np.asarray(point)-centers[i],normals[i]))
+        k=int(np.argmin(np.abs(offsets-offset)))
+        lo,hi=max(1,k-4),min(len(profile)-1,k+5)
+        k=lo+int(np.argmax(derivative[lo:hi]));half=derivative[k]/2
+        a=b=k
+        while a>0 and derivative[a]>=half:a-=1
+        while b<len(profile)-1 and derivative[b]>=half:b+=1
+        if half>1 and a>0 and b<len(profile)-1:
+            ac=a+(half-derivative[a])/max(1e-9,derivative[a+1]-derivative[a])
+            bc=b-(half-derivative[b])/max(1e-9,derivative[b-1]-derivative[b])
+            spreads.append(float((bc-ac)*1.088))
+        else:spreads.append(None)
     for i,point in sorted(chosen.items()):
         if not segments or i!=segments[-1][-1][0]+1:segments.append([])
         segments[-1].append((i,point))
@@ -120,7 +152,7 @@ def trace_guide(image, guide, threshold):
                 trace_coverage=coverage,status='valid' if coverage>=.95 else 'partial',
                 reason='곡선 방향의 연결된 명암 경계' if coverage>=.95 else '명암 근거가 없는 구간은 윤곽을 만들지 않았습니다.',
                 segments=[[point for _,point in segment] for segment in segments],
-                points=[point for _,point in sorted(chosen.items())])
+                points=[point for _,point in sorted(chosen.items())],edge_spreads_px=spreads)
 
 
 def contour_row_targets(traces):
@@ -135,6 +167,9 @@ def contour_row_targets(traces):
                     values=rows.setdefault(y,[])
                     if not any(abs(point[0]-old)<.5 for old in values):values.append(float(point[0]))
             for a,b in zip(segment,segment[1:]):
+                # Horizontal Field supports and floor tangents are not wall
+                # targets. They remain in the ordered trace for surface fits.
+                if abs(b[1]-a[1])<.25*max(1e-8,np.linalg.norm(np.subtract(b,a))):continue
                 if abs(b[1]-a[1])<1e-8:continue
                 for y in range(math.ceil(min(a[1],b[1])),math.floor(max(a[1],b[1]))+1):
                     xx=a[0]+(b[0]-a[0])*(y-a[1])/(b[1]-a[1])

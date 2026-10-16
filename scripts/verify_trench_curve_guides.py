@@ -48,7 +48,7 @@ def main():
     panel.guide_analyze.click()
     deadline=time.monotonic()+20
     while panel.worker and panel.worker.isRunning() and time.monotonic()<deadline:
-        app.processEvents();QTest.qWait(10)
+        app.processEvents();time.sleep(.01)
     panel.wait_for_worker();app.processEvents()
     assert panel.result is not None,panel.summary_label.text()
     assert panel.result.depth_px is not None and panel.result.depth_px>800,(panel.result.y[0],panel.result.y[-1],panel.result.warnings)
@@ -78,7 +78,7 @@ def main():
     panel.guide_analyze.click()
     deadline=time.monotonic()+20
     while panel.worker and panel.worker.isRunning() and time.monotonic()<deadline:
-        app.processEvents();QTest.qWait(10)
+        app.processEvents();time.sleep(.01)
     panel.wait_for_worker();app.processEvents()
     assert panel.result is not None,panel.summary_label.text()
     assert len(panel.guide_editor.guides)==1 and len(panel.guide_editor.guides[0]['points'])==len(points)

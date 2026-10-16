@@ -21,8 +21,8 @@ def normalize_guides(guides, image_shape=None):
             raise ValueError('가이드 좌표와 인식 폭(1~300 px)이 올바르지 않습니다.')
         if np.any(np.linalg.norm(np.diff(points,axis=0),axis=1)<.1):
             raise ValueError('같은 위치의 점을 연속해서 찍지 마세요.')
-        if np.ptp(points[:,1]) < 5:
-            raise ValueError('측벽 곡선은 위아래로 5 px 이상 이어지도록 점을 찍어주세요.')
+        if np.linalg.norm(np.ptp(points,axis=0)) < 5:
+            raise ValueError('윤곽 가이드는 5 px 이상 이어지도록 점을 찍어주세요. Field만 그리는 수평 가이드도 가능합니다.')
         if image_shape is not None:
             h, w = image_shape[:2]
             if any(not (0 <= p[0] <= w-1 and 0 <= p[1] <= h-1) for p in points):

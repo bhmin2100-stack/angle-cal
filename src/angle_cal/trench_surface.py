@@ -148,32 +148,39 @@ def measure_field_angles(image, roi, y, left, right, search_px=32, angle_span=(4
             continue
         item.update(status='valid',reason='실제 상단 윤곽의 직선 지지 구간으로 Field를 검출했습니다.',
                     length_px=float(np.ptp(xx[keep])*math.sqrt(1+m*m)),tilt_deg=math.degrees(math.atan(m)))
-        reference=m*float(edge[0])+c
-        mask=(y-reference>=angle_span[0])&(y-reference<=angle_span[1])
-        wy,wx=y[mask],edge[mask]
-        if len(wy)<16 or np.ptp(wy)<15:
-            item['angle_reason']='각도 측벽 구간이 부족합니다. 시작/끝 깊이를 조정하세요.'
-            continue
-        fit=_line(wy,wx)
-        if fit is None:
-            continue
-        wm,wc,wrms,wkeep=fit
-        item.update(wall_points=np.column_stack((wx[wkeep],wy[wkeep])).tolist(),wall_line=[wm,wc],wall_rms_px=wrms)
-        half=len(wy)//2
-        slopes=[np.polyfit(wy[:half],wx[:half],1)[0],np.polyfit(wy[half:],wx[half:],1)[0]]
-        change=abs(math.degrees(math.atan(slopes[0])-math.atan(slopes[1])))
-        if wkeep.sum()<16 or wkeep.sum()/len(wy)<.6 or wrms>1.5 or change>5:
-            item['angle_reason']='선택 측벽이 휘거나 구간별 기울기가 다릅니다. 직선 구간을 선택하세요.'
-            continue
-        if abs(1-m*wm)<1e-6:
-            item['angle_reason']='Field와 측벽 직선의 교점을 정할 수 없습니다.'
-            continue
-        vy=(m*wc+c)/(1-m*wm);vx=wm*vy+wc
-        if abs(vy-reference)>search_px or abs(vx-edge[0])>max(32,width*.3,np.ptp(wx)+16):
-            item['angle_reason']='측벽 연장선과 Field의 교점이 입구에서 너무 멉니다.'
-            continue
-        outward=np.array([-1.,-m]) if side=='left' else np.array([1.,m])
-        downward=np.array([wm,1.])
-        angle=math.degrees(math.acos(np.clip(np.dot(outward,downward)/(np.linalg.norm(outward)*np.linalg.norm(downward)),-1,1)))
-        item.update(angle_status='valid',angle_reason='검출 Field와 선택 측벽 직선 사이의 내각입니다.',angle_deg=angle,vertex=[vx,vy])
+        measure_wall_angle(item,y,edge,search_px,angle_span,width)
     return results
+
+
+def measure_wall_angle(item,y,edge,search_px,angle_span,width):
+    """Share the existing straight cliff validation for automatic/guided Fields."""
+    m,c=item["line"]
+    side=item["side"]
+    reference=m*float(edge[0])+c
+    mask=(y-reference>=angle_span[0])&(y-reference<=angle_span[1])
+    wy,wx=y[mask],edge[mask]
+    if len(wy)<16 or np.ptp(wy)<15:
+        item['angle_reason']='각도 측벽 구간이 부족합니다. 시작/끝 깊이를 조정하세요.'
+        return
+    fit=_line(wy,wx)
+    if fit is None:
+        return
+    wm,wc,wrms,wkeep=fit
+    item.update(wall_points=np.column_stack((wx[wkeep],wy[wkeep])).tolist(),wall_line=[wm,wc],wall_rms_px=wrms)
+    half=len(wy)//2
+    slopes=[np.polyfit(wy[:half],wx[:half],1)[0],np.polyfit(wy[half:],wx[half:],1)[0]]
+    change=abs(math.degrees(math.atan(slopes[0])-math.atan(slopes[1])))
+    if wkeep.sum()<16 or wkeep.sum()/len(wy)<.6 or wrms>1.5 or change>5:
+        item['angle_reason']='선택 측벽이 휘거나 구간별 기울기가 다릅니다. 직선 구간을 선택하세요.'
+        return
+    if abs(1-m*wm)<1e-6:
+        item['angle_reason']='Field와 측벽 직선의 교점을 정할 수 없습니다.'
+        return
+    vy=(m*wc+c)/(1-m*wm);vx=wm*vy+wc
+    if abs(vy-reference)>search_px or abs(vx-edge[0])>max(32,width*.3,np.ptp(wx)+16):
+        item['angle_reason']='측벽 연장선과 Field의 교점이 입구에서 너무 멉니다.'
+        return
+    outward=np.array([-1.,-m]) if side=='left' else np.array([1.,m])
+    downward=np.array([wm,1.])
+    angle=math.degrees(math.acos(np.clip(np.dot(outward,downward)/(np.linalg.norm(outward)*np.linalg.norm(downward)),-1,1)))
+    item.update(angle_status='valid',angle_reason='검출 Field와 선택 측벽 직선 사이의 내각입니다.',angle_deg=angle,vertex=[vx,vy])

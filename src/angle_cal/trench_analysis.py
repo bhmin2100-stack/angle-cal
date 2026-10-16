@@ -18,8 +18,9 @@ import numpy as np
 from .image_ops import to_gray
 from .trench_corner import measure_entrance_corner
 from .trench_surface import measure_field_angles, connect_entrance
-from .trench_guides import normalize_guides, prepare_guide_bands, in_bands
+from .trench_guides import normalize_guides, prepare_guide_bands, in_bands, sweep_samples
 from .trench_contour import trace_guide, guided_cavity_profile
+from .trench_guided_surface import measure_guided_surfaces
 
 
 @dataclass(frozen=True)
@@ -301,8 +302,9 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         raise ValueError("입구 검색 크기는 6~200 px여야 합니다.")
     guides = normalize_guides(options.wall_guides, image.shape)
     bands, per_guide = prepare_guide_bands(guides,top,height) if guides else ({},[])
-    for rows in per_guide:
-        if not any(hi>=x and lo<=x+width-1 for intervals in rows.values() for lo,hi in intervals):
+    for guide,rows in zip(guides,per_guide):
+        if not any(hi>=x and lo<=x+width-1 for intervals in rows.values() for lo,hi in intervals) and not (
+                np.min(np.abs(sweep_samples(guide)[:,1]-top))<=options.field_search_px):
             raise ValueError('가이드 인식 띠가 분석 영역과 겹치지 않습니다. 영역 또는 가이드를 옮겨주세요.')
     for values, length in ((options.corner_rois, 4), (options.corner_spans, 2)):
         if len(values) != 2 or any(value is not None and (len(value) != length or not np.isfinite(value).all()) for value in values):
@@ -324,19 +326,29 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     ridge_image = cv2.GaussianBlur(ridge_image.astype(np.float32), (3, 3), 0)
     threshold = float(options.threshold or (np.percentile(normalized, 5) +
                       .28 * (np.percentile(normalized, 90) - np.percentile(normalized, 5))))
-    traces=[]
+    traces=[];wall_indices=[];guided_walls=False
     if guides:
         full_gray=to_gray(image)
         full_ridge=(full_gray-low)*(255.0/(high-low))
         if options.bright_trench:full_ridge=255-full_ridge
         full_ridge=cv2.GaussianBlur(full_ridge.astype(np.float32),(3,3),0)
         traces=[trace_guide(full_ridge,g,threshold) for g in guides]
-        if any(t['trace_coverage']<.3 or t['detected_points']<4 for t in traces):
+        for i,g in enumerate(guides):
+            samples=sweep_samples(g);direction=np.gradient(samples,axis=0)
+            vertical=np.abs(direction[:,1])>=.75*np.abs(direction[:,0])
+            if np.ptp(samples[:,1])>=5 and np.any(vertical&(samples[:,1]>top+12)):
+                wall_indices.append(i)
+        if any(traces[i]['trace_coverage']<.3 or traces[i]['detected_points']<4 for i in wall_indices):
             raise ValueError('가이드 범위에서 이어지는 명암 경계를 찾지 못했습니다. 실제 윤곽을 포함하도록 위치·폭을 확인하세요.')
-        track=guided_cavity_profile([_runs(row,threshold) for row in normalized],ridge_image,
-                                    guides,bands,traces,(x,top,width,height),_rim_peak)
-        candidates=[track]
-    else:
+        if wall_indices:
+            wall_guides=tuple(guides[i] for i in wall_indices)
+            wall_bands,_=prepare_guide_bands(wall_guides,top,height)
+            track=guided_cavity_profile([_runs(row,threshold) for row in normalized],ridge_image,
+                                        wall_guides,wall_bands,[traces[i] for i in wall_indices],
+                                        (x,top,width,height),_rim_peak)
+            candidates=[track]
+            guided_walls=True
+    if not guides or not wall_indices:
         # Link overlapping intervals on successive rows. An unrelated trench cannot
         # silently bridge a missing row or replace one of the selected walls.
         tracks: list[list[tuple[int, float, float]]] = []
@@ -385,8 +397,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     if len(usable_start):
         track = track[int(usable_start[0]):]
     y = track[:, 0] + top
-    peak_left = np.array([l if guides else _rim_peak(ridge_image[int(row)], l, -1) for row, l, r in track])
-    peak_right = np.array([r if guides else _rim_peak(ridge_image[int(row)], r, 1) for row, l, r in track])
+    peak_left = np.array([l if guided_walls else _rim_peak(ridge_image[int(row)], l, -1) for row, l, r in track])
+    peak_right = np.array([r if guided_walls else _rim_peak(ridge_image[int(row)], r, 1) for row, l, r in track])
     left = _smooth_profile(peak_left + x,y, options.smooth_px)
     right = _smooth_profile(peak_right + x,y, options.smooth_px)
     for edge, raw, side in ((left,peak_left,'left'),(right,peak_right,'right')):
@@ -409,9 +421,11 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
                 if in_bands(xx,per_guide[index].get(int(yy),[]))]
         detected_rows=len({p[1] for p in used})
         coverage=detected_rows/max(1,len(requested))
+        role='wall_and_surface' if index in wall_indices else 'surface'
+        if role=='surface':coverage=traces[index]['trace_coverage'];used=traces[index]['points']
         diagnostics.append(dict(index=index,side='contour',requested_rows=len(requested),
                                 detected_rows=detected_rows,coverage=coverage,points=used,
-                                trace_coverage=traces[index]['trace_coverage'],trace_status=traces[index]['status']))
+                                role=role,trace_coverage=traces[index]['trace_coverage'],trace_status=traces[index]['status']))
         if coverage<.8 or traces[index]['status']!='valid':
             warnings.append(f"윤곽 가이드 {index+1}: 범위 내 검출 {coverage:.0%}, 곡선 추적 {traces[index]['trace_coverage']:.0%}. 끊긴 구간을 확인하세요.")
     if len(candidates) > 1 and len(candidates[1]) >= len(track) * .6:
@@ -455,11 +469,14 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     field_angles = measure_field_angles(image, options.roi, y, left, right,
                                        options.field_search_px, options.angle_span, options.bright_trench)
     angles = [item["angle_deg"] for item in field_angles]
-    if any(item["angle_status"] != "valid" for item in field_angles):
-        warnings.append("일부 Field 또는 각도가 미확정입니다. Field / 각도 탭에서 측정 구간과 이유를 확인하세요.")
     corners = [measure_entrance_corner(image, side, top, y, edge, options.corner_window_px,
                                       options.corner_rois[i], options.corner_spans[i], options.bright_trench)
                for i, (side, edge) in enumerate((("left", left), ("right", right)))]
+    if guides:
+        field_angles,corners=measure_guided_surfaces(guides,traces,options,y,left,right,field_angles,corners)
+        angles=[item['angle_deg'] for item in field_angles]
+    if any(item['angle_status']!='valid' for item in field_angles):
+        warnings.append("일부 Field 또는 각도가 미확정입니다. Field / 각도 탭에서 측정 구간과 이유를 확인하세요.")
     for item, corner in zip(field_angles, corners):
         connect_entrance(item, corner)
     if any(corner["status"] != "valid" for corner in corners):

@@ -324,9 +324,11 @@ def draw_field_angle(scene, item, factor=1., unit="px"):
             path.lineTo(QPointF(*point))
         drawn.append(scene.addPath(path, _pen(color, 2)))
         m, c = item["line"]
-        drawn.append(scene.addLine(points[0,0], m*points[0,0]+c, points[-1,0], m*points[-1,0]+c, _pen(color, 1, True)))
+        support=np.asarray(item.get('tangent_points') or points.tolist()) if item.get('curved') else points
+        drawn.append(scene.addLine(support[0,0], m*support[0,0]+c, support[-1,0], m*support[-1,0]+c, _pen(color, 1, True)))
         prefix="Field" if item["status"]=="valid" else "Field 후보"
-        text = scene.addSimpleText(f"{prefix} RMS {item['rms_px'] * factor:.3g} {unit}")
+        basis=' · 입구 접선' if item.get('curved') else ''
+        text = scene.addSimpleText(f"{prefix}{basis} RMS {item['rms_px'] * factor:.3g} {unit}")
         text.setBrush(QColor(color))
         text.setPos(points[0,0], points[:,1].min()-24)
         text.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
@@ -339,7 +341,8 @@ def draw_field_angle(scene, item, factor=1., unit="px"):
         if connection.get('status')=='valid':
             ft=connection['field_tangent'];wt=connection['wall_tangent']
             field_start=points[0] if item['side']=='left' else points[-1]
-            drawn.append(scene.addLine(*field_start,*ft,_pen('#63ef90',2)))
+            if not item.get('curved'):
+                drawn.append(scene.addLine(*field_start,*ft,_pen('#63ef90',2)))
             path=QPainterPath(QPointF(*ft))
             for p in connection['arc_points'][1:]:path.lineTo(QPointF(*p))
             drawn.append(scene.addPath(path,_pen('#df91ff',3)))
@@ -348,7 +351,8 @@ def draw_field_angle(scene, item, factor=1., unit="px"):
             center=connection['center'];mid=connection['arc_points'][len(connection['arc_points'])//2]
             drawn.append(scene.addLine(*center,*mid,_pen('#df91ff',1,True)))
             drawn.append(scene.addEllipse(center[0]-1.5,center[1]-1.5,3,3,_pen('#df91ff')))
-            label=scene.addSimpleText(f"R {connection['radius_px']*factor:.3g} {unit} · {item['angle_deg']:.2f}°")
+            basis='접선 ' if item.get('curved') else ''
+            label=scene.addSimpleText(f"R {connection['radius_px']*factor:.3g} {unit} · {basis}{item['angle_deg']:.2f}°")
             label.setBrush(QColor('#df91ff'));label.setPos(mid[0]+8,mid[1]-22)
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,True)
             drawn.append(label)
@@ -405,6 +409,11 @@ class SurfaceEditor(QWidget):
             self.label.setText("분석 후 검출 Field와 각도 구간을 확인하세요.");return
         field = "Field 미확정" if item['status']!='valid' else f"Field 지지 길이 {item['length_px']*factor:.4g} {unit} · 기울기 {item['tilt_deg']:.2f}° · RMS {item['rms_px']*factor:.3g} {unit}"
         angle = "각도 미확정" if item['angle_deg'] is None else f"입구 내각 {item['angle_deg']:.2f}° · 측벽 RMS {item['wall_rms_px']*factor:.3g} {unit}"
+        if item.get('curved'):
+            reference=item.get('straight_angle_deg')
+            angle=(f"입구 접선 내각 {item['angle_deg']:.2f}°" if item['angle_deg'] is not None else '입구 접선 각도 미확정')
+            angle+=' · 전체 직선 맞춤 참고 '+(f'{reference:.2f}°' if reference is not None else '미확정')
+            field=field.replace('기울기','입구 접선 기울기')
         connection=item.get('connection',{})
         rounding=(f"접선 R {connection['radius_px']*factor:.4g} {unit} · 원호 RMS {connection['rms_px']*factor:.3g} {unit}"
                   if connection.get('status')=='valid' else '입구 연결 원호 미확정')
@@ -610,7 +619,7 @@ class TrenchPanel(QWidget):
         guide_actions.addWidget(self.guide_analyze)
         guide_actions.addStretch()
         guide_layout.addLayout(guide_actions)
-        self.guide_hint=QLabel('점을 클릭해 곡선 추가 · 마지막 더블클릭으로 완료 · 점 드래그로 보정 · 휠=인식 폭 · Ctrl+휠=확대 · Esc=취소')
+        self.guide_hint=QLabel('Field → 입구 → 측벽까지 연결하거나 필요한 부분만 그리세요 · 마지막 더블클릭 완료 · 점 드래그 보정 · 휠=폭 · Ctrl+휠=확대 · Esc=취소')
         self.guide_hint.setWordWrap(True);guide_layout.addWidget(self.guide_hint)
         root.insertWidget(1,self.guide_bar)
         self.guide_bar.setEnabled(False)
@@ -733,7 +742,7 @@ class TrenchPanel(QWidget):
         self.corner_spin.setToolTip("자동 입구 검색의 기준 크기입니다. 각도·CD·Bowing 계산에는 영향을 주지 않습니다.")
         form.addRow("입구 검색 크기 px", self.corner_spin)
         self.field_spin=QSpinBox();self.field_spin.setRange(4,300);self.field_spin.setValue(32)
-        self.field_spin.setToolTip("ROI 입구 높이 위아래에서 실제 Field를 찾는 범위입니다. 곡률 검색과 별개입니다.")
+        self.field_spin.setToolTip("ROI 입구 높이 위아래에서 실제 Field를 찾는 범위입니다. Field까지 가이드를 그리면 같은 추적 윤곽에서 측정합니다. 곡률 검색과 별개입니다.")
         form.addRow("Field 검색 ±px",self.field_spin)
         self.angle_start=QSpinBox();self.angle_start.setRange(0,10000);self.angle_start.setValue(40)
         self.angle_end=QSpinBox();self.angle_end.setRange(1,10000);self.angle_end.setValue(100)
@@ -841,7 +850,7 @@ class TrenchPanel(QWidget):
     def _guides_changed(self):
         self._guide_selection_changed()
         self._settings_changed()
-        self.guide_hint.setText(f'윤곽 가이드 {len(self.guide_editor.guides)}개 · 좌우 지정 없이 곡선을 따라 연결 윤곽 추적 · 경계 인식을 눌러 적용하세요.')
+        self.guide_hint.setText(f'윤곽 가이드 {len(self.guide_editor.guides)}개 · Field → 입구 → 측벽까지 같은 윤곽 추적 · Field만 또는 측벽만 그려도 됩니다 · 경계 인식을 눌러 적용하세요.')
 
     def set_image(self, image, path: str, nm_per_px=None, state=None) -> None:
         key = (id(image), path)
