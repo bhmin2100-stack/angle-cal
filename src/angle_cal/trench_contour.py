@@ -127,6 +127,13 @@ def contour_row_targets(traces):
     rows={}
     for trace in traces:
         for segment in trace['segments']:
+            # A subpixel displacement at an open trace endpoint must not
+            # create a false missing integer row (e.g. y=30.005 vs row 30).
+            for point in (segment[:1]+segment[-1:]):
+                y=round(point[1])
+                if abs(point[1]-y)<=.25:
+                    values=rows.setdefault(y,[])
+                    if not any(abs(point[0]-old)<.5 for old in values):values.append(float(point[0]))
             for a,b in zip(segment,segment[1:]):
                 if abs(b[1]-a[1])<1e-8:continue
                 for y in range(math.ceil(min(a[1],b[1])),math.floor(max(a[1],b[1]))+1):
@@ -143,6 +150,26 @@ def guided_cavity_profile(seed_rows, ridge_image, guides, bands, traces, roi, ri
     independently selected left and right edge. Guide side labels are ignored.
     """
     x,top,width,height=roi
+    # Classify the outer boundary of the same 2-D cavity, including rows where
+    # a bright inclusion divides its dark space into several intervals. Omit
+    # ROI-border air intervals before labeling so neighboring trenches cannot
+    # merge through the open space above their entrances.
+    mask=np.zeros((height,width),np.uint8)
+    for row,seeds in enumerate(seed_rows):
+        for left,right in seeds:mask[row,math.ceil(left):math.floor(right)+1]=1
+    _,labels=cv2.connectedComponents(mask,connectivity=8)
+    connected_rows=[]
+    for row,seeds in enumerate(seed_rows):
+        regions={}
+        for left,right in seeds:
+            label=int(labels[row,int((left+right)/2)])
+            if not label:continue
+            if label not in regions:regions[label]=[left,right]
+            else:
+                regions[label][0]=min(regions[label][0],left)
+                regions[label][1]=max(regions[label][1],right)
+        connected_rows.append(list(regions.values()))
+    seed_rows=connected_rows
     targets=contour_row_targets(traces)
     spans=[(float(sweep_samples(g)[:,1].min()),float(sweep_samples(g)[:,1].max())) for g in guides]
     nodes=[];active=[]

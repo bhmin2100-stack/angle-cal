@@ -93,6 +93,21 @@ def test_narrow_corridor_on_material_line_cannot_borrow_cavity_across_another_ri
         analyze_trench(rim_image(),TrenchOptions((40,20,160,215),wall_guides=(g,)))
 
 
+@pytest.mark.parametrize('one_curve',[False,True])
+def test_bright_inclusion_does_not_split_the_outer_trench_contour(one_curve):
+    image=trench_image()
+    image[90:135,96:105]=205
+    if one_curve:
+        guides=(guide([[69,30],[69,205],[74,220],[124,220],[130,205],[130,30]],12),)
+    else:
+        guides=(guide([[69,30],[69,210]],12),guide([[130,30],[130,210]],12))
+    result=analyze_trench(image,TrenchOptions((30,20,140,225),wall_guides=guides))
+    middle=(result.y>70)&(result.y<160)
+    assert np.median(result.right[middle]-result.left[middle])==pytest.approx(60,abs=1)
+    assert result.depth_px==pytest.approx(201,abs=2)
+    assert not np.any(np.diff(result.y)>1.5)
+
+
 def test_missing_evidence_is_reported_without_guide_coordinate_substitution():
     image=trench_image().astype(np.float32)
     image[112:114]=205  # erased image evidence, not a known wall
