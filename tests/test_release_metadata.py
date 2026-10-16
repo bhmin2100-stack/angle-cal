@@ -50,7 +50,7 @@ def test_release_manifest_uses_same_identity_and_real_binary_hash(tmp_path):
     assert manifest['sha256']==hashlib.sha256(exe.read_bytes()).hexdigest()
     assert manifest['size']==len(exe.read_bytes())
     assert manifest['build_id']==metadata['build_id']
-    with patch.object(updater,'BUILD_ID','older-build'):
+    with patch.object(updater,'BUILD_ID','older-build'),patch.object(updater,'current_version',return_value=metadata['app_version']):
         info=updater._update_info_from_release(updater.PERSONAL_CHANNEL,{},manifest,None)
     assert info.is_available
     assert info.latest_label==f"{metadata['app_version']} ({metadata['build_id']})"

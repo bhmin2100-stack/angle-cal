@@ -189,3 +189,28 @@ def test_project_roundtrip_and_rotation_clear_curve_guides(app,tmp_path,monkeypa
     assert w.trench_state['wall_guides']==[]
     assert not p.guide_editor.guides
     w.close()
+
+
+def test_ribbon_starts_each_wall_curve_from_other_analysis_tab(app, tmp_path):
+    import cv2
+    from PySide6.QtWidgets import QPushButton
+    from angle_cal.app import MainWindow
+    image_path=tmp_path/'sample.png'
+    cv2.imencode('.png',trench_image())[1].tofile(str(image_path))
+    w=MainWindow();w.resize(1280,850);w.show()
+    w.addon_actions['trench_analyzer'].setChecked(True);app.processEvents()
+    panel=w.trench_panel
+    left=w.findChild(QPushButton,'trench_left_curve_guide')
+    right=w.findChild(QPushButton,'trench_right_curve_guide')
+    assert left.isVisible() and right.isVisible()
+    left.click()
+    assert not panel.guide_editor.drawing
+    w._load_image_path(str(image_path));app.processEvents()
+    for side,button in [('left',left),('right',right)]:
+        panel.image_tabs.setCurrentIndex(2)
+        button.click();app.processEvents()
+        assert panel.image_tabs.currentIndex()==0
+        assert panel.guide_editor.drawing and panel.guide_editor.side==side
+        QTest.keyClick(panel.view,Qt.Key.Key_Escape)
+        assert not panel.guide_editor.drawing
+    w.close()

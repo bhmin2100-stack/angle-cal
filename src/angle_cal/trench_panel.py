@@ -819,6 +819,16 @@ class TrenchPanel(QWidget):
     def _guide_mode_changed(self, enabled):
         self.guide_button.blockSignals(True);self.guide_button.setChecked(enabled);self.guide_button.blockSignals(False)
 
+    def start_wall_guide(self, side):
+        """Open the same curve editor from the Trench ribbon."""
+        if self.image is None:
+            self.hint.setText('먼저 Trench 이미지를 불러오세요.')
+            return
+        self.guide_side.setCurrentIndex(0 if side == 'left' else 1)
+        self.guide_button.setChecked(True)
+        self.image_tabs.setCurrentIndex(0)
+        self.view.setFocus()
+
     def _guide_selection_changed(self):
         editor=self.guide_editor
         self.guide_selection.blockSignals(True)

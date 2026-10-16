@@ -3864,6 +3864,15 @@ class MainWindow(QMainWindow):
                 self.trench_panel = TrenchPanel(self)
                 self.trench_panel.state_changed.connect(self._trench_state_changed)
                 self.workspace_stack.addWidget(self.trench_panel)
+            guide_box = QGroupBox("곡선 가이드 · 점 클릭 → 마지막 더블클릭")
+            guide_layout = QHBoxLayout(guide_box)
+            for side, label in (("left", "왼쪽 곡선 가이드"), ("right", "오른쪽 곡선 가이드")):
+                button = QPushButton(label)
+                button.setObjectName(f"trench_{side}_curve_guide")
+                button.setToolTip("벽을 따라 점을 클릭하고 마지막 점에서 더블클릭하세요. 휠로 인식 폭을 조절합니다.")
+                button.clicked.connect(lambda _checked=False, side=side: self.trench_panel.start_wall_guide(side))
+                guide_layout.addWidget(button)
+            layout.addWidget(guide_box)
         else:
             title = next(item.title for item in ADDON_DEFINITIONS if item.addon_id == addon_id)
             layout.addWidget(QLabel(f"{title} 기능은 준비 중입니다."))
@@ -7705,6 +7714,7 @@ class MainWindow(QMainWindow):
         if self.trench_panel is not None and self.workspace_stack.currentWidget() is self.trench_panel:
             if tool in ("select", "pan"):
                 self.trench_panel.roi_button.setChecked(False)
+                self.trench_panel.guide_button.setChecked(False)
                 return
             self.ribbon_tabs.setCurrentIndex(0)
         self.current_tool = tool

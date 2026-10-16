@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: windows-latest-release
+  cancel-in-progress: true
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -20,6 +24,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
       - name: Build executable
         run: python -m PyInstaller --noconfirm --clean AngleCal.spec
       - name: Write version manifest
@@ -32,12 +40,50 @@ jobs:
           Copy-Item src -Destination runner -Recurse
           Copy-Item build\_build_info.json -Destination runner\src\angle_cal\_build_info.json
           Compress-Archive -Path runner\* -DestinationPath dist\AngleCal-bat.zip -Force
+      - name: Verify packaged build identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $infoPath = Join-Path $env:RUNNER_TEMP 'anglecal-packaged.json'
+          $process = Start-Process -FilePath "$PWD/dist/AngleCal.exe" -ArgumentList @('--build-info-json', $infoPath) -PassThru -WindowStyle Hidden
+          if (-not $process.WaitForExit(30000)) { throw 'Packaged EXE smoke test timed out' }
+          if ($process.ExitCode -ne 0) { throw 'Packaged EXE failed to launch' }
+          $info = Get-Content $infoPath -Raw | ConvertFrom-Json
+          $manifest = Get-Content dist/version.json -Raw | ConvertFrom-Json
+          if ($info.build_commit -ne $env:GITHUB_SHA -or $manifest.commit -ne $env:GITHUB_SHA) { throw 'Wrong packaged commit' }
+          if ($info.build_id -ne $manifest.build_id -or $info.app_version -ne $manifest.version) { throw 'Wrong packaged identity' }
+          if ((Get-FileHash dist/AngleCal.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.sha256) { throw 'Wrong packaged hash' }
+      - name: Synchronize release source tag
+        id: release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git fetch origin main
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch main' }
+          if ((git rev-parse origin/main).Trim() -ne $env:GITHUB_SHA) { throw 'Refusing to publish an outdated or non-main build' }
+          $previous = git ls-remote origin refs/tags/windows-latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read release tag' }
+          $previousSha = if ($previous) { ($previous -split '\s+')[0] } else { '' }
+          git tag --force windows-latest $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Could not prepare release tag' }
+          git push origin refs/tags/windows-latest "--force-with-lease=refs/tags/windows-latest:$previousSha"
+          if ($LASTEXITCODE -ne 0) { throw 'Release tag changed concurrently; publication stopped' }
+          $metadata = Get-Content build/_build_info.json -Raw | ConvertFrom-Json
+          "version=$($metadata.app_version)" >> $env:GITHUB_OUTPUT
+          "build_id=$($metadata.build_id)" >> $env:GITHUB_OUTPUT
       - name: Publish executable release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: windows-latest
-          name: AngleCal Windows Latest
-          body: Download `AngleCal.exe` for one-file use, or `AngleCal-bat.zip` if you prefer the batch launcher. The batch launcher requires Python 3.9 or newer on Windows.
+          name: AngleCal v${{ steps.release.outputs.version }} · build ${{ steps.release.outputs.build_id }}
+          body: |
+            버전 **${{ steps.release.outputs.version }}** · 빌드 **${{ steps.release.outputs.build_id }}**
+            소스 커밋: `${{ github.sha }}` (아래 Source code도 동일한 커밋)
+
+            - Windows 실행: **AngleCal.exe**를 다운로드하세요. Python 설치가 필요 없습니다.
+            - 배치 실행: **AngleCal-bat.zip**을 내려받아 압축을 풀고 AngleCal.bat를 실행하세요. Python 3.9 이상이 필요합니다.
+            - 곡선 가이드: **파일 → 애드온 → Trench 자동분석기**를 연 뒤 상단 **왼쪽 곡선 가이드 / 오른쪽 곡선 가이드**를 누르세요. 점 클릭으로 그리고 마지막에 더블클릭합니다. 휠로 인식 폭을 조절한 뒤 **경계 인식**을 누릅니다.
+            - 창 제목의 버전·빌드 번호가 이 릴리스와 같은지 확인하세요.
           files: |
             dist/AngleCal.exe
             dist/AngleCal-bat.zip
