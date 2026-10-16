@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import math
+from functools import lru_cache
+import cv2
 import numpy as np
 
 
@@ -35,7 +37,12 @@ def curve_samples(guide):
     Chord-derived timing prevents very unevenly spaced clicks from producing
     the large loops of a uniform cubic. Shared derivatives make joins C1.
     """
-    p = np.asarray(guide['points'],float)
+    return _curve_samples(tuple(tuple(map(float,p)) for p in guide['points']))
+
+
+@lru_cache(maxsize=16)
+def _curve_samples(points):
+    p = np.asarray(points,float)
     distance = np.linalg.norm(np.diff(p,axis=0),axis=1)
     duration = np.sqrt(np.maximum(distance,1e-6))
     velocity = np.diff(p,axis=0)/duration[:,None]
@@ -49,44 +56,105 @@ def curve_samples(guide):
         t=np.linspace(0,1,count,endpoint=False)[:,None]
         samples.append((2*t**3-3*t**2+1)*p[i]+(t**3-2*t**2+t)*duration[i]*tangent[i]
                        +(-2*t**3+3*t**2)*p[i+1]+(t**3-t**2)*duration[i]*tangent[i+1])
-    return np.vstack([*samples,p[-1:]])
+    result=np.vstack([*samples,p[-1:]])
+    result.setflags(write=False)
+    return result
 
 
-def guide_polygon(guide):
-    points=curve_samples(guide)
-    delta=np.gradient(points,axis=0)
-    normal=np.column_stack((-delta[:,1],delta[:,0]))/np.maximum(np.linalg.norm(delta,axis=1)[:,None],1e-8)
-    offset=normal*guide['half_width_px']
-    # Sidewall guides end at a depth, not at an oblique half-window. Horizontal
-    # end caps keep the full search width at the last clicked depth; beyond
-    # that depth automatic tracking resumes without an artificial missing row.
-    for i in (0,-1):
-        if abs(delta[i,1])>.1*np.linalg.norm(delta[i]):
-            offset[i]-=delta[i]*(offset[i,1]/delta[i,1])
-    polygon=np.vstack((points+offset,(points-offset)[::-1]))
-    polygon[:,1]=np.clip(polygon[:,1],points[:,1].min(),points[:,1].max())
-    return polygon
+def sweep_samples(guide):
+    """Shared centerline for display and search, within .02 px of dense samples."""
+    return _sweep_samples(tuple(tuple(map(float,p)) for p in guide['points']))
 
 
-def polygon_intervals(polygon,y):
-    a,b=polygon,np.roll(polygon,-1,axis=0)
-    # Half-open crossing avoids counting a vertex twice.
-    keep=(np.minimum(a[:,1],b[:,1])<=y)&(y<np.maximum(a[:,1],b[:,1]))
-    aa,bb=a[keep],b[keep]
-    xs=np.sort(aa[:,0]+(bb[:,0]-aa[:,0])*(y-aa[:,1])/(bb[:,1]-aa[:,1]))
-    return [(float(lo),float(hi)) for lo,hi in zip(xs[::2],xs[1::2]) if hi-lo>1e-6]
+@lru_cache(maxsize=16)
+def _sweep_samples(points):
+    dense=_curve_samples(points)
+    # Remove nearly collinear vertices before the stroke union. Without this,
+    # thousands of tiny joins make wheel/drag previews needlessly expensive.
+    # Simplify each clicked span separately so every user knot stays exact.
+    result=[]
+    start=0
+    for a,b in zip(points,points[1:]):
+        count=max(3,min(4000,int(math.ceil(np.linalg.norm(np.subtract(b,a))*1.5))))
+        span=dense[start:start+count+1]
+        origin=span[0]
+        reduced=cv2.approxPolyDP((span-origin).astype(np.float32),.02,False).reshape(-1,2).astype(float)+origin
+        reduced[0],reduced[-1]=span[0],span[-1]
+        result.extend(reduced[:-1])
+        start+=count
+    samples=np.vstack([*result,dense[-1]])
+    samples.setflags(write=False)
+    return samples
+
+
+@lru_cache(maxsize=16)
+def _sweep_geometry(points, radius):
+    """A disk swept along each sampled segment is a capsule, even at turns.
+
+    The union of endpoint disks and segment rectangles has no inward-offset
+    folds, parity holes, or depth clipping. Rendering uses the same centerline
+    with a round stroke of diameter 2*radius, in original image coordinates.
+    """
+    samples=_sweep_samples(points)
+    a,b=samples[:-1],samples[1:]
+    delta=b-a
+    lengths=np.linalg.norm(delta,axis=1)
+    valid=lengths>1e-10
+    a,b,delta,lengths=a[valid],b[valid],delta[valid],lengths[valid]
+    normal=np.column_stack((-delta[:,1],delta[:,0]))*(radius/lengths)[:,None]
+    quads=np.stack((a+normal,b+normal,b-normal,a-normal),axis=1)
+    return samples,quads,np.roll(quads,-1,axis=1)
+
+
+def _merge_intervals(intervals):
+    merged=[]
+    for lo,hi in sorted(intervals):
+        if hi-lo<=1e-7:
+            continue  # a tangent point alone cannot contain image evidence
+        if merged and lo<=merged[-1][1]+1e-7:
+            merged[-1]=(merged[-1][0],max(hi,merged[-1][1]))
+        else:
+            merged.append((float(lo),float(hi)))
+    return merged
+
+
+def guide_intervals(guide,y):
+    """Exact row intersection of the disk sweep along the sampled curve."""
+    radius=float(guide['half_width_px'])
+    points=tuple(tuple(map(float,p)) for p in guide['points'])
+    samples,a,b=_sweep_geometry(points,radius)
+    if y<samples[:,1].min()-radius or y>samples[:,1].max()+radius:
+        return []
+    dy=y-samples[:,1]
+    selected=np.abs(dy)<=radius
+    half=np.sqrt(np.maximum(0,radius*radius-dy[selected]**2))
+    xx=samples[selected,0]
+    intervals=list(zip(xx-half,xx+half))
+    # Each connecting rectangle is convex, so its valid edge crossings bound
+    # one interval. Closed crossings also retain horizontal boundary edges.
+    delta=b-a
+    nonhorizontal=np.abs(delta[:,:,1])>1e-10
+    keep=nonhorizontal & (np.minimum(a[:,:,1],b[:,:,1])<=y) & (y<=np.maximum(a[:,:,1],b[:,:,1]))
+    ratio=np.divide(y-a[:,:,1],delta[:,:,1],out=np.zeros_like(a[:,:,1]),where=nonhorizontal)
+    crossings=a[:,:,0]+ratio*delta[:,:,0]
+    low=np.min(np.where(keep,crossings,np.inf),axis=1)
+    high=np.max(np.where(keep,crossings,-np.inf),axis=1)
+    horizontal=(~nonhorizontal)&(np.abs(y-a[:,:,1])<1e-10)
+    low=np.minimum(low,np.min(np.where(horizontal,np.minimum(a[:,:,0],b[:,:,0]),np.inf),axis=1))
+    high=np.maximum(high,np.max(np.where(horizontal,np.maximum(a[:,:,0],b[:,:,0]),-np.inf),axis=1))
+    intervals.extend(zip(low[low<=high],high[low<=high]))
+    return _merge_intervals(intervals)
 
 
 def prepare_guide_bands(guides, top, height):
-    polygons=[guide_polygon(g) for g in guides]
-    per_guide=[{yy:polygon_intervals(polygon,yy) for yy in range(top,top+height)} for polygon in polygons]
-    bands={(yy-top,side):[b for g,rows in zip(guides,per_guide) if g['side']==side for b in rows[yy]]
+    per_guide=[{yy:guide_intervals(g,yy) for yy in range(top,top+height)} for g in guides]
+    bands={(yy-top,side):_merge_intervals([b for g,rows in zip(guides,per_guide) if g['side']==side for b in rows[yy]])
            for yy in range(top,top+height) for side in ('left','right')}
     return bands,per_guide
 
 
 def row_bands(guides, y, side):
-    return [interval for g in guides if g['side']==side for interval in polygon_intervals(guide_polygon(g),y)]
+    return _merge_intervals([interval for g in guides if g['side']==side for interval in guide_intervals(g,y)])
 
 
 def in_bands(x, bands):

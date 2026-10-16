@@ -8,7 +8,8 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from angle_cal.trench_analysis import TrenchOptions, analyze_trench, export_trench_csv
-from angle_cal.trench_guides import normalize_guides, curve_samples, row_bands, in_bands, guided_edges
+from angle_cal.trench_guides import normalize_guides, curve_samples, sweep_samples, row_bands, in_bands, guided_edges, prepare_guide_bands
+from angle_cal.trench_guide_view import guide_sweep_path
 from angle_cal.trench_panel import TrenchPanel
 from test_trench_analysis import trench_image, finish_analysis
 
@@ -35,6 +36,56 @@ def test_curve_passes_all_clicked_points_and_is_smooth():
             assert np.dot(before,after)/np.linalg.norm(before)/np.linalg.norm(after)>.99
     assert np.isfinite(samples).all()
     assert len(samples)>200
+
+
+def distance_to_sampled_curve(points, samples):
+    a,b=samples[:-1],samples[1:]
+    delta=b-a
+    along=np.clip(np.sum((points[:,None]-a)*delta,axis=2)/np.maximum(np.sum(delta*delta,axis=1),1e-20),0,1)
+    return np.min(np.linalg.norm(points[:,None]-(a+along[:,:,None]*delta),axis=2),axis=1)
+
+
+@pytest.mark.parametrize('points',[
+    [[50,20],[50,100]],
+    [[20,20],[100,100]],
+    [[50,20],[25,50],[75,52],[50,100]],  # tight S bend
+    [[40,20],[40,80],[47,85],[47,25]],  # overlapping return/hairpin
+])
+@pytest.mark.parametrize('radius',[1,5,24,75,300])
+def test_sweep_search_and_display_equal_distance_to_curve(points,radius):
+    guide=curve('left',points,radius)
+    samples=sweep_samples(guide)
+    rng=np.random.default_rng(317)
+    probes=rng.uniform(samples.min(0)-radius-2,samples.max(0)+radius+2,(350,2))
+    distances=distance_to_sampled_curve(probes,samples)
+    displayed=guide_sweep_path(guide)
+    for point,distance in zip(probes,distances):
+        # Qt approximates round arcs when flattening the union's outline.
+        # Exclude only that subpixel boundary tolerance from the UI assertion.
+        assert in_bands(point[0],row_bands((guide,),point[1],'left'))==(distance<=radius)
+        if abs(distance-radius)>.25:
+            assert displayed.contains(QPointF(*point))==(distance<radius)
+
+
+def test_sweep_centerline_preserves_knots_and_subpixel_curve_shape():
+    guide=curve('left',[[100,30],[70,300],[100,700],[80,1200]],15)
+    samples=sweep_samples(guide)
+    for point in guide['points']:
+        assert np.min(np.linalg.norm(samples-point,axis=1))<1e-10
+    assert np.max(distance_to_sampled_curve(curve_samples(guide),samples))<.021
+
+
+def test_sweep_round_caps_and_merged_overlaps_have_no_clipped_or_cancelled_band():
+    guide=curve('left',[[50,20],[50,100]],10)
+    assert row_bands((guide,),14,'left')==pytest.approx([(42,58)])
+    assert row_bands((guide,),106,'left')==pytest.approx([(42,58)])
+    assert row_bands((guide,),60,'left')==pytest.approx([(40,60)])
+    assert not row_bands((guide,),111,'left')
+    neighbor=curve('left',[[55,20],[55,100]],10)
+    bands,per_guide=prepare_guide_bands((guide,neighbor),0,120)
+    assert bands[60,'left']==[(40,65)]
+    assert per_guide[0][60]==[(40,60)]
+    assert per_guide[1][60]==[(45,65)]
 
 
 @pytest.mark.parametrize('bright,dtype',[(False,np.uint8),(True,np.uint8),(False,np.uint16)])

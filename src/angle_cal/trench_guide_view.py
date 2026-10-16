@@ -2,11 +2,38 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import lru_cache
 import numpy as np
 from PySide6.QtCore import QObject, QEvent, QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainterPath, QPainterPathStroker, QPen, QTransform
 from shiboken6 import isValid
-from .trench_guides import normalize_guides, guide_polygon, curve_samples
+from .trench_guides import normalize_guides, curve_samples, sweep_samples
+
+
+def guide_sweep_path(guide):
+    """Union of equal-radius disks moving along the sampled curve.
+
+    One winding-filled, simplified stroke removes interior overlap edges;
+    overlapping disks are painted once instead of accumulating opacity.
+    """
+    points=tuple(tuple(map(float,p)) for p in guide['points'])
+    return QPainterPath(_sweep_path(points,float(guide['half_width_px'])))
+
+
+@lru_cache(maxsize=16)
+def _sweep_path(points,radius):
+    samples=sweep_samples(dict(points=points))
+    center=QPainterPath(QPointF(*samples[0]))
+    for point in samples[1:]:center.lineTo(QPointF(*point))
+    stroke=QPainterPathStroker()
+    stroke.setWidth(2*radius)
+    stroke.setCapStyle(Qt.PenCapStyle.RoundCap)
+    stroke.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    path=stroke.createStroke(center)
+    path.setFillRule(Qt.FillRule.WindingFill)
+    # Qt flattens round arcs during the union. Work at higher precision so
+    # round end caps also stay smooth when the SEM image is zoomed in.
+    return QTransform.fromScale(1/16,1/16).map(QTransform.fromScale(16,16).map(path).simplified())
 
 
 class TrenchGuideEditor(QObject):
@@ -114,10 +141,7 @@ class TrenchGuideEditor(QObject):
         for i,guide in enumerate(guides):
             color=QColor('#39ded7' if guide['side']=='left' else '#ffab62')
             if len(guide['points'])>=2:
-                polygon=guide_polygon(guide)
-                path=QPainterPath(QPointF(*polygon[0]))
-                for p in polygon[1:]:path.lineTo(QPointF(*p))
-                path.closeSubpath()
+                path=guide_sweep_path(guide)
                 brush=QColor(color);brush.setAlpha(42 if i!=self.selected else 65)
                 pen=QPen(color,1);pen.setCosmetic(True);pen.setStyle(Qt.PenStyle.DashLine)
                 self.items.append(self.view.scene().addPath(path,pen,brush))

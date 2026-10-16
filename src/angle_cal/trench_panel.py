@@ -606,7 +606,7 @@ class TrenchPanel(QWidget):
         guide_actions.addWidget(self.guide_selection)
         guide_actions.addWidget(QLabel('인식 ±px'))
         self.guide_width=QDoubleSpinBox();self.guide_width.setRange(1,300);self.guide_width.setDecimals(1);self.guide_width.setValue(12)
-        self.guide_width.setToolTip('곡선에 수직인 양쪽 인식 폭입니다. 선택한 곡선 위에서 휠로 조절할 수 있습니다.')
+        self.guide_width.setToolTip('원본 픽셀 기준 원의 반지름입니다. 곡선을 따라 같은 크기의 원이 지나가는 영역 안에서 인식합니다. 휠로 조절할 수 있습니다.')
         guide_actions.addWidget(self.guide_width)
         self.guide_delete=QPushButton('선택 삭제');guide_actions.addWidget(self.guide_delete)
         self.guide_clear=QPushButton('가이드 초기화');guide_actions.addWidget(self.guide_clear)
