@@ -343,6 +343,11 @@ def draw_field_angle(scene, item, factor=1., unit="px"):
             field_start=points[0] if item['side']=='left' else points[-1]
             if not item.get('curved'):
                 drawn.append(scene.addLine(*field_start,*ft,_pen('#63ef90',2)))
+            elif connection.get('field_join_points'):
+                join=connection['field_join_points']
+                path=QPainterPath(QPointF(*join[0]))
+                for p in join[1:]+[ft]:path.lineTo(QPointF(*p))
+                drawn.append(scene.addPath(path,_pen('#63ef90',2)))
             path=QPainterPath(QPointF(*ft))
             for p in connection['arc_points'][1:]:path.lineTo(QPointF(*p))
             drawn.append(scene.addPath(path,_pen('#df91ff',3)))
@@ -519,6 +524,11 @@ class TrenchGraph(QWidget):
                     end_y=item["wall_points"][-1][1]
                     connection=item.get('connection',{})
                     if connection.get('status')=='valid':
+                        join=connection.get('field_join_points',[])
+                        if join:
+                            path=QPainterPath(point(*join[0]))
+                            for p in join[1:]+[connection['field_tangent']]:path.lineTo(point(*p))
+                            painter.setPen(_pen('#268b48',2));painter.drawPath(path)
                         path=QPainterPath(point(*connection['arc_points'][0]))
                         for p in connection['arc_points'][1:]:path.lineTo(point(*p))
                         painter.setPen(_pen('#8f45a4',2))

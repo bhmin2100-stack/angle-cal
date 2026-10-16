@@ -74,6 +74,10 @@ def test_curved_field_keeps_contour_and_distinguishes_local_tangent_from_straigh
         assert abs(f['straight_angle_deg']-f['local_angle_deg'])>4
         assert np.ptp(np.asarray(f['points'])[:,1])>8
         assert c['radius_px']==pytest.approx(30,abs=3)
+        assert f['connection']['status']=='valid'
+        assert len(f['connection']['field_join_points'])>=2
+        for point in f['connection']['field_join_points']:
+            assert np.linalg.norm(np.asarray(r.guide_traces[0]['points'])-point,axis=1).min()<1.1
     coordinates=np.loadtxt(trench_gfe_tsv(r,.5).splitlines()[1:])
     assert np.ptp(coordinates[:30,1])>8  # No flattened Field in GFE.
 

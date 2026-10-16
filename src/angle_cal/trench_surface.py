@@ -72,6 +72,13 @@ def connect_entrance(item, corner):
         connection.update(status='valid',reason='측정 Field와 cliff에 접하는 입구 원호입니다.',
                           radius_px=radius,center=center.tolist(),field_tangent=ft.tolist(),
                           wall_tangent=wt.tolist(),arc_points=arc.tolist())
+        if item.get('curved'):
+            # Keep the short measured continuation between the curved Field
+            # support and the fitted circle's tangent. It must not disappear
+            # when replacing the transition by its validated circle model.
+            sign=1 if item['side']=='left' else -1
+            connection['field_join_points']=[p for p in corner.get('trace_points',[])
+                                             if sign*(p[0]-ft[0])<0]
 
 
 def _line(x, y):

@@ -146,6 +146,7 @@ def trench_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
     points = [tuple(point) for point in rf["points"][::-1]
               if not right_connected or point[0]>=rc['field_tangent'][0]]
     if right_connected:
+        points.extend(map(tuple,rc.get('field_join_points',[])))
         points.extend(map(tuple,rc['arc_points']))
     elif result.corners[1]:
         points.extend(sorted((tuple(point) for point in result.corners[1].get("trace_points",[]) if point[1]<y[0]),key=lambda p:p[1]))
@@ -154,6 +155,7 @@ def trench_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
     points.extend((xx,yy) for xx,yy in zip(left[::-1],y[::-1]) if not left_connected or yy>lc['wall_tangent'][1])
     if left_connected:
         points.extend(map(tuple,lc['arc_points'][::-1]))
+        points.extend(map(tuple,lc.get('field_join_points',[])[::-1]))
     elif result.corners[0]:
         points.extend(sorted((tuple(point) for point in result.corners[0].get("trace_points",[]) if point[1]<y[0]),key=lambda p:p[1],reverse=True))
     points.extend(tuple(point) for point in lf["points"][::-1]
