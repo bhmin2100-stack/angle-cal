@@ -33,7 +33,20 @@ def _sweep_path(points,radius):
     path.setFillRule(Qt.FillRule.WindingFill)
     # Qt flattens round arcs during the union. Work at higher precision so
     # round end caps also stay smooth when the SEM image is zoomed in.
-    return QTransform.fromScale(1/16,1/16).map(QTransform.fromScale(16,16).map(path).simplified())
+    outline=QTransform.fromScale(1/16,1/16).map(QTransform.fromScale(16,16).map(path).simplified())
+    # Qt's stroke union can leave tiny interior contours at overlapping joins.
+    # A real boundary must be radius away from the centerline. Drop numerical
+    # contours well inside the sweep, while retaining real enclosed holes.
+    result=QPainterPath();result.setFillRule(outline.fillRule())
+    a,delta=samples[:-1],np.diff(samples,axis=0)
+    lengths=np.maximum(np.sum(delta*delta,axis=1),1e-20)
+    for polygon in outline.toSubpathPolygons():
+        point=np.array([polygon[0].x(),polygon[0].y()])
+        along=np.clip(np.sum((point-a)*delta,axis=1)/lengths,0,1)
+        distance=np.min(np.linalg.norm(point-(a+along[:,None]*delta),axis=1))
+        if distance<radius-.25:continue
+        result.addPolygon(polygon);result.closeSubpath()
+    return result
 
 
 class TrenchGuideEditor(QObject):

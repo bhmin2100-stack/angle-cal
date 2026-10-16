@@ -75,6 +75,24 @@ def test_sweep_centerline_preserves_knots_and_subpixel_curve_shape():
     assert np.max(distance_to_sampled_curve(curve_samples(guide),samples))<.021
 
 
+def test_wide_sweep_has_no_numerical_holes_at_overlapping_joins():
+    guide=curve('left',[[60,35],[25,105],[95,145],[25,185],[65,300]],75)
+    # Known Qt stroke-union slivers; all are strictly inside the distance band.
+    points=np.array([[107.655964,213.364350],[110.397337,218.967102],
+                     [48.359382,87.735533],[44.698971,200.387123]])
+    assert np.all(distance_to_sampled_curve(points,sweep_samples(guide))<74)
+    path=guide_sweep_path(guide)
+    assert all(path.contains(QPointF(*point)) for point in points)
+
+
+def test_sweep_keeps_a_real_hole_when_a_curve_loops_around_it():
+    guide=curve('left',[[20,20],[80,20],[80,80],[20,80],[20,20]],5)
+    path=guide_sweep_path(guide)
+    assert not path.contains(QPointF(50,50))
+    assert not in_bands(50,row_bands((guide,),50,'left'))
+    assert path.contains(QPointF(20,20))
+
+
 def test_sweep_round_caps_and_merged_overlaps_have_no_clipped_or_cancelled_band():
     guide=curve('left',[[50,20],[50,100]],10)
     assert row_bands((guide,),14,'left')==pytest.approx([(42,58)])
