@@ -7696,6 +7696,7 @@ class MainWindow(QMainWindow):
         if self.trench_state and self.trench_state.get("rotation", 0.0) != self.image_rotation_degrees:
             self.trench_state = {**self.trench_state, "roi": None, "corner_rois": [None, None],
                                  "corner_spans": [None, None], "corner_results": None,
+                                 "wall_guides": [],
                                  "rotation": self.image_rotation_degrees}
         if self.trench_panel is not None:
             self.trench_panel.set_image(self.image_bgr, self.image_path, self.nm_per_px, self.trench_state)

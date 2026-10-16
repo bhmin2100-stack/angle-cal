@@ -18,6 +18,7 @@ import numpy as np
 from .image_ops import to_gray
 from .trench_corner import measure_entrance_corner
 from .trench_surface import measure_field_angles, connect_entrance
+from .trench_guides import normalize_guides, prepare_guide_bands, in_bands, guided_edges
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class TrenchOptions:
     corner_spans: tuple = (None, None)
     field_search_px: int = 32
     angle_span: tuple = (40, 100)
+    wall_guides: tuple = ()
 
 
 @dataclass
@@ -60,6 +62,7 @@ class TrenchResult:
     warnings: list[str]
     local_bowing: list[dict]
     field_angles: list[dict] = field(default_factory=list)
+    guide_diagnostics: list[dict] = field(default_factory=list)
 
     def summary(self) -> dict:
         return {
@@ -94,6 +97,7 @@ class TrenchResult:
                 for unit, factor in (("nm", nm_per_px), ("angstrom", (nm_per_px or 0) * 10)) if factor},
             "local_bowing": self.local_bowing,
             "field_angles": self.field_angles,
+            "guide_diagnostics": self.guide_diagnostics,
             "field_length_units":{unit:[{key.replace("_px","_"+unit):item.get(key)*factor if item.get(key) is not None else None
                                         for key in ("length_px","rms_px","wall_rms_px")} for item in self.field_angles]
                                   for unit,factor in (("nm",nm_per_px),("angstrom",(nm_per_px or 0)*10)) if factor},
@@ -279,6 +283,11 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         raise ValueError("경계값은 0(자동) 또는 1~254여야 합니다.")
     if not 6 <= options.corner_window_px <= 200:
         raise ValueError("입구 검색 크기는 6~200 px여야 합니다.")
+    guides = normalize_guides(options.wall_guides, image.shape)
+    bands, per_guide = prepare_guide_bands(guides,top,height) if guides else ({},[])
+    for rows in per_guide:
+        if not any(hi>=x and lo<=x+width-1 for intervals in rows.values() for lo,hi in intervals):
+            raise ValueError('가이드 인식 띠가 분석 영역과 겹치지 않습니다. 영역 또는 가이드를 옮겨주세요.')
     for values, length in ((options.corner_rois, 4), (options.corner_spans, 2)):
         if len(values) != 2 or any(value is not None and (len(value) != length or not np.isfinite(value).all()) for value in values):
             raise ValueError("좌우 입구 검색 영역 또는 원호 선택 값이 올바르지 않습니다.")
@@ -305,6 +314,18 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     active: list[int] = []
     for row_index, row in enumerate(normalized):
         candidates = _runs(row, threshold)
+        left_bands, right_bands = bands.get((row_index,'left'),[]), bands.get((row_index,'right'),[])
+        if left_bands or right_bands:
+            guided_left = guided_edges(ridge_image[row_index],left_bands,-1,x)[:1]
+            guided_right = guided_edges(ridge_image[row_index],right_bands,1,x)[:1]
+            if left_bands and right_bands:
+                candidates = [(l-x,r-x) for l in guided_left for r in guided_right if r-l>2]
+            elif left_bands:
+                candidates = [(l-x,r) for l in guided_left for old_l,r in candidates
+                              if r>l-x+2 and abs(old_l+x-l)<max(20,max(b-a for a,b in left_bands))]
+            else:
+                candidates = [(l,r-x) for r in guided_right for l,old_r in candidates
+                              if r-x>l+2 and abs(old_r+x-r)<max(20,max(b-a for a,b in right_bands))]
         next_active: list[int] = []
         used: set[int] = set()
         for left, right in candidates:
@@ -328,10 +349,16 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         active = next_active
     candidates = [track for track in tracks if len(track) >= max(12, height * .2)]
     if not candidates:
-        raise ValueError("연속된 양쪽 측벽을 찾지 못했습니다. 한 Trench만 포함하도록 영역 또는 경계값을 조절하세요.")
-    candidates.sort(key=lambda track: len(track) * (1 - .6 * abs(
-        np.median([(p[1] + p[2]) / 2 for p in track]) - width / 2) / (width / 2)), reverse=True)
+        raise ValueError('가이드 인식 띠 안에서 연속된 양쪽 경계를 찾지 못했습니다. 선의 위치·폭과 좌우를 확인하세요.'
+                         if guides else "연속된 양쪽 측벽을 찾지 못했습니다. 한 Trench만 포함하도록 영역 또는 경계값을 조절하세요.")
+    def track_rank(track):
+        guided_count = sum(bool(bands.get((p[0],side))) for p in track for side in ('left','right'))
+        center = np.median([(p[1]+p[2])/2 for p in track])
+        return guided_count, len(track)*(1-.6*abs(center-width/2)/(width/2))
+    candidates.sort(key=track_rank, reverse=True)
     track = np.asarray(candidates[0], dtype=float)
+    if guides and track_rank(candidates[0])[0]==0:
+        raise ValueError('그린 가이드 안에서 경계를 찾지 못했습니다. 가이드의 위치와 인식 폭을 확인하세요.')
     # A rounded, shaded entrance can first appear as a tiny isolated dark tip.
     # Start the sidewall profile only when a usable full-width interval exists.
     widths = track[:, 2] - track[:, 1]
@@ -343,11 +370,32 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     if len(usable_start):
         track = track[int(usable_start[0]):]
     y = track[:, 0] + top
-    peak_left = np.array([_rim_peak(ridge_image[int(row)], l, -1) for row, l, r in track])
-    peak_right = np.array([_rim_peak(ridge_image[int(row)], r, 1) for row, l, r in track])
+    peak_left = np.array([l if bands.get((int(row),'left')) else _rim_peak(ridge_image[int(row)], l, -1) for row, l, r in track])
+    peak_right = np.array([r if bands.get((int(row),'right')) else _rim_peak(ridge_image[int(row)], r, 1) for row, l, r in track])
     left = _smooth(peak_left + x, options.smooth_px)
     right = _smooth(peak_right + x, options.smooth_px)
+    for edge, raw, side in ((left,peak_left,'left'),(right,peak_right,'right')):
+        for i, row in enumerate(track[:,0].astype(int)):
+            search = bands.get((row,side),[])
+            if search and not in_bands(edge[i],search):
+                edge[i] = raw[i]+x  # smoothing must not move outside a guide
+    crossed = left>=right
+    if crossed.any():
+        left[crossed],right[crossed]=peak_left[crossed]+x,peak_right[crossed]+x
+    if np.any(left>=right):
+        raise ValueError('좌우 가이드 또는 경계가 교차합니다. 가이드의 좌우와 인식 폭을 확인하세요.')
     warnings: list[str] = []
+    diagnostics = []
+    for index, guide in enumerate(guides):
+        requested = [yy for yy,intervals in per_guide[index].items() if intervals]
+        edge = left if guide['side']=='left' else right
+        used = [[float(xx),float(yy)] for xx,yy in zip(edge,y)
+                if in_bands(xx,per_guide[index].get(int(yy),[]))]
+        coverage = len(used)/max(1,len(requested))
+        diagnostics.append(dict(index=index,side=guide['side'],requested_rows=len(requested),
+                                detected_rows=len(used),coverage=coverage,points=used))
+        if coverage<.8:
+            warnings.append(f"{'왼쪽' if guide['side']=='left' else '오른쪽'} 가이드 {index+1}: 경계 검출 {coverage:.0%}. 띠 안의 경계와 끊긴 구간을 확인하세요.")
     if len(candidates) > 1 and len(candidates[1]) >= len(track) * .6:
         warnings.append("긴 경계 후보가 여러 개입니다. 표시된 경계를 확인하거나 한 Trench로 영역을 좁히세요.")
     if y[0] - top > max(3, height * .03):
@@ -408,7 +456,7 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
                         max(0.0, float(left_bow[li])), max(0.0, float(right_bow[ri])),
                         float(y[li]), float(y[ri]), angles[0], angles[1], corners, threshold, warnings,
                         find_local_bowing(wall_y, left[:last_wall + 1], right[:last_wall + 1],
-                                          max(7, options.smooth_px), options.negative_slope_deg), field_angles)
+                                          max(7, options.smooth_px), options.negative_slope_deg), field_angles, diagnostics)
 
 
 def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float | None = None) -> None:
@@ -421,6 +469,9 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         writer.writerow(["metadata", "bow_reference", result.options.bow_reference, ""])
         writer.writerow(["metadata", "entrance_y_px", result.options.roi[1], "px"])
         writer.writerow(["metadata", "sidewall_end", 90, "% of detected profile"])
+        writer.writerow(["metadata", "wall_guides", json.dumps(list(result.options.wall_guides),ensure_ascii=False), "px"])
+        for item in result.guide_diagnostics:
+            writer.writerow(["guide",str(item['index']+1),json.dumps(item,ensure_ascii=False,allow_nan=False),"px"])
         for item in result.field_angles:
             for key, value in item.items():
                 writer.writerow(["field_angle", item["side"] + "_" + key,

@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 
 from .image_ops import bgr_to_rgb8_for_display
 from .trench_analysis import TrenchOptions, TrenchResult, analyze_trench, export_trench_csv, trench_gfe_tsv
+from .trench_guides import normalize_guides
+from .trench_guide_view import TrenchGuideEditor
 
 
 def _pen(color: str, width: float = 1.5, dashed: bool = False) -> QPen:
@@ -590,6 +592,42 @@ class TrenchPanel(QWidget):
         left = QSplitter(Qt.Orientation.Vertical)
         body.addWidget(left)
         self.view = TrenchView()
+        self.guide_editor = TrenchGuideEditor(self.view)
+        self.guide_bar = QWidget()
+        guide_layout = QVBoxLayout(self.guide_bar)
+        guide_layout.setContentsMargins(0,0,0,0)
+        guide_actions = QHBoxLayout()
+        self.guide_side = QComboBox()
+        self.guide_side.addItem('왼쪽 벽','left');self.guide_side.addItem('오른쪽 벽','right')
+        guide_actions.addWidget(self.guide_side)
+        self.guide_button=QPushButton('곡선 가이드 그리기');self.guide_button.setCheckable(True)
+        guide_actions.addWidget(self.guide_button)
+        self.guide_selection=QComboBox();self.guide_selection.setMinimumWidth(130)
+        guide_actions.addWidget(self.guide_selection)
+        guide_actions.addWidget(QLabel('인식 ±px'))
+        self.guide_width=QDoubleSpinBox();self.guide_width.setRange(1,300);self.guide_width.setDecimals(1);self.guide_width.setValue(12)
+        self.guide_width.setToolTip('곡선에 수직인 양쪽 인식 폭입니다. 선택한 곡선 위에서 휠로 조절할 수 있습니다.')
+        guide_actions.addWidget(self.guide_width)
+        self.guide_delete=QPushButton('선택 삭제');guide_actions.addWidget(self.guide_delete)
+        self.guide_clear=QPushButton('가이드 초기화');guide_actions.addWidget(self.guide_clear)
+        self.guide_analyze=QPushButton('경계 인식');self.guide_analyze.clicked.connect(self.start_analysis)
+        guide_actions.addWidget(self.guide_analyze)
+        guide_actions.addStretch()
+        guide_layout.addLayout(guide_actions)
+        self.guide_hint=QLabel('점을 클릭해 곡선 추가 · 마지막 더블클릭으로 완료 · 점 드래그로 보정 · 휠=인식 폭 · Ctrl+휠=확대 · Esc=취소')
+        self.guide_hint.setWordWrap(True);guide_layout.addWidget(self.guide_hint)
+        root.insertWidget(1,self.guide_bar)
+        self.guide_bar.setEnabled(False)
+        self.guide_button.toggled.connect(self._guide_mode)
+        self.guide_side.currentIndexChanged.connect(lambda _:setattr(self.guide_editor,'side',self.guide_side.currentData()))
+        self.guide_width.valueChanged.connect(self.guide_editor.set_radius)
+        self.guide_selection.currentIndexChanged.connect(lambda i:self.guide_editor.select(i-1))
+        self.guide_delete.clicked.connect(self.guide_editor.remove_selected)
+        self.guide_clear.clicked.connect(self.guide_editor.clear)
+        self.guide_editor.changed.connect(self._guides_changed)
+        self.guide_editor.selection_changed.connect(self._guide_selection_changed)
+        self.guide_editor.mode_changed.connect(self._guide_mode_changed)
+        self.guide_editor.message.connect(self.guide_hint.setText)
         self.image_tabs = QTabWidget()
         self.image_tabs.addTab(self.view, "Trench 이미지")
         self.corner_editors = [CornerEditor("왼쪽 입구"), CornerEditor("오른쪽 입구")]
@@ -643,7 +681,7 @@ class TrenchPanel(QWidget):
         actions = QHBoxLayout()
         self.roi_button = QPushButton("영역 지정")
         self.roi_button.setCheckable(True)
-        self.roi_button.toggled.connect(self.view.set_select_region)
+        self.roi_button.toggled.connect(self._roi_mode)
         actions.addWidget(self.roi_button)
         fit = QPushButton("전체 보기")
         fit.clicked.connect(self.view.fit_image)
@@ -765,7 +803,40 @@ class TrenchPanel(QWidget):
                 "field_search":self.field_spin.value(),"angle_start":self.angle_start.value(),"angle_end":self.angle_end.value(),
                 "field_angles":self.result.field_angles if self.result is not None else None,
                 "corner_rois": list(self.corner_rois), "corner_spans": list(self.corner_spans),
-                "corner_results": self.result.corners if self.result is not None else None}
+                "corner_results": self.result.corners if self.result is not None else None,
+                "wall_guides":list(normalize_guides(self.guide_editor.guides))}
+
+    def _roi_mode(self, enabled):
+        if enabled:self.guide_editor.set_drawing(False)
+        self.view.set_select_region(enabled)
+
+    def _guide_mode(self, enabled):
+        if enabled:
+            self.image_tabs.setCurrentIndex(0)
+            self.roi_button.setChecked(False)
+        self.guide_editor.set_drawing(enabled)
+
+    def _guide_mode_changed(self, enabled):
+        self.guide_button.blockSignals(True);self.guide_button.setChecked(enabled);self.guide_button.blockSignals(False)
+
+    def _guide_selection_changed(self):
+        editor=self.guide_editor
+        self.guide_selection.blockSignals(True)
+        self.guide_selection.clear();self.guide_selection.addItem('가이드 선택')
+        for i,g in enumerate(editor.guides):
+            self.guide_selection.addItem(f"{'좌' if g['side']=='left' else '우'} {i+1} · {len(g['points'])}점")
+        self.guide_selection.setCurrentIndex(editor.selected+1)
+        self.guide_selection.blockSignals(False)
+        self.guide_width.blockSignals(True)
+        self.guide_width.setValue(editor.guides[editor.selected]['half_width_px'] if editor.selected>=0 else editor.radius)
+        self.guide_width.blockSignals(False)
+        self.guide_delete.setEnabled(editor.selected>=0)
+        self.guide_clear.setEnabled(bool(editor.guides) or editor.drawing)
+
+    def _guides_changed(self):
+        self._guide_selection_changed()
+        self._settings_changed()
+        self.guide_hint.setText(f'곡선 가이드 {len(self.guide_editor.guides)}개 · 곡선이 있는 높이는 띠 안에서만 인식, 나머지는 자동 · 경계 인식을 눌러 적용하세요.')
 
     def set_image(self, image, path: str, nm_per_px=None, state=None) -> None:
         key = (id(image), path)
@@ -779,6 +850,7 @@ class TrenchPanel(QWidget):
         self.source_key, self.source_calibration = key, nm_per_px
         self.image, self.image_path = image, path or ""
         self.revision += 1
+        self.guide_editor.restore()
         self.roi = None
         self.corner_rois, self.corner_spans = [None, None], [None, None]
         self.overlays = []
@@ -795,6 +867,12 @@ class TrenchPanel(QWidget):
                 editor.set_image(pixmap)
             self.view.notify_viewport()
         state = state or {}
+        try:
+            guides=normalize_guides(state.get('wall_guides',()),image.shape if image is not None else None)
+            self.guide_editor.restore(guides)
+        except ValueError as exc:
+            self.guide_hint.setText(f'저장된 가이드를 열지 못했습니다: {exc}')
+        self.guide_bar.setEnabled(image is not None)
         for key_name in ("corner_rois", "corner_spans"):
             values = state.get(key_name)
             if isinstance(values, (list, tuple)) and len(values) == 2:
@@ -815,6 +893,7 @@ class TrenchPanel(QWidget):
             if roi.width() >= 12 and roi.height() >= 16:
                 self.roi = (int(roi.x()), int(roi.y()), int(roi.width()), int(roi.height()))
         self.roi_button.setChecked(self.roi is None)
+        self.view.set_select_region(self.roi_button.isChecked())
         self.loading = False
         self._draw_overlay()
 
@@ -873,10 +952,13 @@ class TrenchPanel(QWidget):
                              self.bright_check.isChecked(), self.smooth_spin.value(), self.bow_combo.currentData(),
                              self.corner_spin.value(), self.negative_spin.value(),
                              tuple(self.corner_rois), tuple(self.corner_spans),self.field_spin.value(),
-                             (self.angle_start.value(),self.angle_end.value()))
+                             (self.angle_start.value(),self.angle_end.value()),normalize_guides(self.guide_editor.guides))
 
     def start_analysis(self):
         if self.worker is not None and self.worker.isRunning():
+            return
+        if self.guide_editor.drawing and self.guide_editor.draft:
+            self.summary_label.setText('곡선의 마지막 점을 더블클릭해 그리기를 완료한 뒤 경계를 인식하세요.')
             return
         try:
             if self.image is None:
@@ -888,6 +970,7 @@ class TrenchPanel(QWidget):
         self._clear_result()
         self.summary_label.setText("측벽과 국부 Bowing을 분석하고 있습니다…")
         self.analyze_button.setEnabled(False)
+        self.guide_analyze.setEnabled(False)
         self.worker = TrenchWorker(self.image, options, self.revision, self)
         self.worker.completed.connect(self._analysis_completed)
         self.worker.finished.connect(lambda worker=self.worker: self._worker_finished(worker))
@@ -898,6 +981,7 @@ class TrenchPanel(QWidget):
             self.worker = None
         worker.deleteLater()
         self.analyze_button.setEnabled(True)
+        self.guide_analyze.setEnabled(True)
         if self.reanalysis_requested:
             self.reanalysis_requested = False
             self.start_analysis()
