@@ -2,6 +2,20 @@
 
 from PyInstaller.utils.hooks import collect_submodules
 from pathlib import Path
+import json
+import sys
+
+root=Path(SPECPATH)
+sys.path.insert(0,str(root/'src'))
+from angle_cal import build_info
+from angle_cal.release_metadata import make_build_metadata
+
+metadata=make_build_metadata(root,dict(app_version=build_info.APP_VERSION,build_id=build_info.BUILD_ID,
+                                     build_commit=build_info.BUILD_COMMIT,build_date=build_info.BUILD_DATE,
+                                     update_channel=build_info.UPDATE_CHANNEL))
+metadata_path=root/'build'/'_build_info.json'
+metadata_path.parent.mkdir(parents=True,exist_ok=True)
+metadata_path.write_text(json.dumps(metadata,ensure_ascii=False),encoding='utf-8')
 
 
 hiddenimports = collect_submodules("cv2")
@@ -10,7 +24,8 @@ a = Analysis(
     ["run_angle_cal.py"],
     pathex=[".", "src"],
     binaries=[],
-    datas=[("src/angle_cal/assets/anglecal_icon.png", "angle_cal/assets")],
+    datas=[("src/angle_cal/assets/anglecal_icon.png", "angle_cal/assets"),
+           (str(metadata_path),"angle_cal")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

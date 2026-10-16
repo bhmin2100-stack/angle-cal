@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import __version__
+from .release_metadata import embedded_metadata
 
 try:
     from .build_info import APP_VERSION, BUILD_COMMIT, BUILD_DATE, BUILD_ID, UPDATE_CHANNEL
@@ -24,6 +25,13 @@ except Exception:  # pragma: no cover - source runs can survive missing build me
     BUILD_DATE = ""
     BUILD_ID = "local"
     UPDATE_CHANNEL = "personal"
+
+_embedded = embedded_metadata()
+APP_VERSION = _embedded.get('app_version', APP_VERSION)
+BUILD_ID = _embedded.get('build_id', BUILD_ID)
+BUILD_COMMIT = _embedded.get('build_commit', BUILD_COMMIT)
+BUILD_DATE = _embedded.get('build_date', BUILD_DATE)
+UPDATE_CHANNEL = _embedded.get('update_channel', UPDATE_CHANNEL)
 
 
 APP_NAME = "AngleCal"
@@ -126,6 +134,16 @@ def current_version() -> str:
 
 def current_build_id() -> str:
     return str(BUILD_ID or "local")
+
+
+def display_version() -> str:
+    version=f"v{APP_VERSION or __version__}"
+    build=current_build_id()
+    return f"{version} · 빌드 {build}" if build!='local' else f"{version} · 개발용"
+
+
+def window_title() -> str:
+    return f"{APP_NAME} {display_version()} - SEM Angle Measurement"
 
 
 def build_info_dict() -> dict[str, str]:

@@ -3021,7 +3021,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._apply_tooltip_style()
-        self.setWindowTitle("Angle Cal - SEM Angle Measurement")
+        self.setWindowTitle(updater.window_title())
         self.resize(1280, 820)
         self.image_bgr: Optional[np.ndarray] = None
         self.image_path: Optional[str] = None
@@ -8456,6 +8456,7 @@ def main() -> None:
         return
     app = QApplication(sys.argv)
     app.setApplicationName("Angle Cal")
+    app.setApplicationVersion(updater.current_version())
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         icon_path = Path(sys._MEIPASS) / "angle_cal" / "assets" / "anglecal_icon.png"
     else:
