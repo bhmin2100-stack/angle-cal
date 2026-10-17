@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import csv
 from html import escape as xml_escape
 import json
@@ -160,6 +160,7 @@ class StructureTemplate:
     name: str
     records: list[LineRecord]
     cd_segment_mode: str = "all"
+    wall_guides: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -2461,6 +2462,7 @@ def structure_template_from_dict(item: dict) -> StructureTemplate:
         name=item.get("name", "구조"),
         records=records,
         cd_segment_mode=item.get("cd_segment_mode", "all"),
+        wall_guides=list(item.get("wall_guides") or []),
     )
 
 
@@ -2469,6 +2471,7 @@ def structure_template_to_dict(template: StructureTemplate) -> dict:
         "name": template.name,
         "cd_segment_mode": template.cd_segment_mode,
         "records": [asdict(record) for record in template.records],
+        **({"wall_guides":template.wall_guides} if template.wall_guides else {}),
     }
 
 
@@ -3530,7 +3533,10 @@ class MainWindow(QMainWindow):
             "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
         )
         ribbon_layout.addWidget(self.ribbon_tabs)
-        ribbon_layout.addLayout(quick_row)
+        self.normal_quick_tools=QWidget();self.normal_quick_tools.setLayout(quick_row)
+        ribbon_layout.addWidget(self.normal_quick_tools)
+        self.trench_quick_tools=QWidget();self.trench_quick_layout=QHBoxLayout(self.trench_quick_tools);self.trench_quick_layout.setContentsMargins(6,0,6,0)
+        self.trench_quick_tools.hide();ribbon_layout.addWidget(self.trench_quick_tools)
         self.setMenuWidget(ribbon)
 
         file_page = page()
@@ -3854,24 +3860,17 @@ class MainWindow(QMainWindow):
                 self.photo_merge_board.result_ready.connect(self._show_photo_merge_result)
                 self.workspace_stack.addWidget(self.photo_merge_board)
         elif addon_id == "trench_analyzer":
-            box = QGroupBox("Trench 형상 분석")
-            box_layout = QHBoxLayout(box)
-            description = QLabel("한 Trench의 CD · Depth · 전체/국부 Bowing · Nega slope · 입구 각도/곡률")
-            description.setWordWrap(True)
-            box_layout.addWidget(description)
+            box=QGroupBox('Trench 분석');box_layout=QHBoxLayout(box)
+            box_layout.addWidget(QLabel('① 썸네일 선택 → ② 곡선 그리기 / 구조 불러오기 → ③ 인식'))
             layout.addWidget(box)
             if self.trench_panel is None:
-                self.trench_panel = TrenchPanel(self)
+                self.trench_panel=TrenchPanel(self)
                 self.trench_panel.state_changed.connect(self._trench_state_changed)
+                self.trench_panel.calibration_changed.connect(self._trench_calibration_changed)
+                self.trench_panel.scale_bar_changed.connect(self._trench_scale_bar_changed)
+                self.trench_panel.structure_menu.aboutToShow.connect(self._trench_structure_menu)
                 self.workspace_stack.addWidget(self.trench_panel)
-            guide_box = QGroupBox("윤곽 가이드 · 더블클릭 종료")
-            guide_layout = QHBoxLayout(guide_box)
-            button = QPushButton("곡선 가이드 그리기")
-            button.setObjectName("trench_contour_guide")
-            button.setToolTip("좌우 지정 없이 벽·바닥을 따라 점을 클릭하고 마지막 점에서 더블클릭하세요. 휠로 인식 폭을 조절합니다.")
-            button.clicked.connect(self.trench_panel.start_contour_guide)
-            guide_layout.addWidget(button)
-            layout.addWidget(guide_box)
+                self.trench_quick_layout.addWidget(self.trench_panel.guide_bar)
         else:
             title = next(item.title for item in ADDON_DEFINITIONS if item.addon_id == addon_id)
             layout.addWidget(QLabel(f"{title} 기능은 준비 중입니다."))
@@ -3896,6 +3895,8 @@ class MainWindow(QMainWindow):
         current_page = self.ribbon_tabs.currentWidget()
         photo_page = self.addon_pages.get("photo_merge")
         trench_active = current_page is self.addon_pages.get("trench_analyzer") and self.trench_panel is not None
+        self.normal_quick_tools.setVisible(not trench_active)
+        self.trench_quick_tools.setVisible(trench_active)
         if trench_active and not self._trench_dock_visibility:
             for dock in self.findChildren(QDockWidget):
                 if self.dockWidgetArea(dock) == Qt.DockWidgetArea.RightDockWidgetArea:
@@ -3917,10 +3918,36 @@ class MainWindow(QMainWindow):
         if current_page is photo_page and self.photo_merge_board is not None:
             self.workspace_stack.setCurrentWidget(self.photo_merge_board)
         elif current_page is self.addon_pages.get("trench_analyzer") and self.trench_panel is not None:
+            self.trench_panel.boundary_mode=self.boundary_snap_combo.currentData()
+            if not self.trench_state.get("wall_guides"):
+                radius=max(self.search_radius_left_spin.value(),self.search_radius_right_spin.value()) if self.split_search_range_checkbox.isChecked() else self.search_radius_spin.value()
+                self.trench_panel.guide_editor.radius=float(radius or 12)
             self.trench_panel.set_image(self.image_bgr, self.image_path, self.nm_per_px, self.trench_state)
+            self.trench_panel.set_scale_record(next((r for r in self.records.values() if r.kind=="scale"),None))
             self.workspace_stack.setCurrentWidget(self.trench_panel)
         else:
             self.workspace_stack.setCurrentWidget(self.canvas)
+
+    def _trench_active(self):
+        return self.trench_panel is not None and self.workspace_stack.currentWidget() is self.trench_panel
+
+    def _trench_calibration_changed(self,value):
+        self.nm_per_px=value if value>0 else None
+        self.trench_panel.source_calibration=self.nm_per_px
+        self._refresh_table()
+
+    def _trench_scale_bar_changed(self,bar):
+        for rid in [rid for rid,r in self.records.items() if r.kind=='scale']:del self.records[rid]
+        record=LineRecord(id=self._next_id('S'),kind='scale',start=tuple(bar['start']),end=tuple(bar['end']),value_nm=bar['length_nm'],label=f"{bar['length_nm']:g} nm")
+        self.records[record.id]=record
+        self.canvas.redraw_lines(list(self.records.values()));self._refresh_table()
+
+    def _trench_structure_menu(self):
+        menu=self.trench_panel.structure_menu;menu.clear()
+        for template in self.structure_templates:
+            menu.addAction(template.name,lambda checked=False,t=template:self.trench_panel.load_structure_payload(structure_template_to_dict(t)))
+        if self.structure_templates:menu.addSeparator()
+        menu.addAction('파일에서 불러오기…',self.trench_panel.load_structure_dialog)
 
     def _trench_state_changed(self, state: dict) -> None:
         self.trench_state = {**state, "rotation": self.image_rotation_degrees}
@@ -6043,6 +6070,9 @@ class MainWindow(QMainWindow):
         self._refresh_table()
         self._update_search_range_overlay()
         self._apply_visibility()
+        if self._trench_active():
+            self.trench_panel.set_image(self.image_bgr,self.image_path,self.nm_per_px,self.trench_state)
+            self.trench_panel.set_scale_record(next((r for r in self.records.values() if r.kind=='scale'),None))
         self._set_status(f"{index + 1}번 스케일 적용: {preset.name}, {preset.nm_per_px:.6g} nm/px")
 
     def _create_scale_record_from_preset(self, preset: ScalePreset) -> None:
@@ -6564,6 +6594,8 @@ class MainWindow(QMainWindow):
         return True
 
     def recognize_edges(self) -> None:
+        if self._trench_active():
+            self.trench_panel.start_analysis();return
         if self.image_bgr is None:
             return
         self._sync_records_from_canvas()
@@ -6935,6 +6967,8 @@ class MainWindow(QMainWindow):
         self._set_status("CD 표시 설정을 바꿨습니다.")
 
     def save_current_structure_template(self) -> None:
+        if self._trench_active():
+            self.trench_panel.save_structure_dialog();return
         self._sync_records_from_canvas()
         selected_ids = set(self.canvas.selected_line_ids())
         selected_edges = [
@@ -6973,6 +7007,10 @@ class MainWindow(QMainWindow):
         self._set_status(f"구조 저장: {name} (경계 {len(selected_edges)}개, 가이드 {len(guides)}개)")
 
     def paste_selected_structure_template(self) -> None:
+        if self._trench_active():
+            template=self._selected_structure_template()
+            if template is not None:self.trench_panel.load_structure_payload(structure_template_to_dict(template))
+            return
         if self.image_bgr is None:
             return
         template = self._selected_structure_template()
@@ -7033,7 +7071,7 @@ class MainWindow(QMainWindow):
         with open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
         template = structure_template_from_dict(payload)
-        if not template.records:
+        if not template.records and not template.wall_guides:
             QMessageBox.warning(self, "구조 가져오기", "구조 파일에 경계선이나 가이드가 없습니다.")
             return
         replace_index = next((idx for idx, item in enumerate(self.structure_templates) if item.name == template.name), None)
@@ -7709,14 +7747,13 @@ class MainWindow(QMainWindow):
                                  "rotation": self.image_rotation_degrees}
         if self.trench_panel is not None:
             self.trench_panel.set_image(self.image_bgr, self.image_path, self.nm_per_px, self.trench_state)
+            self.trench_panel.set_scale_record(next((r for r in self.records.values() if r.kind=="scale"),None))
 
     def set_current_tool(self, tool: str) -> None:
         if self.trench_panel is not None and self.workspace_stack.currentWidget() is self.trench_panel:
-            if tool in ("select", "pan"):
-                self.trench_panel.roi_button.setChecked(False)
-                self.trench_panel.guide_button.setChecked(False)
-                return
-            self.ribbon_tabs.setCurrentIndex(0)
+            self.trench_panel.set_tool('curve' if tool in ('edge','guide') else tool)
+            if tool in ('edge','guide'):self.trench_panel.start_contour_guide()
+            return
         self.current_tool = tool
         self.canvas.set_tool(tool)
         if hasattr(self, "tool_buttons") and tool in self.tool_buttons:

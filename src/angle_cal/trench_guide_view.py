@@ -65,6 +65,7 @@ class TrenchGuideEditor(QObject):
         self.radius = 12.
         self.items = []
         self.drag = None
+        self.interaction_mode='select'
         self.draft = []
         self.view.viewport().setMouseTracking(True)
         view.installEventFilter(self)
@@ -163,14 +164,20 @@ class TrenchGuideEditor(QObject):
                 pen=QPen(QColor('white') if i==self.selected else color,2);pen.setCosmetic(True)
                 self.items.append(self.view.scene().addPath(path,pen))
             pen=QPen(QColor('white') if i==self.selected else color,2);pen.setCosmetic(True)
-            for p in guide['points']:
+            for p in (guide['points'] if i==self.selected else []):
                 handle=self.view.scene().addEllipse(-4,-4,8,8,pen,color)
                 handle.setFlag(handle.GraphicsItemFlag.ItemIgnoresTransformations,True)
                 handle.setPos(QPointF(*p));self.items.append(handle)
-            label=self.view.scene().addSimpleText(f"윤곽 {i+1} · ±{guide['half_width_px']:g}px")
+            label=self.view.scene().addSimpleText(f"곡선 {i+1} · ±{guide['half_width_px']:g}px")
             label.setBrush(color);label.setFlag(label.GraphicsItemFlag.ItemIgnoresTransformations,True)
             label.setPos(QPointF(*guide['points'][0])+QPointF(5,-20));self.items.append(label)
         for item in self.items:item.setZValue(500)
+        if self.interaction_mode=='resize' and self.selected>=0:
+            points=np.asarray(self.guides[self.selected]['points']);lo=points.min(axis=0);hi=points.max(axis=0)
+            self.resize_corners=np.array([[lo[0],lo[1]],[hi[0],lo[1]],[hi[0],hi[1]],[lo[0],hi[1]]])
+            for p in self.resize_corners:
+                handle=self.view.scene().addRect(-5,-5,10,10,QPen(QColor('#ffe38a')),QColor('#20262e'))
+                handle.setFlag(handle.GraphicsItemFlag.ItemIgnoresTransformations,True);handle.setPos(QPointF(*p));handle.setZValue(510);self.items.append(handle)
 
     def _draft_guide(self, cursor=None):
         points=deepcopy(self.draft)
@@ -192,6 +199,7 @@ class TrenchGuideEditor(QObject):
 
     def eventFilter(self, watched, event):
         if not isValid(self.view):return False
+        if self.view.scale_mode or self.interaction_mode=='pan':return False
         kind=event.type()
         if kind==QEvent.Type.KeyPress and self.view.hasFocus():
             if event.key()==Qt.Key.Key_Escape:
@@ -219,6 +227,12 @@ class TrenchGuideEditor(QObject):
         if kind==QEvent.Type.MouseButtonPress and event.button()==Qt.MouseButton.LeftButton:
             if self.view.select_region or self.view.image_rect.isEmpty():return False
             point=self._point(event)
+            if self.interaction_mode=='resize' and self.selected>=0:
+                corners=getattr(self,'resize_corners',[])
+                for i,p in enumerate(corners):
+                    pixel=self.view.mapFromScene(*p)
+                    if np.linalg.norm(np.subtract([pixel.x(),pixel.y()],[event.position().x(),event.position().y()]))<=10:
+                        self.drag=('resize',point,(i,deepcopy(self.guides[self.selected])));return True
             if self.drawing:
                 self.view.setFocus()
                 if len(self.draft)>=200:
@@ -236,6 +250,17 @@ class TrenchGuideEditor(QObject):
         if kind==QEvent.Type.MouseMove and self.drag is not None:
             mode,start,stored=self.drag
             point=self._point(event)
+            if mode=='resize':
+                corner,original=stored;coordinates=np.asarray(original['points']);lo=coordinates.min(axis=0);hi=coordinates.max(axis=0)
+                old=np.array([[lo[0],lo[1]],[hi[0],lo[1]],[hi[0],hi[1]],[lo[0],hi[1]]])
+                anchor=old[(corner+2)%4];denom=old[corner]-anchor
+                factor=np.divide(point-anchor,denom,out=np.ones(2),where=np.abs(denom)>1e-6);factor=np.maximum(factor,.05)
+                changed=anchor+(coordinates-anchor)*factor
+                changed[:,0]=np.clip(changed[:,0],0,self.view.image_rect.width()-1);changed[:,1]=np.clip(changed[:,1],0,self.view.image_rect.height()-1)
+                guide=deepcopy(original);guide['points']=changed.tolist()
+                try:self.guides[self.selected]=normalize_guides([guide])[0]
+                except ValueError:return True
+                self.render();return True
             if mode=='edit':
                 end,original=stored
                 guide=deepcopy(original)

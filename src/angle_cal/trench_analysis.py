@@ -38,6 +38,7 @@ class TrenchOptions:
     field_search_px: int = 32
     angle_span: tuple = (40, 100)
     wall_guides: tuple = ()
+    boundary_mode: str = 'inner_rim'
 
 
 @dataclass
@@ -292,8 +293,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     x, top, width, height = (int(v) for v in options.roi)
     if x < 0 or top < 0 or width < 12 or height < 16 or x + width > image.shape[1] or top + height > image.shape[0]:
         raise ValueError("입구와 양쪽 벽을 포함하는 분석 영역을 이미지 안에 지정하세요 (최소 12×16 px).")
-    if not math.isfinite(options.step_px) or options.step_px <= 0 or height / options.step_px > 20000:
-        raise ValueError("CD 간격을 늘려주세요. 한 번에 최대 20,000개 지점을 측정합니다.")
+    if not math.isfinite(options.step_px) or options.step_px <= 0:
+        raise ValueError("CD 깊이 간격은 양수여야 합니다.")
     if options.bow_reference not in ("entrance", "chord"):
         raise ValueError("지원하지 않는 Bowing 기준입니다.")
     if not math.isfinite(options.negative_slope_deg) or not 0 <= options.negative_slope_deg < 89:
@@ -334,7 +335,10 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         full_ridge=(full_gray-low)*(255.0/(high-low))
         if options.bright_trench:full_ridge=255-full_ridge
         full_ridge=cv2.GaussianBlur(full_ridge.astype(np.float32),(3,3),0)
-        traces=[trace_guide(full_ridge,g,threshold) for g in guides]
+        mode=options.boundary_mode
+        if options.bright_trench and mode in ('brightest','darkest'):
+            mode='darkest' if mode=='brightest' else 'brightest'
+        traces=[trace_guide(full_ridge,g,threshold,mode) for g in guides]
         for i,g in enumerate(guides):
             samples=sweep_samples(g);direction=np.gradient(samples,axis=0)
             vertical=np.abs(direction[:,1])>=.75*np.abs(direction[:,0])
@@ -484,6 +488,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     if any(corner["status"] != "valid" for corner in corners):
         warnings.append("일부 입구 R은 미확정입니다. 입구 곡률 탭에서 윤곽과 판정 이유를 확인하세요.")
     first_sample = math.ceil((y[0] - top) / options.step_px) * options.step_px
+    if (observed_depth-first_sample)/options.step_px>100000:
+        raise ValueError('CD 깊이 간격을 늘려주세요. 한 번에 최대 100,000개 지점을 측정합니다.')
     sample_y = np.arange(first_sample, observed_depth + 1e-8, options.step_px) + top
     if len(sample_y) and np.any(np.diff(y)>1.5):
         high_index=np.clip(np.searchsorted(y,sample_y),1,len(y)-1)

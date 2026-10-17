@@ -28,6 +28,11 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest -q
+      - name: Verify simple Trench workflow
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONPATH: src
+        run: python scripts/verify_trench_simple_workflow.py
       - name: Build executable
         run: python -m PyInstaller --noconfirm --clean AngleCal.spec
       - name: Write version manifest
@@ -82,7 +87,7 @@ jobs:
 
             - Windows 실행: **AngleCal.exe**를 다운로드하세요. Python 설치가 필요 없습니다.
             - 배치 실행: **AngleCal-bat.zip**을 내려받아 압축을 풀고 AngleCal.bat를 실행하세요. Python 3.9 이상이 필요합니다.
-            - 곡선 가이드: **파일 → 애드온 → Trench 자동분석기 → 곡선 가이드 그리기**를 누르세요. 좌우를 지정하지 않고 한쪽 벽, Field만 또는 Field·입구·벽·바닥·반대쪽 Field까지 연결한 윤곽을 그릴 수 있습니다. 마지막 점에서 더블클릭해 완료하고 휠로 폭을 조절한 뒤 **경계 인식**을 누릅니다. 연결된 윤곽을 먼저 추적하고 측정 단계에서 Field·입구 곡률·좌우 벽을 구분합니다. 휘어진 Field는 입구 접선 내각과 전체 직선 맞춤 참고 각도를 구분해 표시합니다.
+            - Trench 사용: **썸네일에서 이미지 선택 → 곡선 그리기 또는 구조 불러오기 → 인식**. 별도 영역 지정이 필요 없습니다. Trench 전용 도구줄의 선택·이동·크기 조절·스케일바를 사용할 수 있습니다. 기존 보정값을 이어받으며 CD 깊이 간격은 기본 1nm입니다.
             - 창 제목의 버전·빌드 번호가 이 릴리스와 같은지 확인하세요.
           files: |
             dist/AngleCal.exe

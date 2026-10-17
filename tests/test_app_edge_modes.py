@@ -2990,7 +2990,7 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         assert [window.ribbon_tabs.tabText(idx) for idx in range(window.ribbon_tabs.count())] == ["파일", "경계", "가이드/측정", "이미지/표시/서식", "구조"]
         ribbon_layout = window.menuWidget().layout()
         assert ribbon_layout.itemAt(0).widget() is window.ribbon_tabs
-        assert ribbon_layout.itemAt(1).layout() is not None
+        assert window.tool_buttons['scale'].isVisibleTo(window.menuWidget())
         assert window.tool_buttons["edge"].text() == "경계선"
         assert window.structure_combo.itemText(0) == "구조 선택"
         edge_groups = window.ribbon_tabs.widget(1).findChildren(QGroupBox)

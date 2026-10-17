@@ -173,12 +173,9 @@ def test_workspace_real_mouse_roi_worker_navigation_and_exports(qt_app, tmp_path
     panel.unit_combo.setCurrentIndex(0)
     qt_app.processEvents()
     panel.view.fit_image()
-    a = panel.view.mapFromScene(30, 20)
-    b = panel.view.mapFromScene(170, 245)
-    QTest.mousePress(panel.view.viewport(), Qt.MouseButton.LeftButton, pos=a)
-    QTest.mouseMove(panel.view.viewport(), b)
-    QTest.mouseRelease(panel.view.viewport(), Qt.MouseButton.LeftButton, pos=b)
-    assert panel.roi is not None
+    from test_trench_guides import draw_curve,bowed_guides
+    for guide in bowed_guides():draw_curve(panel,qt_app,guide['side'],guide['points'])
+    assert panel.roi is None  # Bounds are derived by recognition.
     QTest.mouseClick(panel.analyze_button, Qt.MouseButton.LeftButton)
     finish_analysis(panel, qt_app)
     assert panel.cd_table.rowCount() >= 9
@@ -207,7 +204,7 @@ def test_unit_conversion_and_uncalibrated_guard(qt_app):
     panel.step_spin.setValue(10)
     assert panel.options().step_px == 20
     panel.unit_combo.setCurrentIndex(2)  # angstrom
-    assert panel.options().step_px == 2
+    assert panel.options().step_px == 20  # Sampling remains 10nm in every display unit.
     panel.scale_spin.setValue(0)
     with pytest.raises(ValueError):
         panel.options()

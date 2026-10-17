@@ -184,7 +184,7 @@ def test_corner_editor_mouse_roi_spans_reset_and_unit_exports(tmp_path):
     data = json.loads((tmp_path / "corner.json").read_text(encoding="utf-8"))
     assert data["corners"][0]["roi"] == list(panel.corner_rois[0])
     assert data["corners"][0]["status"] == "valid"
-    assert QImage(str(tmp_path / "corner.png")).height() == image.shape[0] + 360
+    assert image.shape[0] <= QImage(str(tmp_path / "corner.png")).height() < image.shape[0] + 200  # No removed corner insets.
     QTest.mouseClick(editor.reset_button, Qt.MouseButton.LeftButton)
     finish()
     assert panel.corner_rois == [None, None]

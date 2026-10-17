@@ -10,9 +10,10 @@ import cv2
 import numpy as np
 
 from .trench_guides import sweep_samples, in_bands
+from .image_ops import _boundary_profile_index
 
 
-def trace_guide(image, guide, threshold):
+def trace_guide(image, guide, threshold, boundary_mode='inner_rim'):
     samples=sweep_samples(guide)
     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(samples,axis=0),axis=1))]
     step=max(1.,arc[-1]/20000)
@@ -97,9 +98,15 @@ def trace_guide(image, guide, threshold):
             # A resolved SEM rim measures at its bright crest, rather than
             # either steep flank. Suppress only nearby flanks, not all other
             # gradients elsewhere in the search corridor.
-            if kind=='gradient' and any(abs(offset-ridge)<4 for ridge in ridges):continue
+            if boundary_mode=='inner_rim' and kind=='gradient' and any(abs(offset-ridge)<4 for ridge in ridges):continue
             if all(abs(offset-old[0])>=1.5 for old in ranked):ranked.append((offset,strength))
             if len(ranked)==6:break
+        if ranked and boundary_mode!='inner_rim':
+            positions=np.array([c[0] for c in ranked])
+            levels=np.interp(positions,offsets,profile)
+            slopes=np.interp(positions,offsets,np.abs(np.gradient(profile)))
+            selected=_boundary_profile_index(positions,levels,slopes,boundary_mode)
+            ranked=[(offset,strength+(96 if index==selected else 0)) for index,(offset,strength) in enumerate(ranked)]
         candidates.append(ranked)
     # Viterbi along the ordered guide. Keep multiple candidates until the
     # complete local path is evaluated; a strong isolated peak cannot win a

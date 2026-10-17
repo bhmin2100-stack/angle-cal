@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, Q
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QMenu, QToolButton,
     QFormLayout, QGraphicsItem, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QPushButton, QScrollArea, QSpinBox, QSplitter,
+    QHeaderView, QLabel, QPushButton, QScrollArea, QSpinBox, QSplitter, QInputDialog,
     QSizePolicy, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -20,6 +20,8 @@ from .image_ops import bgr_to_rgb8_for_display
 from .trench_analysis import TrenchOptions, TrenchResult, analyze_trench, export_trench_csv, trench_gfe_tsv
 from .trench_guides import normalize_guides
 from .trench_guide_view import TrenchGuideEditor
+from .trench_workflow import recognize_from_guides
+from .trench_structure import structure_guides
 
 
 def _pen(color: str, width: float = 1.5, dashed: bool = False) -> QPen:
@@ -31,6 +33,8 @@ def _pen(color: str, width: float = 1.5, dashed: bool = False) -> QPen:
 
 
 class TrenchView(QGraphicsView):
+    scale_drawn = Signal(object,object)
+    tool_cancelled=Signal()
     region_selected = Signal(QRectF)
     viewport_changed = Signal(QRectF)
     navigate = Signal(QPointF)
@@ -43,6 +47,9 @@ class TrenchView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.overview = overview
         self.select_region = False
+        self.scale_mode=False
+        self.scale_origin=None
+        self.scale_preview=None
         self.origin = None
         self.rubber = None
         self.image_rect = QRectF()
@@ -80,6 +87,11 @@ class TrenchView(QGraphicsView):
         self.setCursor(Qt.CursorShape.CrossCursor if selected else Qt.CursorShape.OpenHandCursor)
 
     def mousePressEvent(self, event) -> None:
+        if self.scale_mode and event.button()==Qt.MouseButton.LeftButton and not self.image_rect.isEmpty():
+            p=self.mapToScene(event.position().toPoint())
+            self.scale_origin=QPointF(np.clip(p.x(),0,self.image_rect.width()-1),np.clip(p.y(),0,self.image_rect.height()-1))
+            self.scale_preview=self.scene().addLine(p.x(),p.y(),p.x(),p.y(),_pen('#ffffff',2))
+            return
         if event.button() == Qt.MouseButton.LeftButton and self.overview:
             self.navigate.emit(self.mapToScene(event.position().toPoint()))
             return
@@ -90,12 +102,19 @@ class TrenchView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self.scale_origin is not None:
+            p=self._scale_point(event);self.scale_preview.setLine(self.scale_origin.x(),self.scale_origin.y(),p.x(),p.y());return
         if self.origin is not None:
             self.rubber.setRect(QRectF(self.origin, self.mapToScene(event.position().toPoint())).normalized().intersected(self.image_rect))
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if self.scale_origin is not None:
+            start=self.scale_origin;end=self._scale_point(event)
+            self.scene().removeItem(self.scale_preview);self.scale_origin=self.scale_preview=None
+            if (end-start).manhattanLength()>=2:self.scale_drawn.emit((start.x(),start.y()),(end.x(),end.y()))
+            return
         if self.origin is not None:
             rect = self.rubber.rect()
             self.scene().removeItem(self.rubber)
@@ -104,6 +123,20 @@ class TrenchView(QGraphicsView):
                 self.region_selected.emit(rect)
             return
         super().mouseReleaseEvent(event)
+
+    def _scale_point(self,event):
+        p=self.mapToScene(event.position().toPoint())
+        p=QPointF(np.clip(p.x(),0,self.image_rect.width()-1),np.clip(p.y(),0,self.image_rect.height()-1))
+        if event.modifiers()&Qt.KeyboardModifier.ShiftModifier:
+            if abs(p.x()-self.scale_origin.x())>=abs(p.y()-self.scale_origin.y()):p.setY(self.scale_origin.y())
+            else:p.setX(self.scale_origin.x())
+        return p
+
+    def keyPressEvent(self,event):
+        if event.key()==Qt.Key.Key_Escape and self.scale_mode:
+            if self.scale_preview is not None:self.scene().removeItem(self.scale_preview)
+            self.scale_origin=self.scale_preview=None;self.tool_cancelled.emit();return
+        super().keyPressEvent(event)
 
     def wheelEvent(self, event) -> None:
         if self.overview:
@@ -464,11 +497,11 @@ class TrenchGraph(QWidget):
         self.plot_rect = rect
         if self.mode == "shape":
             series = [(r.left, r.y, "#007d92"), (r.right, r.y, "#bb4b1e")]
-            for item in r.field_angles:
+            for item in (r.field_angles if getattr(self,"show_entrance",True) else []):
                 if item["status"] == "valid":
                     points=np.asarray(item["points"])
                     series.append((points[:,0],points[:,1],"#268b48"))
-            title = "좌우 윤곽 X"
+            title = "좌우 경계 X"
         elif self.mode == "bow":
             series = [(r.left_reference - r.left, r.y, "#007d92"), (r.right - r.right_reference, r.y, "#bb4b1e")]
             title = "좌 / 우 벌어짐 (+ 바깥)"
@@ -494,7 +527,7 @@ class TrenchGraph(QWidget):
             painter.setPen(QColor("#425368"))
             painter.drawText(QRectF(0, py - 10, 55, 20), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                              f"{(y - r.options.roi[1]) * self.factor:.3g}")
-        for item in r.local_bowing:
+        for item in (r.local_bowing if getattr(self,"show_entrance",True) else []):
             a, b = point(xmin, item["start_y"]).y(), point(xmax, item["negative_end_y"]).y()
             painter.fillRect(QRectF(rect.left(), a, rect.width(), max(1, b - a)), QColor(255, 171, 64, 22))
         if self.mode == "shape":
@@ -517,7 +550,7 @@ class TrenchGraph(QWidget):
             painter.setPen(QPen(QColor(color), 2))
             painter.drawPath(path)
         if self.mode == "shape":
-            for item in r.field_angles:
+            for item in (r.field_angles if getattr(self,"show_entrance",True) else []):
                 if item["angle_status"] == "valid":
                     vx,vy=item["vertex"]
                     wm,wc=item["wall_line"]
@@ -568,19 +601,23 @@ class TrenchGraph(QWidget):
 class TrenchWorker(QThread):
     completed = Signal(object, str, int)
 
-    def __init__(self, image, options, revision, parent):
+    def __init__(self, image, options, revision, parent, automatic_area=False):
         super().__init__(parent)
         self.image, self.options, self.revision = image, options, revision
+        self.automatic_area=automatic_area
 
     def run(self):
         try:
-            self.completed.emit(analyze_trench(self.image, self.options), "", self.revision)
+            result=recognize_from_guides(self.image,self.options) if self.automatic_area else analyze_trench(self.image,self.options)
+            self.completed.emit(result, "", self.revision)
         except Exception as exc:
             self.completed.emit(None, str(exc), self.revision)
 
 
 class TrenchPanel(QWidget):
     state_changed = Signal(dict)
+    calibration_changed = Signal(float)
+    scale_bar_changed = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -599,204 +636,98 @@ class TrenchPanel(QWidget):
         self.overlays = []
         self.selected_line = None
         self.selected_band = None
-        root = QVBoxLayout(self)
-        root.setContentsMargins(6, 4, 6, 4)
-        self.hint = QLabel("① 기존 화면에서 수평 정렬·스케일 보정 → ② 입구 높이부터 한 Trench를 드래그 → ③ 분석")
-        self.hint.setWordWrap(True)
-        root.addWidget(self.hint)
-        body = QSplitter(Qt.Orientation.Horizontal)
-        root.addWidget(body, 1)
-        left = QSplitter(Qt.Orientation.Vertical)
-        body.addWidget(left)
-        self.view = TrenchView()
-        self.guide_editor = TrenchGuideEditor(self.view)
-        self.guide_bar = QWidget()
-        guide_layout = QVBoxLayout(self.guide_bar)
-        guide_layout.setContentsMargins(0,0,0,0)
-        guide_actions = QHBoxLayout()
-        guide_actions.addWidget(QLabel('통합 윤곽'))
-        self.guide_button=QPushButton('곡선 가이드 그리기');self.guide_button.setCheckable(True)
-        guide_actions.addWidget(self.guide_button)
-        self.guide_selection=QComboBox();self.guide_selection.setMinimumWidth(130)
-        guide_actions.addWidget(self.guide_selection)
-        guide_actions.addWidget(QLabel('인식 ±px'))
-        self.guide_width=QDoubleSpinBox();self.guide_width.setRange(1,300);self.guide_width.setDecimals(1);self.guide_width.setValue(12)
-        self.guide_width.setToolTip('원본 픽셀 기준 원의 반지름입니다. 곡선을 따라 같은 크기의 원이 지나가는 영역 안에서 인식합니다. 휠로 조절할 수 있습니다.')
-        guide_actions.addWidget(self.guide_width)
-        self.guide_delete=QPushButton('선택 삭제');guide_actions.addWidget(self.guide_delete)
-        self.guide_clear=QPushButton('가이드 초기화');guide_actions.addWidget(self.guide_clear)
-        self.guide_analyze=QPushButton('경계 인식');self.guide_analyze.clicked.connect(self.start_analysis)
-        guide_actions.addWidget(self.guide_analyze)
-        guide_actions.addStretch()
-        guide_layout.addLayout(guide_actions)
-        self.guide_hint=QLabel('Field → 입구 → 측벽까지 연결하거나 필요한 부분만 그리세요 · 마지막 더블클릭 완료 · 점 드래그 보정 · 휠=폭 · Ctrl+휠=확대 · Esc=취소')
-        self.guide_hint.setWordWrap(True);guide_layout.addWidget(self.guide_hint)
-        root.insertWidget(1,self.guide_bar)
+        self.automatic_area=True
+        self.boundary_mode='max_gradient'
+        self.scale_bar=None
+        root=QVBoxLayout(self);root.setContentsMargins(6,4,6,4)
+        self.hint=QLabel('① 썸네일 선택 → ② 곡선 그리기 또는 구조 불러오기 → ③ 인식')
+        self.hint.setWordWrap(True);root.addWidget(self.hint)
+        self.view=TrenchView();self.guide_editor=TrenchGuideEditor(self.view)
+        self.guide_bar=QWidget();tools=QHBoxLayout(self.guide_bar);tools.setContentsMargins(0,0,0,0);tools.setSpacing(5)
+        self.tool_buttons={}
+        for key,title in (('select','선택'),('pan','이동'),('resize','크기 조절'),('scale','스케일바')):
+            button=QPushButton(title);button.setCheckable(True)
+            button.clicked.connect(lambda checked=False,mode=key:self.set_tool(mode))
+            self.tool_buttons[key]=button;tools.addWidget(button)
+        self.guide_button=QPushButton('곡선 그리기');self.guide_button.setCheckable(True)
+        self.guide_button.setObjectName('trench_contour_guide');tools.addWidget(self.guide_button)
+        self.load_structure_button=QToolButton();self.load_structure_button.setText('구조 불러오기')
+        self.load_structure_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.structure_menu=QMenu(self.load_structure_button);self.load_structure_button.setMenu(self.structure_menu)
+        self.load_structure_button.clicked.connect(self.load_structure_dialog);tools.addWidget(self.load_structure_button)
+        self.save_structure_button=QPushButton('구조 저장');self.save_structure_button.clicked.connect(self.save_structure_dialog);tools.addWidget(self.save_structure_button)
+        self.guide_analyze=QPushButton('인식');self.guide_analyze.clicked.connect(self.start_analysis);tools.addWidget(self.guide_analyze)
+        self.guide_selection=QComboBox();self.guide_selection.setMinimumWidth(100);tools.addWidget(self.guide_selection)
+        tools.addWidget(QLabel('인식 폭 ±px'));self.guide_width=QDoubleSpinBox();self.guide_width.setRange(1,300);self.guide_width.setValue(12);tools.addWidget(self.guide_width)
+        self.guide_delete=QPushButton('삭제');self.guide_delete.clicked.connect(self.guide_editor.remove_selected);tools.addWidget(self.guide_delete)
+        self.guide_clear=QPushButton('모두 지우기');self.guide_clear.clicked.connect(self.guide_editor.clear)
+        tools.addStretch();root.addWidget(self.guide_bar)
+        self.guide_hint=QLabel('점을 찍고 마지막 더블클릭으로 완료 · 점/곡선 드래그로 보정 · 휠: 인식 폭 · Ctrl+휠: 확대')
+        root.addWidget(self.guide_hint)
         self.guide_bar.setEnabled(False)
         self.guide_button.toggled.connect(self._guide_mode)
         self.guide_width.valueChanged.connect(self.guide_editor.set_radius)
         self.guide_selection.currentIndexChanged.connect(lambda i:self.guide_editor.select(i-1))
-        self.guide_delete.clicked.connect(self.guide_editor.remove_selected)
-        self.guide_clear.clicked.connect(self.guide_editor.clear)
         self.guide_editor.changed.connect(self._guides_changed)
         self.guide_editor.selection_changed.connect(self._guide_selection_changed)
         self.guide_editor.mode_changed.connect(self._guide_mode_changed)
         self.guide_editor.message.connect(self.guide_hint.setText)
-        self.image_tabs = QTabWidget()
-        self.image_tabs.addTab(self.view, "Trench 이미지")
-        self.corner_editors = [CornerEditor("왼쪽 입구"), CornerEditor("오른쪽 입구")]
-        corner_page = QWidget()
-        corner_layout = QHBoxLayout(corner_page)
-        corner_layout.setContentsMargins(0, 0, 0, 0)
-        for index, editor in enumerate(self.corner_editors):
-            corner_layout.addWidget(editor)
-            editor.changed.connect(lambda roi, span, i=index: self._corner_changed(i, roi, span))
-        self.image_tabs.addTab(corner_page, "입구 곡률")
-        self.surface_editors=[SurfaceEditor("왼쪽 Field / 각도"),SurfaceEditor("오른쪽 Field / 각도")]
-        surface_page=QWidget();surface_layout=QHBoxLayout(surface_page)
-        for editor in self.surface_editors:
-            surface_layout.addWidget(editor)
-        self.image_tabs.addTab(surface_page,"Field / 각도")
-        self.image_tabs.currentChanged.connect(lambda _index:[editor.fit_result() for editor in self.surface_editors])
-        self.image_tabs.currentChanged.connect(lambda _index: [editor.fit_corner() for editor in self.corner_editors])
-        left.addWidget(self.image_tabs)
-        lower = QSplitter(Qt.Orientation.Horizontal)
-        left.addWidget(lower)
-        self.graph = TrenchGraph()
-        lower.addWidget(self.graph)
-        self.tables = QTabWidget()
-        lower.addWidget(self.tables)
-        self.cd_table = self._table(["깊이", "CD", "왼쪽 X", "오른쪽 X"])
-        self.local_table = self._table(["측벽", "시작 깊이", "Nega 끝", "국부 Bow", "현 대비", "역경사°"])
-        self.tables.addTab(self.cd_table, "깊이별 CD")
-        self.tables.addTab(self.local_table, "국부 Bowing / Nega slope")
-        self.cd_table.cellClicked.connect(self._cd_selected)
-        self.local_table.cellClicked.connect(self._local_selected)
-        left.setSizes([550, 245])
-        lower.setSizes([320, 500])
-        sidebar_scroll = QScrollArea()
-        sidebar_scroll.setWidgetResizable(True)
-        sidebar_scroll.setMinimumWidth(280)
-        sidebar_scroll.setMaximumWidth(330)
-        sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        body.addWidget(sidebar_scroll)
-        sidebar = QWidget()
-        sidebar_scroll.setWidget(sidebar)
-        controls = QVBoxLayout(sidebar)
-        controls.setContentsMargins(6, 4, 6, 4)
-        controls.addWidget(QLabel("전체 위치 · 노란 상자 = 확대 화면"))
-        self.overview = TrenchView(overview=True)
-        self.overview.setFixedHeight(180)
-        controls.addWidget(self.overview)
-        self.view.viewport_changed.connect(self.overview.set_viewport_box)
-        self.overview.navigate.connect(self._navigate)
+        self.view.scale_drawn.connect(self._calibrate_scale)
+        self.view.tool_cancelled.connect(lambda:self.set_tool('select'))
+        body=QSplitter(Qt.Orientation.Horizontal);root.addWidget(body,1)
+        left=QSplitter(Qt.Orientation.Vertical);body.addWidget(left)
+        self.image_tabs=QTabWidget();self.image_tabs.addTab(self.view,'이미지');self.image_tabs.tabBar().hide();left.addWidget(self.image_tabs)
+        lower=QSplitter(Qt.Orientation.Horizontal);left.addWidget(lower)
+        self.graph=TrenchGraph();lower.addWidget(self.graph)
+        self.tables=QTabWidget();self.cd_table=self._table(['깊이','CD','왼쪽 X','오른쪽 X'])
+        self.local_table=self._table(['측벽','시작 깊이','Nega 끝','국부 Bow','현 대비','역경사°'])
+        self.tables.addTab(self.cd_table,'깊이별 CD');self.tables.tabBar().hide();lower.addWidget(self.tables)
+        self.cd_table.cellClicked.connect(self._cd_selected);self.graph.depth_selected.connect(self.select_depth)
+        left.setSizes([560,230]);lower.setSizes([320,500])
+        sidebar=QWidget();sidebar.setMinimumWidth(220);sidebar.setMaximumWidth(270);body.addWidget(sidebar)
+        controls=QVBoxLayout(sidebar);controls.setContentsMargins(6,4,6,4)
+        controls.addWidget(QLabel('스케일'))
+        form=QFormLayout();controls.addLayout(form)
+        self.scale_spin=QDoubleSpinBox();self.scale_spin.setRange(0,1e9);self.scale_spin.setDecimals(8);self.scale_spin.setSpecialValueText('미보정')
+        form.addRow('nm / px',self.scale_spin)
+        self.unit_combo=QComboBox()
+        for title,data in (('px','px'),('nm','nm'),('Å','angstrom')):self.unit_combo.addItem(title,data)
+        form.addRow('표시 단위',self.unit_combo)
+        self.step_spin=QDoubleSpinBox();self.step_spin.setRange(.001,1e7);self.step_spin.setDecimals(3);self.step_spin.setValue(1)
+        form.addRow('CD 깊이 간격 (nm)',self.step_spin)
+        self.calibration_note=QLabel('스케일바를 그리면 입력한 길이를 기준으로 보정합니다.');self.calibration_note.setWordWrap(True);controls.addWidget(self.calibration_note)
+        self.analyze_button=QPushButton('인식');self.analyze_button.setMinimumHeight(32);self.analyze_button.clicked.connect(self.start_analysis);controls.addWidget(self.analyze_button)
+        fit=QPushButton('전체 보기');fit.clicked.connect(self.view.fit_image);controls.addWidget(fit)
+        self.summary_label=QLabel('곡선을 그리거나 구조를 불러오세요.');self.summary_label.setWordWrap(True);self.summary_label.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred);controls.addWidget(self.summary_label)
+        self.export_button=QToolButton();self.export_button.setText('Export · GFE 좌표 복사');self.export_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        menu=QMenu(self.export_button);menu.addAction('GFE 좌표 복사',self.copy_gfe_coordinates);menu.addAction('파일 저장 (CSV / JSON / PNG)…',self.export_dialog)
+        self.export_button.setMenu(menu);self.export_button.clicked.connect(self.copy_gfe_coordinates);self.export_button.setEnabled(False);controls.addWidget(self.export_button);controls.addStretch()
+        # Compatibility objects for old projects and the independent backend.
+        # These are not part of the simplified workspace or image overlays.
+        self.overview=TrenchView(overview=True);self.overview.setParent(self);self.overview.hide()
+        self.roi_label=QLabel(self);self.roi_label.hide()
+        self.roi_button=QPushButton(self);self.roi_button.setCheckable(True);self.roi_button.toggled.connect(self._roi_mode);self.roi_button.hide()
         self.view.region_selected.connect(self.set_roi)
-        self.graph.depth_selected.connect(self.select_depth)
-        actions = QHBoxLayout()
-        self.roi_button = QPushButton("영역 지정")
-        self.roi_button.setCheckable(True)
-        self.roi_button.toggled.connect(self._roi_mode)
-        actions.addWidget(self.roi_button)
-        fit = QPushButton("전체 보기")
-        fit.clicked.connect(self.view.fit_image)
-        actions.addWidget(fit)
-        controls.addLayout(actions)
-        form = QFormLayout()
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        controls.addLayout(form)
-        self.roi_label = QLabel("미지정")
-        self.roi_label.setWordWrap(True)
-        form.addRow("분석 영역", self.roi_label)
-        self.scale_spin = QDoubleSpinBox()
-        self.scale_spin.setRange(0, 1e9)
-        self.scale_spin.setDecimals(8)
-        self.scale_spin.setSpecialValueText("미보정 (px)")
-        self.scale_spin.setToolTip("기존 스케일 보정값을 가져옵니다. 0이면 물리 길이를 계산하지 않습니다.")
-        form.addRow("nm / px", self.scale_spin)
-        self.unit_combo = QComboBox()
-        for title, data in (("px", "px"), ("nm", "nm"), ("Å", "angstrom")):
-            self.unit_combo.addItem(title, data)
-        form.addRow("표시·간격 단위", self.unit_combo)
-        self.step_spin = QDoubleSpinBox()
-        self.step_spin.setRange(.001, 1e7)
-        self.step_spin.setDecimals(3)
-        self.step_spin.setValue(20)
-        form.addRow("CD 깊이 간격", self.step_spin)
-        self.threshold_spin = QSpinBox()
-        self.threshold_spin.setRange(0, 254)
-        self.threshold_spin.setSpecialValueText("자동")
-        self.threshold_spin.setToolTip("Trench 후보 영역을 찾는 상대 명암값 (1~254). 밝은 테두리는 연결된 첫 밝기 정점으로 보정하며, 정점이 없으면 명암 경계를 사용합니다.")
-        form.addRow("경계값", self.threshold_spin)
-        self.bright_check = QCheckBox("밝은 Trench")
-        form.addRow("명암", self.bright_check)
-        self.smooth_spin = QSpinBox()
-        self.smooth_spin.setRange(1, 101)
-        self.smooth_spin.setSingleStep(2)
-        self.smooth_spin.setValue(7)
-        form.addRow("평활 범위 (px)", self.smooth_spin)
-        self.bow_combo = QComboBox()
-        self.bow_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.bow_combo.setMinimumContentsLength(10)
-        self.bow_combo.addItem("상단 검출점 수직선", "entrance")
-        self.bow_combo.addItem("상단–90% 깊이 연결선", "chord")
-        form.addRow("전체 Bow 기준", self.bow_combo)
-        self.negative_spin = QDoubleSpinBox()
-        self.negative_spin.setRange(0, 45)
-        self.negative_spin.setValue(1)
-        self.negative_spin.setSuffix(" °")
-        self.negative_spin.setToolTip("수직선 대비 바깥 방향 역경사. 미세 잡음을 제외할 최소 각도입니다.")
-        form.addRow("Nega 최소 각도", self.negative_spin)
-        self.corner_spin = QSpinBox()
-        self.corner_spin.setRange(6, 200)
-        self.corner_spin.setValue(24)
-        self.corner_spin.setToolTip("자동 입구 검색의 기준 크기입니다. 각도·CD·Bowing 계산에는 영향을 주지 않습니다.")
-        form.addRow("입구 검색 크기 px", self.corner_spin)
-        self.field_spin=QSpinBox();self.field_spin.setRange(4,300);self.field_spin.setValue(32)
-        self.field_spin.setToolTip("ROI 입구 높이 위아래에서 실제 Field를 찾는 범위입니다. Field까지 가이드를 그리면 같은 추적 윤곽에서 측정합니다. 곡률 검색과 별개입니다.")
-        form.addRow("Field 검색 ±px",self.field_spin)
-        self.angle_start=QSpinBox();self.angle_start.setRange(0,10000);self.angle_start.setValue(40)
-        self.angle_end=QSpinBox();self.angle_end.setRange(1,10000);self.angle_end.setValue(100)
-        form.addRow("각도 측벽 시작 px",self.angle_start)
-        form.addRow("각도 측벽 끝 px",self.angle_end)
-        self.analyze_button = QPushButton("Trench 분석")
-        self.analyze_button.setMinimumHeight(32)
-        self.analyze_button.clicked.connect(self.start_analysis)
-        controls.addWidget(self.analyze_button)
-        self.summary_label = QLabel("분석 대기")
-        self.summary_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.summary_label.setWordWrap(True)
-        self.summary_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        controls.addWidget(self.summary_label)
-        self.graph_combo = QComboBox()
-        for text, data in (("CD / 깊이", "cd"), ("통합 윤곽", "shape"), ("좌우 Bowing", "bow")):
-            self.graph_combo.addItem(text, data)
-        self.graph_combo.currentIndexChanged.connect(self._graph_changed)
-        self.graph_combo.setCurrentIndex(1)  # Show both walls by default.
-        controls.addWidget(self.graph_combo)
-        self.export_button = QToolButton()
-        self.export_button.setText("Export · GFE 좌표 복사")
-        self.export_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-        self.export_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.export_button.setToolTip("클릭: 검출 Field와 좌우 측벽을 GFE X/Y 표로 복사 (Å)\n화살표: CSV / JSON / PNG 저장\nY 기준 = 좌우 Field의 입구 높이 평균, X = 입구 중심\n윤곽 간격은 직선 연결이며 Field가 미확정이면 복사하지 않습니다.")
-        export_menu = QMenu(self.export_button)
-        export_menu.addAction("GFE 좌표 복사 (클립보드)", self.copy_gfe_coordinates)
-        export_menu.addAction("파일 저장 (CSV / JSON / PNG)…", self.export_dialog)
-        self.export_button.setMenu(export_menu)
-        self.export_button.clicked.connect(self.copy_gfe_coordinates)
-        self.export_button.setEnabled(False)
-        controls.addWidget(self.export_button)
-        definitions = QLabel("측정 기준\n• ROI 위쪽 = Depth 기준 높이\n• Depth = 입구~검출 바닥 (이미지 수직)\n• 전체 Bow = 기준선 대비 최대 외측 변위\n• 국부 Bow = Nega 시작 수직선 대비 벌어짐\n• 현 대비 = 국부 양끝 연결선 대비 휨\n• Nega = 내려갈수록 바깥으로 벌어짐\n• Field = 검출된 실제 재료/공간 경계\n• 각도 = 검출 Field와 선택 측벽의 내각\n• 입구 R = 둥근 전이 구간의 대표 원 맞춤\n• RMS = 윤곽 맞춤 오차 (치수 정확도 아님)\n• 측벽 분석은 검출 깊이의 90%까지\n\n입구 곡률 탭: 노란 점 = 사용 윤곽 · 보라 = 원호\n초록/분홍 = 원호 시작/끝\n그래프·표 클릭으로 해당 깊이를 확인하세요.")
-        definitions.setWordWrap(True)
-        definitions.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        definitions.setStyleSheet("color: #666; font-size: 11px;")
-        controls.addWidget(definitions)
-        controls.addStretch()
-        body.setSizes([850, 270])
-        for spin in (self.scale_spin, self.step_spin, self.threshold_spin, self.smooth_spin, self.negative_spin, self.corner_spin,self.field_spin,self.angle_start,self.angle_end):
-            spin.valueChanged.connect(self._settings_changed)
+        self.threshold_spin=QSpinBox(self);self.threshold_spin.setRange(0,254)
+        self.bright_check=QCheckBox(self)
+        self.smooth_spin=QSpinBox(self);self.smooth_spin.setRange(1,101);self.smooth_spin.setValue(7)
+        self.bow_combo=QComboBox(self);self.bow_combo.addItem('','entrance');self.bow_combo.addItem('','chord')
+        self.negative_spin=QDoubleSpinBox(self);self.negative_spin.setRange(0,45);self.negative_spin.setValue(1)
+        self.corner_spin=QSpinBox(self);self.corner_spin.setRange(6,200);self.corner_spin.setValue(24)
+        self.field_spin=QSpinBox(self);self.field_spin.setRange(4,300);self.field_spin.setValue(32)
+        self.angle_start=QSpinBox(self);self.angle_start.setRange(0,10000);self.angle_start.setValue(40)
+        self.angle_end=QSpinBox(self);self.angle_end.setRange(1,10000);self.angle_end.setValue(100)
+        self.graph_combo=QComboBox(self);self.graph_combo.addItem('','cd');self.graph_combo.addItem('','shape');self.graph_combo.addItem('','bow');self.graph_combo.setCurrentIndex(1);self.graph_combo.currentIndexChanged.connect(self._graph_changed);self.graph.mode='shape'
+        self.corner_editors=[CornerEditor('왼쪽 입구'),CornerEditor('오른쪽 입구')]
+        for i,editor in enumerate(self.corner_editors):editor.changed.connect(lambda roi,span,index=i:self._corner_changed(index,roi,span))
+        self.surface_editors=[SurfaceEditor('왼쪽'),SurfaceEditor('오른쪽')]
+        for widget in [self.guide_clear,self.local_table,self.threshold_spin,self.bright_check,self.smooth_spin,self.bow_combo,self.negative_spin,self.corner_spin,self.field_spin,self.angle_start,self.angle_end,self.graph_combo,*self.corner_editors,*self.surface_editors]:
+            widget.setParent(self);widget.hide()
+        for spin in (self.step_spin,self.threshold_spin,self.smooth_spin,self.negative_spin,self.corner_spin,self.field_spin,self.angle_start,self.angle_end):spin.valueChanged.connect(self._settings_changed)
+        self.scale_spin.valueChanged.connect(self._scale_changed)
         self.unit_combo.currentIndexChanged.connect(self._settings_changed)
-        self.bow_combo.currentIndexChanged.connect(self._settings_changed)
-        self.bright_check.toggled.connect(self._settings_changed)
+        self.bow_combo.currentIndexChanged.connect(self._settings_changed);self.bright_check.toggled.connect(self._settings_changed)
+        self.set_tool('select')
 
     @staticmethod
     def _table(headers):
@@ -810,6 +741,8 @@ class TrenchPanel(QWidget):
 
     def state(self) -> dict:
         return {"roi": self.roi, "nm_per_px": self.scale_spin.value(),
+                "workflow_version":2,"automatic_area":self.automatic_area,"step_nm":self.step_spin.value(),
+                "boundary_mode":self.boundary_mode,"scale_bar":self.scale_bar,
                 "unit": self.unit_combo.currentData(), "step": self.step_spin.value(),
                 "threshold": self.threshold_spin.value(), "bright": self.bright_check.isChecked(),
                 "smooth": self.smooth_spin.value(), "bow_reference": self.bow_combo.currentData(),
@@ -827,12 +760,15 @@ class TrenchPanel(QWidget):
 
     def _guide_mode(self, enabled):
         if enabled:
+            self.set_tool('curve',from_button=True)
             self.image_tabs.setCurrentIndex(0)
             self.roi_button.setChecked(False)
         self.guide_editor.set_drawing(enabled)
 
     def _guide_mode_changed(self, enabled):
         self.guide_button.blockSignals(True);self.guide_button.setChecked(enabled);self.guide_button.blockSignals(False)
+        if not enabled and self.guide_editor.interaction_mode=='curve':
+            self.guide_editor.interaction_mode='select';self.tool_buttons['select'].setChecked(True)
 
     def start_contour_guide(self):
         """Open the same curve editor from the Trench ribbon."""
@@ -846,7 +782,7 @@ class TrenchPanel(QWidget):
     def _guide_selection_changed(self):
         editor=self.guide_editor
         self.guide_selection.blockSignals(True)
-        self.guide_selection.clear();self.guide_selection.addItem('가이드 선택')
+        self.guide_selection.clear();self.guide_selection.addItem('곡선 선택')
         for i,g in enumerate(editor.guides):
             self.guide_selection.addItem(f"윤곽 {i+1} · {len(g['points'])}점")
         self.guide_selection.setCurrentIndex(editor.selected+1)
@@ -860,7 +796,62 @@ class TrenchPanel(QWidget):
     def _guides_changed(self):
         self._guide_selection_changed()
         self._settings_changed()
-        self.guide_hint.setText(f'윤곽 가이드 {len(self.guide_editor.guides)}개 · Field → 입구 → 측벽까지 같은 윤곽 추적 · Field만 또는 측벽만 그려도 됩니다 · 경계 인식을 눌러 적용하세요.')
+        self.guide_hint.setText(f'곡선 {len(self.guide_editor.guides)}개 · 점/곡선을 드래그로 보정 · 휠로 인식 폭 조절 → 인식')
+
+    def set_tool(self,mode,from_button=False):
+        if not from_button:self.guide_button.setChecked(False)
+        self.view.scale_mode=mode=='scale'
+        self.view.set_select_region(False)
+        self.guide_editor.interaction_mode=mode
+        if not from_button:self.guide_editor.set_drawing(False)
+        self.view.setDragMode(QGraphicsView.DragMode.NoDrag if mode in ('scale','curve','resize') else QGraphicsView.DragMode.ScrollHandDrag)
+        self.view.setCursor(Qt.CursorShape.CrossCursor if mode in ('scale','curve') else Qt.CursorShape.OpenHandCursor)
+        for key,button in self.tool_buttons.items():button.setChecked(key==mode)
+        self.guide_editor.render()
+
+    def _scale_changed(self,value):
+        if self.loading:return
+        if self.scale_bar:
+            length=np.linalg.norm(np.subtract(self.scale_bar['end'],self.scale_bar['start']))
+            self.scale_bar['length_nm']=float(value*length)
+        self._settings_changed();self.calibration_changed.emit(value)
+        if self.scale_bar:self.scale_bar_changed.emit(self.scale_bar)
+        self.calibration_note.setText('기존 스케일 또는 스케일바 보정값을 사용합니다.' if value>0 else '미보정: px로 표시합니다. 스케일바를 그리면 1nm 간격으로 측정합니다.')
+
+    def _calibrate_scale(self,start,end):
+        length=float(np.linalg.norm(np.subtract(end,start)))
+        value,ok=QInputDialog.getDouble(self,'스케일바 길이',f'그은 선 길이: {length:.2f} px\n실제 길이(nm)를 입력하세요.',100.,.0001,1_000_000.,4)
+        if not ok:return
+        self.scale_bar=dict(start=list(start),end=list(end),length_nm=value)
+        self.scale_spin.setValue(value/length)
+        self.scale_bar_changed.emit(self.scale_bar)
+        self.unit_combo.setCurrentIndex(self.unit_combo.findData('nm'))
+        self.set_tool('select');self._draw_overlay();self.state_changed.emit(self.state())
+
+    def set_scale_record(self,record=None):
+        if record is not None:
+            self.scale_bar=dict(start=list(record.start),end=list(record.end),length_nm=record.value_nm or 0)
+        self._draw_overlay()
+
+    def load_structure_payload(self,payload):
+        guides=structure_guides(payload,self.image.shape if self.image is not None else None)
+        self.guide_editor.restore(guides);self._guides_changed();self.set_tool('select')
+        self.guide_editor.select(0);self.hint.setText('구조를 불러왔습니다. 위치·크기를 보정하거나 바로 인식을 누르세요.')
+
+    def load_structure_dialog(self):
+        path,_=QFileDialog.getOpenFileName(self,'구조 불러오기','','AngleCal 구조 (*.anglecal.structure.json *.json)')
+        if not path:return
+        try:self.load_structure_payload(json.loads(Path(path).read_text(encoding='utf-8')))
+        except (ValueError,OSError,TypeError,KeyError) as exc:self.hint.setText(f'구조를 불러오지 못했습니다: {exc}')
+
+    def save_structure_dialog(self):
+        if not self.guide_editor.guides:self.hint.setText('먼저 저장할 곡선을 그리세요.');return
+        path,_=QFileDialog.getSaveFileName(self,'구조 저장','Trench.anglecal.structure.json','AngleCal 구조 (*.anglecal.structure.json)')
+        if not path:return
+        if not path.endswith('.json'):path+='.anglecal.structure.json'
+        payload=dict(format='anglecal.trench.structure.v1',name=Path(path).stem,wall_guides=list(normalize_guides(self.guide_editor.guides)))
+        try:Path(path).write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8');self.hint.setText('곡선 구조를 저장했습니다.')
+        except OSError as exc:self.hint.setText(f'구조를 저장하지 못했습니다: {exc}')
 
     def set_image(self, image, path: str, nm_per_px=None, state=None) -> None:
         key = (id(image), path)
@@ -873,6 +864,8 @@ class TrenchPanel(QWidget):
         self.reanalysis_requested = False
         self.source_key, self.source_calibration = key, nm_per_px
         self.image, self.image_path = image, path or ""
+        self.scale_bar=None
+        self.automatic_area=True
         self.revision += 1
         self.guide_editor.restore()
         self.roi = None
@@ -903,8 +896,11 @@ class TrenchPanel(QWidget):
                 setattr(self, key_name, [tuple(value) if value is not None else None for value in values])
         for i, editor in enumerate(self.corner_editors):
             editor.restore(self.corner_rois[i], self.corner_spans[i])
-        self.scale_spin.setValue(float(state.get("nm_per_px", nm_per_px or 0)))
-        for control, key_name, default in ((self.step_spin, "step", 20), (self.threshold_spin, "threshold", 0),
+        self.automatic_area=bool(state.get('automatic_area',True))
+        self.boundary_mode=state.get('boundary_mode',self.boundary_mode)
+        self.scale_bar=state.get('scale_bar')
+        self.scale_spin.setValue(float(nm_per_px if nm_per_px is not None else state.get('nm_per_px',0)))
+        for control, key_name, default in ((self.step_spin, "step_nm", 1), (self.threshold_spin, "threshold", 0),
                                           (self.smooth_spin, "smooth", 7), (self.negative_spin, "negative_angle", 1),
                                           (self.corner_spin, "corner", 24),(self.field_spin,"field_search",32),
                                           (self.angle_start,"angle_start",40),(self.angle_end,"angle_end",100)):
@@ -916,12 +912,15 @@ class TrenchPanel(QWidget):
             roi = QRectF(*state["roi"]).intersected(self.view.image_rect)
             if roi.width() >= 12 and roi.height() >= 16:
                 self.roi = (int(roi.x()), int(roi.y()), int(roi.width()), int(roi.height()))
-        self.roi_button.setChecked(self.roi is None)
-        self.view.set_select_region(self.roi_button.isChecked())
+        self.roi_button.setChecked(False)
+        self.view.set_select_region(False)
+        self.set_tool('select')
         self.loading = False
+        self.calibration_note.setText('기존 스케일 또는 스케일바 보정값을 사용합니다.' if self.scale_spin.value()>0 else '미보정: px로 표시합니다. 스케일바를 그리면 1nm 간격으로 측정합니다.')
         self._draw_overlay()
 
     def set_roi(self, rect: QRectF) -> None:
+        self.automatic_area=False  # Legacy projects/API; never a visible workflow step.
         rect = rect.normalized().intersected(self.view.image_rect)
         self.roi = (int(rect.x()), int(rect.y()), int(rect.width()), int(rect.height()))
         self.roi_button.setChecked(False)
@@ -946,7 +945,7 @@ class TrenchPanel(QWidget):
         self.cd_table.setRowCount(0)
         self.local_table.setRowCount(0)
         self.export_button.setEnabled(False)
-        self.summary_label.setText("설정 후 분석을 실행하세요.")
+        self.summary_label.setText("곡선을 그리거나 불러온 뒤 인식을 누르세요.")
         for editor in self.corner_editors:
             editor.show_result(None)
         for editor in self.surface_editors:
@@ -969,14 +968,17 @@ class TrenchPanel(QWidget):
         return self.scale_spin.value() * (10 if unit == "angstrom" else 1), "Å" if unit == "angstrom" else "nm"
 
     def options(self) -> TrenchOptions:
-        if self.roi is None:
+        if self.roi is None and not self.automatic_area:
             raise ValueError("먼저 입구 높이부터 한 Trench를 포함하는 영역을 지정하세요.")
         factor, _ = self._factor()
-        return TrenchOptions(self.roi, self.step_spin.value() / factor, self.threshold_spin.value(),
+        roi=self.roi if not self.automatic_area else (0,0,self.image.shape[1],self.image.shape[0])
+        step=self.step_spin.value()/self.scale_spin.value() if self.scale_spin.value()>0 else self.step_spin.value()
+        return TrenchOptions(roi, step, self.threshold_spin.value(),
                              self.bright_check.isChecked(), self.smooth_spin.value(), self.bow_combo.currentData(),
                              self.corner_spin.value(), self.negative_spin.value(),
                              tuple(self.corner_rois), tuple(self.corner_spans),self.field_spin.value(),
-                             (self.angle_start.value(),self.angle_end.value()),normalize_guides(self.guide_editor.guides))
+                             (self.angle_start.value(),self.angle_end.value()),normalize_guides(self.guide_editor.guides),
+                             self.boundary_mode if self.automatic_area else 'inner_rim')
 
     def start_analysis(self):
         if self.worker is not None and self.worker.isRunning():
@@ -988,14 +990,16 @@ class TrenchPanel(QWidget):
             if self.image is None:
                 raise ValueError("파일 탭에서 이미지를 먼저 불러오세요.")
             options = self.options()
+            if self.automatic_area and not options.wall_guides:
+                raise ValueError('먼저 곡선을 그리거나 구조를 불러온 뒤 인식을 누르세요.')
         except ValueError as exc:
             self.summary_label.setText(str(exc))
             return
         self._clear_result()
-        self.summary_label.setText("측벽과 국부 Bowing을 분석하고 있습니다…")
+        self.summary_label.setText("곡선 주변 경계를 인식하고 있습니다…")
         self.analyze_button.setEnabled(False)
         self.guide_analyze.setEnabled(False)
-        self.worker = TrenchWorker(self.image, options, self.revision, self)
+        self.worker = TrenchWorker(self.image, options, self.revision, self, self.automatic_area)
         self.worker.completed.connect(self._analysis_completed)
         self.worker.finished.connect(lambda worker=self.worker: self._worker_finished(worker))
         self.worker.start()
@@ -1022,6 +1026,8 @@ class TrenchPanel(QWidget):
             self.summary_label.setText(error)
             return
         self.result = result
+        self.guide_editor.select(-1)
+        self.roi=result.options.roi
         self._render_result()
         self.state_changed.emit(self.state())
 
@@ -1031,18 +1037,14 @@ class TrenchPanel(QWidget):
         fmt = lambda value: "미확정" if value is None else f"{value * factor:.4g} {unit}"
         angle = lambda value: "미확정" if value is None else f"{value:.2f}°"
         summary = r.summary()
-        lines = [f"Depth  {fmt(r.depth_px)}", f"관찰 깊이  {fmt(r.observed_depth_px)}",
-                 f"전체 Bow 좌 / 우  {fmt(r.left_bowing_px)} / {fmt(r.right_bowing_px)}",
-                 f"입구 각도 좌 / 우  {angle(r.left_angle_deg)} / {angle(r.right_angle_deg)}",
-                 f"입구 R 좌 / 우  {fmt(summary['left_radius_px'])} / {fmt(summary['right_radius_px'])}",
-                 f"국부 Nega 구간 {len(r.local_bowing)}개 · 경계값 {r.threshold:.1f}"]
-        if self.step_spin.value() / factor < 1:
-            lines.append("1 px 미만 간격은 경계 보간값입니다.")
-        for index,trace in enumerate(r.guide_traces):
-            lines.append(f"윤곽 {index+1} 추적 {trace['trace_coverage']:.0%} · {trace['reason']}")
-        if r.warnings:
-            lines += ["", *r.warnings]
+        lines=[f"깊이  {fmt(r.depth_px)}",f"CD  {fmt(summary['min_cd_px'])} ~ {fmt(summary['max_cd_px'])}",
+               f"Bowing 좌 / 우  {fmt(r.left_bowing_px)} / {fmt(r.right_bowing_px)}"]
+        if self.scale_spin.value()<=0:lines.append('미보정: px 표시 · 스케일바로 보정하세요.')
+        if self.step_spin.value()/max(self.scale_spin.value(),1e-9)<1:lines.append('1px 미만 간격은 윤곽 보간값입니다.')
+        if r.depth_px is None:lines.append('바닥이 보이지 않아 전체 깊이는 미확정입니다.')
+        if any(t['trace_coverage']<.8 for t in r.guide_traces):lines.append('일부 경계가 끊겼습니다. 곡선 위치·인식 폭을 확인하세요.')
         self.summary_label.setText("\n".join(lines))
+        self.summary_label.setMinimumHeight(self.summary_label.fontMetrics().lineSpacing()*(len(lines)+1))
         self.cd_table.setHorizontalHeaderLabels([f"깊이 ({unit})", f"CD ({unit})", "왼쪽 X (px)", "오른쪽 X (px)"])
         self.cd_table.setRowCount(len(r.sample_y))
         for row, (y, l, right) in enumerate(zip(r.sample_y, r.sample_left, r.sample_right)):
@@ -1061,6 +1063,7 @@ class TrenchPanel(QWidget):
                 cell.setToolTip("국부 종료/복귀 확인" if item["return_confirmed"] else "분석 범위 끝까지 복귀 미확인")
                 self.local_table.setItem(row, col, cell)
         self.graph.result, self.graph.factor, self.graph.unit = r, factor, unit
+        self.graph.show_entrance=False
         self.graph.update()
         self.export_button.setEnabled(True)
         for editor, corner in zip(self.corner_editors, r.corners):
@@ -1075,13 +1078,18 @@ class TrenchPanel(QWidget):
             scene.removeItem(item)
         self.overlays = []
         self.selected_line = self.selected_band = None
+        if self.scale_bar:
+            a,b=self.scale_bar['start'],self.scale_bar['end']
+            self.overlays.append(scene.addLine(*a,*b,_pen('#ffffff',2)))
+            label=scene.addSimpleText(f"{self.scale_bar['length_nm']:g} nm")
+            label.setBrush(QColor('#ffffff'));label.setPos(a[0],a[1]-22);label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,True);self.overlays.append(label)
         if self.roi is None:
             self.roi_label.setText("미지정")
             return
         x, y, w, h = self.roi
         self.roi_label.setText(f"({x}, {y}) · {w}×{h} px")
-        self.overlays.append(scene.addRect(QRectF(x, y, w, h), _pen("#ffc857", 1, True)))
-        self.overlays.append(scene.addLine(x, y, x + w, y, _pen("#ffc857", 1, True)))
+        # Analysis bounds are automatic and are not an editable/visible ROI.
+
         r = self.result
         if r is None:
             return
@@ -1092,41 +1100,15 @@ class TrenchPanel(QWidget):
                 path=QPainterPath(QPointF(*segment[0]))
                 for point in segment[1:]:path.lineTo(QPointF(*point))
                 self.overlays.append(scene.addPath(path,_pen('#ffe38a',1.2)))
-        for item in r.field_angles:
-            self.overlays.extend(draw_field_angle(scene,item,factor,unit))
-        for edge, color in ((r.left, "#39ded7"), (r.right, "#ffab62"),
-                            (r.left_reference, "#9cdfcc"), (r.right_reference, "#efcfa3")):
+
+        for edge,color in ((r.left,'#39ded7'),(r.right,'#ffab62')):
             path = QPainterPath(QPointF(edge[0], r.y[0]))
             for previous_y,xx,yy in zip(r.y[:-1],edge[1:],r.y[1:]):
                 if yy-previous_y>1.5:path.moveTo(float(xx),float(yy))
                 else:path.lineTo(float(xx),float(yy))
             self.overlays.append(scene.addPath(path, _pen(color, 1.5, color in ("#9cdfcc", "#efcfa3"))))
-        for yy, ll, rr in list(zip(r.sample_y, r.sample_left, r.sample_right))[::max(1, len(r.sample_y) // 160)]:
-            self.overlays.append(scene.addLine(ll, yy, rr, yy, _pen("#a0c5ff", .7)))
-        for item in r.local_bowing:
-            edge = r.left if item["side"] == "left" else r.right
-            mask = (r.y >= item["start_y"]) & (r.y <= item["negative_end_y"])
-            path = QPainterPath()
-            for index, (xx, yy) in enumerate(zip(edge[mask], r.y[mask])):
-                if index == 0:
-                    path.moveTo(xx, yy)
-                else:
-                    path.lineTo(xx, yy)
-            self.overlays.append(scene.addPath(path, _pen("#ff7b21", 4)))
-        factor, unit = self._factor()
-        for corner in r.corners:
-            self.overlays.extend(draw_corner(scene, corner, factor, unit))
-        for yy, amount, edge, baseline in ((r.left_bowing_y, r.left_bowing_px, r.left, r.left_reference),
-                                           (r.right_bowing_y, r.right_bowing_px, r.right, r.right_reference)):
-            xx, ref = np.interp(yy, r.y, edge), np.interp(yy, r.y, baseline)
-            self.overlays.append(scene.addLine(xx, yy, ref, yy, _pen("#ffed69", 3)))
-            label = scene.addText(f"Bow {amount * factor:.3g} {unit}")
-            label.setDefaultTextColor(QColor("#ffed69"))
-            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            label.setPos(xx - (150 if edge is r.left else -20), yy)
-            self.overlays.append(label)
         if r.depth_px is not None:
-            depth_x = x + w * .96
+            depth_x = float(np.max(r.right))+max(12,w*.015)
             self.overlays.append(scene.addLine(depth_x, y, depth_x, y + r.depth_px, _pen("#e6edfa", 1.5, True)))
             for end_y in (y, y + r.depth_px):
                 self.overlays.append(scene.addLine(depth_x - 6, end_y, depth_x + 6, end_y, _pen("#e6edfa")))
@@ -1182,25 +1164,12 @@ class TrenchPanel(QWidget):
             payload["settings"] = self.state()
             Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
         elif suffix == ".png":
-            # Full image plus independent corner insets, unaffected by pan/zoom.
-            width = max(800, int(self.view.image_rect.width()))
-            height = int(self.view.image_rect.height())
-            image = QImage(width, height + 360, QImage.Format.Format_RGB32)
-            image.fill(QColor("white"))
-            painter = QPainter(image)
-            self.view.scene().render(painter, QRectF(0, 0, self.view.image_rect.width(), height), self.view.image_rect)
-            painter.setFont(QFont("Malgun Gothic", 10))
-            for index, editor in enumerate(self.corner_editors):
-                x = index * width / 2
-                painter.setPen(QColor("#24364c"))
-                painter.drawText(QRectF(x + 8, height + 6, width / 2 - 16, 80),
-                                 Qt.TextFlag.TextWordWrap, editor.title() + " · " + editor.label.text())
-                target = QRectF(x + 8, height + 88, width / 2 - 16, 230)
-                painter.fillRect(target, QColor("#20262e"))
-                editor.view.scene().render(painter, target, editor.focus_rect)
-            painter.setPen(QColor("#425368"))
-            painter.drawText(QRectF(8, height + 326, width - 16, 30),
-                             "노란 점: 사용 윤곽 · 보라: 적합 원호 / 반지름 · RMS: 윤곽 맞춤 오차 (실제 치수의 정확도 아님)")
+            width=max(800,int(self.view.image_rect.width()));height=int(self.view.image_rect.height())
+            image=QImage(width,height+95,QImage.Format.Format_RGB32);image.fill(QColor('white'))
+            painter=QPainter(image)
+            self.view.scene().render(painter,QRectF(0,0,self.view.image_rect.width(),height),self.view.image_rect)
+            painter.setFont(QFont('Malgun Gothic',10));painter.setPen(QColor('#24364c'))
+            painter.drawText(QRectF(8,height+5,width-16,85),Qt.TextFlag.TextWordWrap,self.summary_label.text())
             painter.end()
             if not image.save(path):
                 raise OSError("PNG 저장에 실패했습니다.")
@@ -1217,7 +1186,7 @@ class TrenchPanel(QWidget):
             self.hint.setText(f"GFE 복사 실패: {exc}")
             return
         QApplication.clipboard().setText(table)
-        self.hint.setText(f"GFE 좌표 {len(table.splitlines()) - 1}개 복사 완료 (Å). 실제 검출 Field 포함. GFE 표에서 Ctrl+V. Y=좌우 입구 Field 평균 기준, 검출 윤곽 사이 간격은 직선 연결입니다.")
+        self.hint.setText(f"GFE 좌표 {len(table.splitlines()) - 1}개 복사 완료 (Å). GFE 표에서 Ctrl+V로 붙여넣으세요.")
 
     def export_dialog(self):
         stem = Path(self.image_path).stem if self.image_path else "trench"
