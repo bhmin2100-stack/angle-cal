@@ -13,6 +13,47 @@ from .trench_guides import sweep_samples, in_bands
 from .image_ops import _boundary_profile_index
 
 
+def _consensus_path(indices,candidates,distance,centers,normals,radius):
+    """Optimize a supported path with an explicit missing-observation option.
+
+    A contaminated row must not force the entire path onto a competing edge.
+    Skipped rows are NOT interpolated: they become gaps in the measured trace.
+    """
+    costs=[];parents=[]
+    for j,i in enumerate(indices):
+        current=np.asarray(candidates[i],float)
+        unary=1-current[:,1]/max(64.,float(current[:,1].max()))+.15*(current[:,0]/radius)**2
+        best=np.full(len(current),np.inf);parent=[None]*len(current)
+        if j==0:best=unary
+        for prev_j in range(j-1,max(-1,j-5),-1):
+            prev_i=indices[prev_j]
+            gap=i-prev_i
+            if gap>4:break
+            previous=np.asarray(candidates[prev_i],float)
+            ds=max(1.,distance[i]-distance[prev_i])
+            # Saturation permits a sustained real notch/corner; an unbounded
+            # straightness penalty would prefer weak noise over that feature.
+            movement=.3*((previous[:,0,None]-current[None,:,0])/ds)**2
+            transition=costs[prev_j][:,None]+np.minimum(6.,movement)+1.25*(gap-1)
+            selected=np.argmin(transition,axis=0)
+            score=unary+transition[selected,np.arange(len(current))]
+            for k in np.flatnonzero(score<best):
+                best[k]=score[k];parent[k]=(prev_j,int(selected[k]))
+        costs.append(best);parents.append(parent)
+    tail=[]
+    for j in range(max(0,len(indices)-4),len(indices)):
+        k=int(np.argmin(costs[j]));tail.append((costs[j][k]+1.25*(indices[-1]-indices[j]),j,k))
+    _,j,k=min(tail)
+    chosen={}
+    while True:
+        i=indices[j];offset=candidates[i][k][0]
+        chosen[i]=(centers[i]+normals[i]*offset).tolist()
+        parent=parents[j][k]
+        if parent is None:break
+        j,k=parent
+    return chosen
+
+
 def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contrast=False, material_level=None):
     samples=sweep_samples(guide)
     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(samples,axis=0),axis=1))]
@@ -30,6 +71,21 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
     valid=(xy[:,:,0]>=0)&(xy[:,:,0]<image.shape[1]-1)&(xy[:,:,1]>=0)&(xy[:,:,1]<image.shape[0]-1)
     profiles=cv2.remap(image.astype(np.float32,copy=False),xy[:,:,0].astype(np.float32),
                        xy[:,:,1].astype(np.float32),cv2.INTER_LINEAR,borderMode=cv2.BORDER_REPLICATE)
+    raw_profiles=profiles
+    if local_contrast:
+        # Work in arc-length/normal coordinates. Tangential median pooling
+        # suppresses isolated SEM grains and transverse dimension lines without
+        # pooling the opposite wall or fitting either wall to a straight line.
+        sample_step=float(distance[1]-distance[0])
+        median_half=max(1,int(round(4/sample_step)))
+        tangent_sigma=max(.5,1.5/sample_step)
+        padded=np.pad(profiles,((median_half,median_half),(0,0)),mode='edge')
+        windows=np.lib.stride_tricks.sliding_window_view(padded,2*median_half+1,axis=0)
+        profiles=np.empty_like(raw_profiles)
+        # Bound the temporary median workspace for long, wide guides.
+        for start in range(0,len(profiles),512):
+            profiles[start:start+512]=np.median(windows[start:start+512],axis=-1)
+        profiles=cv2.GaussianBlur(profiles,(0,0),.8,sigmaY=tangent_sigma,borderType=cv2.BORDER_REPLICATE)
     if material_level is None:
         material=image[image>threshold+20]
         material_level=float(np.percentile(material,75)) if len(material) else threshold+20
@@ -52,6 +108,11 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
             supported=(invalid[ks+7]==invalid[ks-6])&(contrast>=8)
             a,b,c=profile[ks-1],profile[ks],profile[ks+1]
             prominence=b-np.maximum(before,after)
+            if local_contrast:
+                # Roof edges can have similar gray levels on both sides.
+                # Their crest prominence is evidence even when step contrast
+                # cancels; this is common on shaded SEM sidewalls.
+                supported|=(invalid[ks+7]==invalid[ks-6])&(b-np.minimum(before,after)>=8)
             # A broad material-layer plateau is not a resolved bright rim.
             # Require a local crest before suppressing its gradient flanks.
             peaks=supported&(b>=np.maximum(a,c))&(b-(a+c)/2>=(.05 if local_contrast else .5))&(prominence>=5)
@@ -63,7 +124,10 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
                 if abs(offset)<=radius:
                     found.append((offset,float(1.25*prominence[j]+.65*contrast[j]),'ridge',k))
             gradient=np.abs(c-a)/2
-            gradient_floor=max(2.,min(8.,2*float(np.median(np.abs(np.diff(profile)))))) if local_contrast else 8
+            # First differences contain the real broad edge slope. Estimate
+            # residual grain from second differences instead, so a smooth but
+            # low-gradient flank does not disappear in favor of its crest.
+            gradient_floor=max(1.,min(4.,2*float(np.median(np.abs(np.diff(profile,n=2)))))) if local_contrast else 8
             steep=supported&(np.abs(offsets[ks])<=radius)&(gradient>=gradient_floor)
             steep&=(gradient>=np.abs(b-profile[ks-2])/2)&(gradient>=np.abs(profile[ks+2]-b)/2)
             for j in np.flatnonzero(steep):
@@ -88,7 +152,8 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         # the void. A finite bright layer plateau is otherwise mistaken for
         # a crest halfway inside the solid. Other local peaks still block
         # borrowing a cavity through an intervening real boundary.
-        resolved=[k for k in ridge_indices if profile[k]>=material_level+5]
+        resolved=[k for k in ridge_indices if profile[k]>=material_level+5 or
+                  (local_contrast and profile[k]-max(float(np.mean(profile[k-6:k-2])),float(np.mean(profile[k+3:k+7])))>=12)]
         if local_contrast:barriers=resolved
         ridge_indices=resolved
         found=[candidate for candidate in found if candidate[2]!='ridge' or candidate[3] in resolved]
@@ -101,6 +166,11 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
             before=dark[dark<k];after=dark[dark>k]
             if len(before):nearest.append(int(before[-1]))
             if len(after):nearest.append(int(after[0]))
+            if local_contrast:
+                # On a soft SEM edge the first dark-threshold crossing is
+                # necessarily close in intensity. Look farther along the same
+                # unobstructed normal for contrast, not only at that crossing.
+                nearest=dark[(np.abs(dark-k)<=24)&(profile[k]-profile[dark]>=12)].tolist()
             connected=any(abs(seed-k)<=24 and profile[k]-profile[seed]>=12
                           and not any(min(seed,k)<j<max(seed,k) for j in barriers)
                           for seed in nearest)
@@ -116,7 +186,20 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
             levels=np.interp(positions,offsets,profile)
             slopes=np.interp(positions,offsets,np.abs(np.gradient(profile)))
             selected=_boundary_profile_index(positions,levels,slopes,boundary_mode)
-            ranked=[(offset,strength+(96 if index==selected else 0)) for index,(offset,strength) in enumerate(ranked)]
+            if local_contrast and boundary_mode=='max_gradient':
+                # Score the requested edge criterion continuously. A binary
+                # winner bonus and unrelated roof prominence can otherwise
+                # make a weak shading ripple beat the actual gradient flank.
+                ranked=[(offset,64*slopes[index]/max(1.,float(slopes.max()))+.15*strength)
+                        for index,(offset,strength) in enumerate(ranked)]
+            else:
+                ranked=[(offset,strength+((12 if local_contrast else 96) if index==selected else 0)) for index,(offset,strength) in enumerate(ranked)]
+        if local_contrast:
+            # Neighborhood support cannot manufacture an edge through a blank
+            # image strip. Retain independent contrast evidence on this normal.
+            ranked=[(offset,strength) for offset,strength in ranked
+                    if np.ptp(raw_profiles[i,max(0,int(round(offset-offsets[0]))-6):
+                                               min(len(offsets),int(round(offset-offsets[0]))+7)])>=8]
         candidates.append(ranked)
     # Viterbi along the ordered guide. Keep multiple candidates until the
     # complete local path is evaluated; a strong isolated peak cannot win a
@@ -128,6 +211,9 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         if not blocks or i-blocks[-1][-1]>4:blocks.append([])
         blocks[-1].append(i)
     for indices in blocks:
+        if local_contrast:
+            chosen.update(_consensus_path(indices,candidates,distance,centers,normals,radius))
+            continue
         costs=[];parents=[]
         for j,i in enumerate(indices):
             current=np.array(candidates[i],float)
@@ -148,7 +234,9 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
     segments=[]
     spreads=[]
     for i,point in sorted(chosen.items()):
-        profile=profiles[i];derivative=np.abs(np.gradient(profile))
+        # Report the original image's edge spread, not the pooled profile's
+        # apparent blur or an inferred dimensional confidence interval.
+        profile=raw_profiles[i];derivative=np.abs(np.gradient(profile))
         offset=float(np.dot(np.asarray(point)-centers[i],normals[i]))
         k=int(np.argmin(np.abs(offsets-offset)))
         lo,hi=max(1,k-4),min(len(profile)-1,k+5)
@@ -166,6 +254,10 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         segments[-1].append((i,point))
     coverage=len(chosen)/len(centers)
     return dict(side='contour',requested_points=len(centers),detected_points=len(chosen),
+                method='tangent_consensus_contour' if local_contrast else 'ordered_normal_contour',
+                preprocessing=(dict(tangent_median_samples=2*median_half+1,tangent_sample_step_px=sample_step,
+                                    tangent_gaussian_sigma_px=tangent_sigma*sample_step,normal_gaussian_sigma_px=.8,
+                                    missing_policy='retain_gaps',measurement_scope='guide_corridor') if local_contrast else None),
                 trace_coverage=coverage,status='valid' if coverage>=.95 else 'partial',
                 reason='곡선 방향의 연결된 명암 경계' if coverage>=.95 else '명암 근거가 없는 구간은 윤곽을 만들지 않았습니다.',
                 segments=[[point for _,point in segment] for segment in segments],
