@@ -1,7 +1,8 @@
 """Field, entrance and angle from the same measured guide contour.
 
-The drawn guide only selects a search corridor. Missing measured segments are
-never joined to manufacture a Field or a radius. Coordinates remain pixels.
+The drawn guide only selects a search corridor. Upstream traces may include
+explicitly labeled short joins; remaining missing segments are not joined here
+to manufacture a Field or a radius. Coordinates remain pixels.
 """
 from __future__ import annotations
 

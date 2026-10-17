@@ -1,4 +1,4 @@
-# Trench contour continuity (0.1.10)
+# Trench contour continuity (0.1.11)
 
 ## Problem and scope
 
@@ -28,9 +28,23 @@ The legacy manual-ROI tracing path keeps its prior behavior.
    strength. Use dynamic programming over up to six candidates per sample,
    with a bounded displacement penalty. A sustained notch may change the
    path; one contaminated sample may be skipped at an explicit cost.
-5. Require contrast on each original normal as well. Skipped or unsupported
-   samples remain gaps in the trace, CD interpolation and GFE checks. No
-   straight-wall fit or drawn-guide coordinate substitution is performed.
+5. Require contrast on each original normal for observed points. In 0.1.11,
+   short interior omissions (at most 12 px of guide arc length) may be joined
+   with endpoint-tangent cubic interpolation. Both ends need two consecutive
+   supporting neighbors. Opposing tangents, excessive jumps, out-of-image
+   joins and joins leaving the guide corridor are rejected. Check the curve
+   at quarter-pixel spacing as well as output points. No endpoints are extended.
+6. Use this connected contour for image overlays, graph, CD and GFE. A single
+   shallow step on a vertical wall is classified by its surrounding contour
+   direction, so it cannot silently drop one CD row as if it were Field.
+   Long holes remain gaps and retain the existing GFE restrictions.
+
+`joins`, `point_sources`, `interpolated_points` and `connected_coverage` describe
+reconstruction in saved projects and JSON/CSV traces. `trace_coverage` and
+`detected_points` still count only observed image-supported points. Interpolated
+points have null edge spread; their use is reported in the UI and warnings.
+Downstream dimensions describe the connected shape, including these estimated
+intervals, rather than independent image observations at every coordinate.
 
 Preprocessing parameters and method are saved in each JSON/CSV `guide_traces`
 entry. Edge spread remains computed from the original sampled image, not the
@@ -43,10 +57,12 @@ notched walls, displaced/reversed guides, blank/noisy unsupported regions and
 entrance arcs of 8/15/30/60 px. The existing strict-corridor, shaded/16-bit/
 inverted-image, neighboring-trench, full workflow and export tests also apply.
 
-The supplied real SEM remains a partial detection: the left body contour is
-more stable, but dimension annotations, the entrance and parts of the floor
-can still be ambiguous. These are not silently connected. User images and
-their result files are kept locally, outside version control and release data.
+On the supplied real SEM, 0.1.11 joins 11 short intervals (17 interpolated
+samples). The Field/wall/floor trace is one segment, and the paired CD profile
+has no missing interior rows; GFE generation succeeds. Entrance and annotation
+positions remain potentially ambiguous. Continuity is not proof of the true
+physical boundary. User images and result files stay local, outside version
+control and release data.
 
 Pooling has a spatial bandwidth. This is a shape extraction method, not an
 unbiased line-edge-roughness measurement. Fine features below that bandwidth

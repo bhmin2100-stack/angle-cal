@@ -61,6 +61,7 @@ class TrenchGuideEditor(QObject):
         self.guides = []
         self.selected = -1
         self.drawing = False
+        self.result_visible = False
         self.side = 'contour'
         self.radius = 12.
         self.items = []
@@ -79,12 +80,18 @@ class TrenchGuideEditor(QObject):
 
     def restore(self, guides=()):
         self.clear_render()
+        self.result_visible = False
         self.guides = list(normalize_guides(guides))
         self.selected = -1
         self.drag = None
         self.set_drawing(False)
         self.render()
         self.selection_changed.emit()
+
+    def set_result_visible(self, visible):
+        if self.result_visible != bool(visible):
+            self.result_visible = bool(visible)
+            self.render()
 
     def set_drawing(self, enabled):
         self.drawing = bool(enabled)
@@ -188,6 +195,8 @@ class TrenchGuideEditor(QObject):
         self.clear_render()
         guides=self.guides + ([preview] if preview else [])
         for i,guide in enumerate(guides):
+            start=len(self.items)
+            faded=self.result_visible and i!=self.selected and i<len(self.guides)
             color=QColor('#79dfb6')
             if len(guide['points'])>=2:
                 path=guide_sweep_path(guide)
@@ -196,7 +205,7 @@ class TrenchGuideEditor(QObject):
                 self.items.append(self.view.scene().addPath(path,pen,brush))
                 path=QPainterPath(QPointF(*guide['points'][0]))
                 for p in curve_samples(guide)[1:]:path.lineTo(QPointF(*p))
-                pen=QPen(QColor('white') if i==self.selected else color,2);pen.setCosmetic(True)
+                pen=QPen(QColor('white') if i==self.selected else color,1.2 if faded else 2);pen.setCosmetic(True)
                 self.items.append(self.view.scene().addPath(path,pen))
             pen=QPen(QColor('white') if i==self.selected else color,2);pen.setCosmetic(True)
             for p in (guide['points'] if i==self.selected else []):
@@ -206,6 +215,7 @@ class TrenchGuideEditor(QObject):
             label=self.view.scene().addSimpleText(f"곡선 {i+1} · ±{guide['half_width_px']:g}px")
             label.setBrush(color);label.setFlag(label.GraphicsItemFlag.ItemIgnoresTransformations,True)
             label.setPos(QPointF(*guide['points'][0])+QPointF(5,-20));self.items.append(label)
+            for item in self.items[start:]:item.setOpacity(.18 if faded else 1.)
         for item in self.items:item.setZValue(500)
         if self.interaction_mode=='resize' and self.selected>=0:
             points=np.asarray(self.guides[self.selected]['points']);lo=points.min(axis=0);hi=points.max(axis=0)

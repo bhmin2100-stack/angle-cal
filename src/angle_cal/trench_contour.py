@@ -9,7 +9,7 @@ import math
 import cv2
 import numpy as np
 
-from .trench_guides import sweep_samples, in_bands
+from .trench_guides import sweep_samples, in_bands, points_in_guides
 from .image_ops import _boundary_profile_index
 
 
@@ -17,7 +17,7 @@ def _consensus_path(indices,candidates,distance,centers,normals,radius):
     """Optimize a supported path with an explicit missing-observation option.
 
     A contaminated row must not force the entire path onto a competing edge.
-    Skipped rows are NOT interpolated: they become gaps in the measured trace.
+    Skipped observations are retained separately from subsequent short joins.
     """
     costs=[];parents=[]
     for j,i in enumerate(indices):
@@ -52,6 +52,43 @@ def _consensus_path(indices,candidates,distance,centers,normals,radius):
         if parent is None:break
         j,k=parent
     return chosen
+
+
+def _connect_short_gaps(chosen, distance, guide, image_shape):
+    """Join small holes between supported endpoints, never extrapolate ends.
+
+    Cubic endpoint tangents come from observed contour coordinates, not the
+    user's guide. Check the entire sampled join against the search corridor.
+    Long holes, incompatible branches and out-of-image joins remain unknown.
+    """
+    connected=dict(chosen);joins=[]
+    indices=sorted(chosen)
+    for a,b in zip(indices,indices[1:]):
+        if b==a+1 or distance[b]-distance[a]>12:continue
+        if not all(k in chosen for k in (a-2,a-1,b+1,b+2)):continue
+        p,q=np.asarray(chosen[a]),np.asarray(chosen[b])
+        chord=q-p;length=float(np.linalg.norm(chord))
+        if length<.1 or length>max(12.,1.8*(distance[b]-distance[a])):continue
+        before=p-np.asarray(chosen[a-2]);after=np.asarray(chosen[b+2])-q
+        sizes=np.linalg.norm([before,after],axis=1)
+        if np.any(sizes<.1):continue
+        u,v=before/sizes[0],after/sizes[1]
+        if min(np.dot(u,chord),np.dot(v,chord))/length<.1:continue
+        def curve(t):
+            t=np.asarray(t)[:,None]
+            return ((2*t**3-3*t**2+1)*p+(t**3-2*t**2+t)*length*u
+                    +(-2*t**3+3*t**2)*q+(t**3-t**2)*length*v)
+        dense=curve(np.linspace(0,1,max(8,int(np.ceil(length*4))+1)))
+        h,w=image_shape[:2]
+        if (np.any(dense<0) or np.any(dense[:,0]>w-1) or np.any(dense[:,1]>h-1)
+                or not points_in_guides(dense,(guide,)).all()):continue
+        missing=np.arange(a+1,b)
+        points=curve((distance[missing]-distance[a])/(distance[b]-distance[a]))
+        if not points_in_guides(points,(guide,)).all():continue
+        connected.update({int(k):point.tolist() for k,point in zip(missing,points)})
+        joins.append(dict(start_index=a,end_index=b,length_px=float(distance[b]-distance[a]),
+                          points=[p.tolist(),*points.tolist(),q.tolist()],method='endpoint_tangent_cubic'))
+    return connected,joins
 
 
 def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contrast=False, material_level=None):
@@ -203,7 +240,7 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         candidates.append(ranked)
     # Viterbi along the ordered guide. Keep multiple candidates until the
     # complete local path is evaluated; a strong isolated peak cannot win a
-    # row independently. Missing samples remain missing, never interpolated.
+    # row independently. Only bounded short holes are connected afterwards.
     chosen={}
     blocks=[]
     supported=[i for i,c in enumerate(candidates) if c]
@@ -249,17 +286,26 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
             bc=b-(half-derivative[b])/max(1e-9,derivative[b-1]-derivative[b])
             spreads.append(float((bc-ac)*1.088))
         else:spreads.append(None)
+    measured=dict(chosen)
+    joins=[]
+    if local_contrast:chosen,joins=_connect_short_gaps(chosen,distance,guide,image.shape)
+    spread_by_index=dict(zip(sorted(measured),spreads))
+    spreads=[spread_by_index.get(i) for i in sorted(chosen)]
     for i,point in sorted(chosen.items()):
         if not segments or i!=segments[-1][-1][0]+1:segments.append([])
         segments[-1].append((i,point))
-    coverage=len(chosen)/len(centers)
-    return dict(side='contour',requested_points=len(centers),detected_points=len(chosen),
+    coverage=len(measured)/len(centers)
+    return dict(side='contour',requested_points=len(centers),detected_points=len(measured),
                 method='tangent_consensus_contour' if local_contrast else 'ordered_normal_contour',
                 preprocessing=(dict(tangent_median_samples=2*median_half+1,tangent_sample_step_px=sample_step,
                                     tangent_gaussian_sigma_px=tangent_sigma*sample_step,normal_gaussian_sigma_px=.8,
-                                    missing_policy='retain_gaps',measurement_scope='guide_corridor') if local_contrast else None),
+                                    missing_policy='bounded_short_gap_connection',max_join_length_px=12,
+                                    measurement_scope='guide_corridor') if local_contrast else None),
                 trace_coverage=coverage,status='valid' if coverage>=.95 else 'partial',
-                reason='곡선 방향의 연결된 명암 경계' if coverage>=.95 else '명암 근거가 없는 구간은 윤곽을 만들지 않았습니다.',
+                connected_coverage=len(chosen)/len(centers),interpolated_points=len(chosen)-len(measured),
+                joins=joins,point_sources=['measured' if i in measured else 'interpolated' for i in sorted(chosen)],
+                reason=('짧은 누락을 주변 경계 방향으로 연결했습니다.' if joins else '곡선 방향의 연결된 명암 경계')
+                       if len(segments)<=1 else '연결할 근거가 부족한 구간이 남아 있습니다.',
                 segments=[[point for _,point in segment] for segment in segments],
                 points=[point for _,point in sorted(chosen.items())],edge_spreads_px=spreads)
 
@@ -275,10 +321,14 @@ def contour_row_targets(traces):
                 if abs(point[1]-y)<=.25:
                     values=rows.setdefault(y,[])
                     if not any(abs(point[0]-old)<.5 for old in values):values.append(float(point[0]))
-            for a,b in zip(segment,segment[1:]):
+            for index,(a,b) in enumerate(zip(segment,segment[1:])):
                 # Horizontal Field supports and floor tangents are not wall
                 # targets. They remain in the ordered trace for surface fits.
-                if abs(b[1]-a[1])<.25*max(1e-8,np.linalg.norm(np.subtract(b,a))):continue
+                if abs(b[1]-a[1])<.25*max(1e-8,np.linalg.norm(np.subtract(b,a))):
+                    # One noisy shallow step on a vertical wall is still part
+                    # of that wall. Classify it using its local contour span.
+                    span=np.subtract(segment[min(len(segment)-1,index+4)],segment[max(0,index-3)])
+                    if abs(span[1])<.25*max(1e-8,np.linalg.norm(span)):continue
                 if abs(b[1]-a[1])<1e-8:continue
                 for y in range(math.ceil(min(a[1],b[1])),math.floor(max(a[1],b[1]))+1):
                     xx=a[0]+(b[0]-a[0])*(y-a[1])/(b[1]-a[1])

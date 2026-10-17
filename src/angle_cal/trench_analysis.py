@@ -428,6 +428,9 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     if np.any(left>=right):
         raise ValueError('좌우 가이드 또는 경계가 교차합니다. 가이드의 좌우와 인식 폭을 확인하세요.')
     warnings: list[str] = []
+    joined=sum(len(t.get('joins',[])) for t in traces)
+    if joined:
+        warnings.append(f'짧은 경계 누락 {joined}곳을 주변 윤곽 방향으로 보간해 연결했습니다. 연결 구간은 추정 형상이며 저장 결과에 기록됩니다.')
     if np.any(np.diff(y)>1.5):
         warnings.append('윤곽에 미검출 구간이 있습니다. 해당 구간은 측정·CD 보간에서 제외하며 GFE 복사를 제한합니다.')
     diagnostics = []

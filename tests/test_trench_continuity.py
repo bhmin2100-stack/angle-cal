@@ -100,4 +100,50 @@ def test_small_and_large_entrance_arcs_are_not_flattened(radius):
     error = np.abs(np.linalg.norm(circular-center, axis=1)-radius)
     assert np.percentile(error, 95) < max(1, radius*.1)
     assert points_in_guides(p, (g,)).all()
-    assert t['preprocessing']['missing_policy'] == 'retain_gaps'
+    assert t['preprocessing']['missing_policy'] == 'bounded_short_gap_connection'
+
+
+def test_short_missing_strip_is_connected_and_labeled_as_interpolation():
+    image, _ = sem_wall('straight', True)
+    image[145:148] = 155
+    t, y, x = trace(image)
+    assert np.all(np.isin(np.arange(142,151),y))
+    assert t['interpolated_points'] > 0
+    assert len(t['point_sources']) == len(t['points']) == len(t['edge_spreads_px'])
+    assert t['detected_points']+t['interpolated_points'] == len(t['points'])
+    for source, spread in zip(t['point_sources'],t['edge_spreads_px']):
+        if source == 'interpolated':assert spread is None
+    assert np.ptp(x[(y>=142)&(y<=151)]) < 1
+
+
+def test_short_joins_do_not_extrapolate_or_jump_to_another_wall():
+    from angle_cal.trench_contour import _connect_short_gaps
+    distance=np.arange(30,dtype=float)
+    g=dict(points=[[30,0],[30,29]],half_width_px=15)
+    measured={i:[30.,float(i)] for i in range(3,27) if i not in (12,13,14)}
+    joined, joins=_connect_short_gaps(measured,distance,g,(50,60))
+    assert len(joins)==1 and set(joined)==set(range(3,27))
+    # Two vertical branches cannot be joined across a transverse jump.
+    for i in range(15,27):measured[i][0]=43.
+    joined, joins=_connect_short_gaps(measured,distance,g,(50,60))
+    assert not joins and joined==measured
+
+
+def test_short_join_stays_inside_nonconvex_guide_corridor():
+    from angle_cal.trench_contour import _connect_short_gaps
+    distance=np.arange(30,dtype=float)
+    measured={i:[30.,float(i)] for i in range(3,27) if i not in range(11,19)}
+    g=dict(points=[[30,0],[30,10],[40,15],[30,20],[30,29]],half_width_px=2)
+    joined, joins=_connect_short_gaps(measured,distance,g,(50,60))
+    assert not joins and joined==measured
+
+
+def test_shallow_single_step_on_vertical_wall_does_not_drop_cd_row():
+    points=[[30.,float(y)] for y in range(10,22)]
+    points[4]=[30.,14.7];points[5]=[32.,15.15]
+    rows=contour_row_targets([dict(segments=[points])])
+    assert 15 in rows and 30 < rows[15][0] < 32
+    # A genuinely horizontal/slightly tilted Field is not a wall target.
+    field=[[float(x),10+x*.1] for x in range(50)]
+    field_rows=contour_row_targets([dict(segments=[field])])
+    assert 12 not in field_rows
