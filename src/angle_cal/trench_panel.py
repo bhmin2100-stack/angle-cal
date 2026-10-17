@@ -618,6 +618,7 @@ class TrenchPanel(QWidget):
     state_changed = Signal(dict)
     calibration_changed = Signal(float)
     scale_bar_changed = Signal(dict)
+    structure_saved = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -850,7 +851,9 @@ class TrenchPanel(QWidget):
         if not path:return
         if not path.endswith('.json'):path+='.anglecal.structure.json'
         payload=dict(format='anglecal.trench.structure.v1',name=Path(path).stem,wall_guides=list(normalize_guides(self.guide_editor.guides)))
-        try:Path(path).write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8');self.hint.setText('곡선 구조를 저장했습니다.')
+        try:
+            Path(path).write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
+            self.structure_saved.emit(payload);self.hint.setText('곡선 구조를 저장했습니다.')
         except OSError as exc:self.hint.setText(f'구조를 저장하지 못했습니다: {exc}')
 
     def set_image(self, image, path: str, nm_per_px=None, state=None) -> None:

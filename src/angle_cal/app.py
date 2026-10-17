@@ -3868,6 +3868,7 @@ class MainWindow(QMainWindow):
                 self.trench_panel.state_changed.connect(self._trench_state_changed)
                 self.trench_panel.calibration_changed.connect(self._trench_calibration_changed)
                 self.trench_panel.scale_bar_changed.connect(self._trench_scale_bar_changed)
+                self.trench_panel.structure_saved.connect(self._trench_structure_saved)
                 self.trench_panel.structure_menu.aboutToShow.connect(self._trench_structure_menu)
                 self.workspace_stack.addWidget(self.trench_panel)
                 self.trench_quick_layout.addWidget(self.trench_panel.guide_bar)
@@ -3948,6 +3949,13 @@ class MainWindow(QMainWindow):
             menu.addAction(template.name,lambda checked=False,t=template:self.trench_panel.load_structure_payload(structure_template_to_dict(t)))
         if self.structure_templates:menu.addSeparator()
         menu.addAction('파일에서 불러오기…',self.trench_panel.load_structure_dialog)
+
+    def _trench_structure_saved(self,payload):
+        template=structure_template_from_dict(payload)
+        index=next((i for i,t in enumerate(self.structure_templates) if t.name==template.name),None)
+        if index is None:self.structure_templates.append(template);index=len(self.structure_templates)-1
+        else:self.structure_templates[index]=template
+        self._refresh_structure_combo(index)
 
     def _trench_state_changed(self, state: dict) -> None:
         self.trench_state = {**state, "rotation": self.image_rotation_degrees}
@@ -5405,7 +5413,7 @@ class MainWindow(QMainWindow):
         self.structure_templates = [
             template
             for template in (structure_template_from_dict(item) for item in payload.get("structure_templates", []))
-            if template.records
+            if template.records or template.wall_guides
         ]
         self._refresh_structure_combo()
         self.undo_stack.clear()

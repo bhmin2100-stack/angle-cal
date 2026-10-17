@@ -147,3 +147,19 @@ def test_removed_legacy_settings_do_not_leak_into_simple_recognition(app):
     assert options.corner_window_px==24 and options.field_search_px==32 and options.angle_span==(40,100)
     assert options.step_px==2
     p.close()
+
+
+def test_saved_curve_structure_survives_library_and_project_reopen(app,tmp_path,monkeypatch):
+    path=tmp_path/'image.png';cv2.imencode('.png',trench_image(bulb=12))[1].tofile(str(path))
+    w=MainWindow();w._load_image_path(str(path));w.addon_actions['trench_analyzer'].setChecked(True)
+    w.trench_panel.load_structure_payload(dict(wall_guides=guides()))
+    structure=tmp_path/'curve.anglecal.structure.json'
+    monkeypatch.setattr(QFileDialog,'getSaveFileName',lambda *a,**k:(str(structure),''))
+    w.trench_panel.save_structure_dialog()
+    assert w.structure_templates[0].wall_guides==guides()
+    monkeypatch.setattr(w,'_show_save_notification',lambda *a:None)
+    project=tmp_path/'library.anglecal.json';w._save_project_to_path(str(project))
+    reader=MainWindow();monkeypatch.setattr(QFileDialog,'getOpenFileName',lambda *a,**k:(str(project),''))
+    reader.open_project()
+    assert reader.structure_templates[0].wall_guides==guides()
+    reader.close();w.close()
