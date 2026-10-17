@@ -185,7 +185,7 @@ def contour_row_targets(traces):
     return rows
 
 
-def guided_cavity_profile(seed_rows, ridge_image, guides, bands, traces, roi, rim_peak):
+def guided_cavity_profile(seed_rows, ridge_image, guides, bands, traces, roi, rim_peak, strict=False):
     """Associate the ordered contour with one complete, connected cavity.
 
     Each node is an already paired dark-space interval, rather than an
@@ -219,6 +219,7 @@ def guided_cavity_profile(seed_rows, ridge_image, guides, bands, traces, roi, ri
         yy=top+row_index
         search=bands.get((row_index,'contour'),[])
         values=targets.get(yy,[])
+        if strict and not search:continue
         body=any(lo<=yy<=hi for lo,hi in spans)
         active=[i for i in active if row_index-nodes[i]['row']<=4]
         current=[]
@@ -237,12 +238,15 @@ def guided_cavity_profile(seed_rows, ridge_image, guides, bands, traces, roi, ri
                 # cavity, not independent walls belonging to two trenches.
                 support=sum(map(len,attached))
                 if values and support<len(values):continue
+                if strict and body and not all(attached):continue
                 for side,choices in enumerate(attached):
                     if choices:
                         value=min(choices,key=lambda p:abs(p-(left if side==0 else right)))
                         if side==0:left=value
                         else:right=value
-                if not (in_bands(left,search) or in_bands(right,search)):continue
+                if strict:
+                    if not (in_bands(left,search) and in_bands(right,search)):continue
+                elif not (in_bands(left,search) or in_bands(right,search)):continue
             if right-left<=2:continue
             reward=1+3*min(2,support)
             best=0.;parent=None
@@ -265,5 +269,6 @@ def guided_cavity_profile(seed_rows, ridge_image, guides, bands, traces, roi, ri
     while selected is not None:
         node=nodes[selected];profile.append((node['row'],node['left']-x,node['right']-x));selected=node['parent']
     profile=np.array(profile[::-1],float)
-    if len(profile)<max(12,height*.2):raise ValueError('가이드 주변에서 충분히 긴 연결 윤곽을 찾지 못했습니다.')
+    expected_height=min(height,max(hi for lo,hi in spans)-min(lo for lo,hi in spans)+1) if strict else height
+    if len(profile)<max(12,expected_height*.2):raise ValueError('가이드 범위 안에서 양쪽 측벽의 충분히 긴 연결 윤곽을 찾지 못했습니다.')
     return profile

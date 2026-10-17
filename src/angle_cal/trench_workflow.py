@@ -7,6 +7,7 @@ from .trench_guides import normalize_guides
 
 
 def recognize_from_guides(image,options):
+    options=replace(options,strict_guides=True)
     guides=normalize_guides(options.wall_guides,image.shape)
     if not guides:raise ValueError('먼저 곡선을 그리거나 구조를 불러온 뒤 인식을 누르세요.')
     h,w=image.shape[:2];candidates=[]

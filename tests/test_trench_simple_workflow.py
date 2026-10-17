@@ -110,7 +110,8 @@ def test_load_existing_structure_curve_resize_and_exports(app,tmp_path,monkeypat
     p.unit_combo.setCurrentIndex(p.unit_combo.findData('angstrom'));p.start_analysis();finish(p,app)
     assert np.array_equal(y,p.result.sample_y) # Display unit cannot alter 1nm spacing.
     for ext in ('csv','json','png'):p.save_result(str(tmp_path/f'simple.{ext}'))
-    p.copy_gfe_coordinates();assert QApplication.clipboard().text().startswith('X\tY\n'),p.hint.text()
+    QApplication.clipboard().clear();p.copy_gfe_coordinates()
+    assert not QApplication.clipboard().text() and 'Field' in p.hint.text()
     p.close()
 
 

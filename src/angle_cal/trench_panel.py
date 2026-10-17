@@ -663,7 +663,7 @@ class TrenchPanel(QWidget):
         self.guide_delete=QPushButton('삭제');self.guide_delete.clicked.connect(self.guide_editor.remove_selected);tools.addWidget(self.guide_delete)
         self.guide_clear=QPushButton('모두 지우기');self.guide_clear.clicked.connect(self.guide_editor.clear)
         tools.addStretch();root.addWidget(self.guide_bar)
-        self.guide_hint=QLabel('점을 찍고 마지막 더블클릭으로 완료 · 점/곡선 드래그로 보정 · 휠: 인식 폭 · Ctrl+휠: 확대')
+        self.guide_hint=QLabel('점을 찍고 마지막 더블클릭으로 완료 · 곡선 클릭: 점 추가 · 점 드래그: 보정 · 휠: 인식 폭 · Ctrl+휠: 확대')
         root.addWidget(self.guide_hint)
         self.guide_bar.setEnabled(False)
         self.guide_button.toggled.connect(self._guide_mode)
@@ -797,7 +797,7 @@ class TrenchPanel(QWidget):
     def _guides_changed(self):
         self._guide_selection_changed()
         self._settings_changed()
-        self.guide_hint.setText(f'곡선 {len(self.guide_editor.guides)}개 · 점/곡선을 드래그로 보정 · 휠로 인식 폭 조절 → 인식')
+        self.guide_hint.setText(f'곡선 {len(self.guide_editor.guides)}개 · 곡선 클릭: 점 추가 · 점 드래그: 보정 · Alt+드래그: 곡선 이동 · 휠: 인식 폭')
 
     def set_tool(self,mode,from_button=False):
         if not from_button:self.guide_button.setChecked(False)
@@ -805,8 +805,9 @@ class TrenchPanel(QWidget):
         self.view.set_select_region(False)
         self.guide_editor.interaction_mode=mode
         if not from_button:self.guide_editor.set_drawing(False)
-        self.view.setDragMode(QGraphicsView.DragMode.NoDrag if mode in ('scale','curve','resize') else QGraphicsView.DragMode.ScrollHandDrag)
-        self.view.setCursor(Qt.CursorShape.CrossCursor if mode in ('scale','curve') else Qt.CursorShape.OpenHandCursor)
+        self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag if mode=='pan' else QGraphicsView.DragMode.NoDrag)
+        self.view.setCursor(Qt.CursorShape.CrossCursor if mode=='scale' else
+                            Qt.CursorShape.OpenHandCursor if mode=='pan' else Qt.CursorShape.ArrowCursor)
         for key,button in self.tool_buttons.items():button.setChecked(key==mode)
         self.guide_editor.render()
 
@@ -979,7 +980,7 @@ class TrenchPanel(QWidget):
         if self.automatic_area:
             # Removed legacy controls must not silently influence the simple
             # workflow when an older project is opened.
-            return TrenchOptions(roi,step,smooth_px=7,wall_guides=normalize_guides(self.guide_editor.guides),boundary_mode=self.boundary_mode)
+            return TrenchOptions(roi,step,smooth_px=7,wall_guides=normalize_guides(self.guide_editor.guides),boundary_mode=self.boundary_mode,strict_guides=True)
         return TrenchOptions(roi, step, self.threshold_spin.value(),
                              self.bright_check.isChecked(), self.smooth_spin.value(), self.bow_combo.currentData(),
                              self.corner_spin.value(), self.negative_spin.value(),

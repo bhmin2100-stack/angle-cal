@@ -163,6 +163,26 @@ def in_bands(x, bands):
     return any(lo-1e-7 <= x <= hi+1e-7 for lo, hi in bands)
 
 
+def points_in_guides(points, guides):
+    """Membership in the same constant-radius swept corridor shown by the UI."""
+    points = np.asarray(points, dtype=float).reshape(-1, 2)
+    inside = np.zeros(len(points), dtype=bool)
+    for guide in guides:
+        samples = sweep_samples(guide)
+        a, delta = samples[:-1], np.diff(samples, axis=0)
+        length2 = np.maximum(np.sum(delta*delta, axis=1), 1e-20)
+        radius = guide['half_width_px']
+        eligible = np.flatnonzero(~inside & np.all(points >= samples.min(axis=0)-radius, axis=1)
+                                  & np.all(points <= samples.max(axis=0)+radius, axis=1))
+        for start in range(0, len(eligible), 128):
+            indices = eligible[start:start+128]
+            offset = points[indices, None, :] - a
+            along = np.clip(np.sum(offset*delta, axis=2)/length2, 0, 1)
+            residual = offset - along[:, :, None]*delta
+            inside[indices] = np.any(np.sum(residual*residual, axis=2) <= radius*radius+1e-7, axis=1)
+    return inside
+
+
 def guided_edges(row, bands, direction, x_origin=0):
     """Return evidenced ridge/gradient candidates strictly within each band.
 

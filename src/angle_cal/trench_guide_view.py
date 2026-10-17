@@ -92,7 +92,9 @@ class TrenchGuideEditor(QObject):
         self.draft = []
         if enabled:self.selected=-1
         self.view.set_select_region(False)
-        self.view.setCursor(Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.OpenHandCursor)
+        pan = not enabled and self.interaction_mode == 'pan'
+        self.view.setDragMode(self.view.DragMode.ScrollHandDrag if pan else self.view.DragMode.NoDrag)
+        self.view.setCursor(Qt.CursorShape.OpenHandCursor if pan else Qt.CursorShape.ArrowCursor)
         self.render()
         self.mode_changed.emit(self.drawing)
         self.selection_changed.emit()
@@ -148,6 +150,39 @@ class TrenchGuideEditor(QObject):
             if distance<=max(8,guide['half_width_px']*self.view.transform().m11() if band else 8):
                 return i,None
         return -1,None
+
+    def _insert_point(self, event, index):
+        """Project the click onto its ordered cubic span, including at bends."""
+        guide = self.guides[index]
+        if len(guide['points']) >= 200:
+            self.message.emit('한 곡선은 최대 200점입니다. 기존 점을 끌어서 보정하세요.')
+            return None
+        samples = curve_samples(guide)
+        transform = self.view.viewportTransform()
+        pixels = samples @ np.array([[transform.m11(), transform.m12()],
+                                     [transform.m21(), transform.m22()]])
+        pixels += [transform.dx(), transform.dy()]
+        pos = np.array([event.position().x(), event.position().y()])
+        delta = np.diff(pixels, axis=0)
+        along = np.clip(np.sum((pos-pixels[:-1])*delta, axis=1)
+                        / np.maximum(np.sum(delta*delta, axis=1), 1e-20), 0, 1)
+        nearest = int(np.argmin(np.linalg.norm(pos-(pixels[:-1]+along[:, None]*delta), axis=1)))
+        # curve_samples includes each clicked knot, followed by the sampled
+        # cubic span. Use that ordering rather than nearest straight chords.
+        lengths = np.linalg.norm(np.diff(np.asarray(guide['points']), axis=0), axis=1)
+        counts = np.clip(np.ceil(lengths*1.5).astype(int), 3, 4000)
+        end = int(np.searchsorted(np.cumsum(counts), nearest, side='right')) + 1
+        point = samples[nearest] + along[nearest]*(samples[nearest+1]-samples[nearest])
+        point = np.clip(point, [0, 0], [self.view.image_rect.width()-1, self.view.image_rect.height()-1])
+        changed = deepcopy(guide)
+        changed['points'].insert(end, point.tolist())
+        try:
+            self.guides[index] = normalize_guides([changed])[0]
+        except ValueError:
+            return None
+        self.render()
+        self.selection_changed.emit()
+        return end
 
     def render(self, preview=None):
         self.clear_render()
@@ -243,6 +278,9 @@ class TrenchGuideEditor(QObject):
             index,end=self._hit(event)
             if index>=0:
                 self.view.setFocus();self.select(index)
+                if end is None and self.interaction_mode=='select' and not event.modifiers() & Qt.KeyboardModifier.AltModifier:
+                    end=self._insert_point(event,index)
+                    if end is None:return True
                 self.drag=('edit',point,(end,deepcopy(self.guides[index])))
                 return True
         if kind==QEvent.Type.MouseMove and self.drawing and self.draft:

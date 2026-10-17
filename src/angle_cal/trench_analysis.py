@@ -18,7 +18,7 @@ import numpy as np
 from .image_ops import to_gray
 from .trench_corner import measure_entrance_corner
 from .trench_surface import measure_field_angles, connect_entrance
-from .trench_guides import normalize_guides, prepare_guide_bands, in_bands, sweep_samples
+from .trench_guides import normalize_guides, prepare_guide_bands, in_bands, sweep_samples, points_in_guides
 from .trench_contour import trace_guide, guided_cavity_profile
 from .trench_guided_surface import measure_guided_surfaces
 
@@ -39,6 +39,7 @@ class TrenchOptions:
     angle_span: tuple = (40, 100)
     wall_guides: tuple = ()
     boundary_mode: str = 'inner_rim'
+    strict_guides: bool = False
 
 
 @dataclass
@@ -138,6 +139,8 @@ def trench_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
     if x0 >= float(np.min(left)) or x0 + width <= float(np.max(right)):
         raise ValueError("Field가 양쪽 측벽 바깥에 오도록 분석 영역을 넓히세요.")
     if len(result.field_angles)!=2 or any(item["status"]!="valid" for item in result.field_angles):
+        if result.options.strict_guides:
+            raise ValueError('좌우 Field가 미확정입니다. 상단 Field까지 곡선 인식 범위에 포함해 다시 인식하세요.')
         raise ValueError("좌우 Field가 미확정입니다. 표면 위쪽과 양쪽 바깥 재료를 포함하거나 Field 검색 범위를 조정하세요.")
     lf,rf=result.field_angles
     center = (float(left[0]) + float(right[0])) / 2
@@ -161,6 +164,8 @@ def trench_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
         points.extend(sorted((tuple(point) for point in result.corners[0].get("trace_points",[]) if point[1]<y[0]),key=lambda p:p[1],reverse=True))
     points.extend(tuple(point) for point in lf["points"][::-1]
                   if not left_connected or point[0]<=lc['field_tangent'][0])
+    if result.options.strict_guides and not points_in_guides(points,result.options.wall_guides).all():
+        raise ValueError('GFE 연결 형상이 곡선 인식 범위를 벗어납니다. Field·입구·바닥을 포함하도록 곡선을 보정하세요.')
     factor = nm_per_px * 10
     lines = ["X\tY"]
     previous = None
@@ -351,9 +356,11 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
             wall_bands,_=prepare_guide_bands(wall_guides,top,height)
             track=guided_cavity_profile([_runs(row,threshold) for row in normalized],ridge_image,
                                         wall_guides,wall_bands,[traces[i] for i in wall_indices],
-                                        (x,top,width,height),_rim_peak)
+                                        (x,top,width,height),_rim_peak,strict=options.strict_guides)
             candidates=[track]
             guided_walls=True
+    if options.strict_guides and not guided_walls:
+        raise ValueError('곡선 인식 범위 안에 양쪽 측벽이 포함되도록 곡선을 그려주세요.')
     if not guides or not wall_indices:
         # Link overlapping intervals on successive rows. An unrelated trench cannot
         # silently bridge a missing row or replace one of the selected walls.
@@ -456,6 +463,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     if closed:
         before, after = center_column[floor_row - 1], center_column[floor_row]
         depth = float(floor_row - 1 + np.clip((threshold - before) / max(1e-9, after - before), 0, 1))
+        if options.strict_guides and not points_in_guides([[(left[-1]+right[-1])/2,top+depth]],guides)[0]:
+            depth=None;closed=False
     if not closed:
         warnings.append("바닥 폐쇄를 확인하지 못했습니다. 전체 Depth는 미확정이며 관찰 깊이만 표시합니다.")
     # Exclude the final 10% from sidewall/bowing fits to avoid fitting the floor.
@@ -479,7 +488,19 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
                                       options.corner_rois[i], options.corner_spans[i], options.bright_trench)
                for i, (side, edge) in enumerate((("left", left), ("right", right)))]
     if guides:
+        if options.strict_guides:
+            for item in field_angles:
+                item.update(status='unconfirmed',angle_status='unconfirmed',angle_deg=None,points=[],
+                            source='guide',reason='곡선 인식 범위에 Field 윤곽이 포함되지 않았습니다.')
+            for corner in corners:
+                corner.update(status='unconfirmed',radius_px=None,center=None,trace_points=[],fit_points=[],arc_points=[],
+                              reason='곡선 인식 범위에 입구 전이 윤곽이 포함되지 않았습니다.')
         field_angles,corners=measure_guided_surfaces(guides,traces,options,y,left,right,field_angles,corners,image.shape)
+        if options.strict_guides:
+            for item in field_angles:
+                if item['points'] and not points_in_guides(item['points'],guides).all():
+                    item.update(status='unconfirmed',angle_status='unconfirmed',angle_deg=None,points=[],
+                                reason='Field 맞춤 윤곽이 곡선 인식 범위를 벗어나 미확정입니다.')
         angles=[item['angle_deg'] for item in field_angles]
     if any(item['angle_status']!='valid' for item in field_angles):
         warnings.append("일부 Field 또는 각도가 미확정입니다. Field / 각도 탭에서 측정 구간과 이유를 확인하세요.")
@@ -495,6 +516,10 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         high_index=np.clip(np.searchsorted(y,sample_y),1,len(y)-1)
         missing=(y[high_index]-y[high_index-1]>1.5)&(sample_y>y[high_index-1]+1e-7)&(sample_y<y[high_index]-1e-7)
         sample_y=sample_y[~missing]
+    if options.strict_guides and len(sample_y):
+        sample_left=np.interp(sample_y,y,left);sample_right=np.interp(sample_y,y,right)
+        keep=points_in_guides(np.column_stack((sample_left,sample_y)),guides)&points_in_guides(np.column_stack((sample_right,sample_y)),guides)
+        sample_y=sample_y[keep]
     if not len(sample_y):
         warnings.append("CD 간격이 관찰 범위보다 큽니다. 간격을 줄여주세요.")
     local=[]
