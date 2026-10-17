@@ -137,3 +137,13 @@ def test_one_nm_deep_measurement_does_not_hit_old_twenty_thousand_limit():
                            wall_guides=tuple(guides()),boundary_mode='max_gradient'))
     assert len(r.sample_y)>20000
     assert np.allclose(np.diff(r.sample_y)*128,1)
+
+
+def test_removed_legacy_settings_do_not_leak_into_simple_recognition(app):
+    p=TrenchPanel();p.set_image(trench_image(),'old-project',.5,dict(threshold=200,bright=True,
+        smooth=99,bow_reference='chord',corner=200,field_search=100,angle_start=5,angle_end=10))
+    options=p.options()
+    assert options.threshold==0 and options.smooth_px==7 and options.bow_reference=='entrance'
+    assert options.corner_window_px==24 and options.field_search_px==32 and options.angle_span==(40,100)
+    assert options.step_px==2
+    p.close()

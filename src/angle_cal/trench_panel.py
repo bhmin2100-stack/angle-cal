@@ -973,6 +973,10 @@ class TrenchPanel(QWidget):
         factor, _ = self._factor()
         roi=self.roi if not self.automatic_area else (0,0,self.image.shape[1],self.image.shape[0])
         step=self.step_spin.value()/self.scale_spin.value() if self.scale_spin.value()>0 else self.step_spin.value()
+        if self.automatic_area:
+            # Removed legacy controls must not silently influence the simple
+            # workflow when an older project is opened.
+            return TrenchOptions(roi,step,smooth_px=7,wall_guides=normalize_guides(self.guide_editor.guides),boundary_mode=self.boundary_mode)
         return TrenchOptions(roi, step, self.threshold_spin.value(),
                              self.bright_check.isChecked(), self.smooth_spin.value(), self.bow_combo.currentData(),
                              self.corner_spin.value(), self.negative_spin.value(),
