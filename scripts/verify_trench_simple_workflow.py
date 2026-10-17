@@ -10,6 +10,7 @@ from PySide6.QtGui import QFont,QFontDatabase
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QInputDialog
 from angle_cal.app import MainWindow
+from angle_cal import __version__
 
 
 def sample(seed):
@@ -66,7 +67,11 @@ def main():
     p.copy_gfe_coordinates();table=app.clipboard().text()
     assert table.startswith('X\tY\n'),p.hint.text()
     (out/'gfe.tsv').write_text(table,encoding='utf-8')
-    w._save_project_to_path(str(out/'simple.anglecal.json'));w.grab().save(str(out/'workspace.png'))
+    w._save_project_to_path(str(out/'simple.anglecal.json'));app.processEvents()
+    p.graph.grab()
+    trace_y=[point[1] for trace in p.result.guide_traces for segment in trace['segments'] for point in segment]
+    assert p.graph.plot_y_bounds[0]<=min(trace_y) and p.graph.plot_y_bounds[1]>=max(trace_y)
+    w.grab().save(str(out/'workspace.png'))
     y=p.result.sample_y.copy();scale=p.scale_spin.value()
     QTest.mouseClick(w.thumbnail_buttons[str(paths[1])],Qt.MouseButton.LeftButton);app.processEvents()
     assert p.roi is None and not p.guide_editor.guides and p.scale_bar is None
@@ -74,7 +79,7 @@ def main():
     assert p.scale_spin.value()==scale and p.state()['wall_guides']==structure['wall_guides']
     p.load_structure_payload(structure);p.guide_analyze.click();finish(p,app)
     assert np.array_equal(y,p.result.sample_y)
-    summary=dict(version='0.1.6',guide_points=len(points),roi_automatic=True,nm_per_px=scale,step_nm=p.step_spin.value(),
+    summary=dict(version=__version__,graph_includes_field_and_floor=True,guide_points=len(points),roi_automatic=True,nm_per_px=scale,step_nm=p.step_spin.value(),
                  depth_nm=p.result.depth_px*scale,max_cd_nm=p.result.summary()['max_cd_px']*scale,
                  cd_rows=len(y),gfe_rows=len(table.splitlines())-1,thumbnail_roundtrip=True,structure_roundtrip=True)
     (out/'summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8');print(json.dumps(summary))

@@ -22,6 +22,7 @@ from .trench_guides import normalize_guides
 from .trench_guide_view import TrenchGuideEditor
 from .trench_workflow import recognize_from_guides
 from .trench_structure import structure_guides
+from .trench_plot import shape_series
 
 
 def _pen(color: str, width: float = 1.5, dashed: bool = False) -> QPen:
@@ -473,6 +474,7 @@ class TrenchGraph(QWidget):
         self.factor = 1.0
         self.unit = "px"
         self.mode = "shape"
+        self.show_entrance = False
         self.selected_y = None
         self.plot_rect = QRectF()
         self.setMinimumSize(230, 160)
@@ -496,24 +498,20 @@ class TrenchGraph(QWidget):
         rect = QRectF(60, 28, max(30, self.width() - 85), max(30, self.height() - 60))
         self.plot_rect = rect
         if self.mode == "shape":
-            series = [(r.left, r.y, "#007d92"), (r.right, r.y, "#bb4b1e")]
-            for item in (r.field_angles if getattr(self,"show_entrance",True) else []):
-                if item["status"] == "valid":
-                    points=np.asarray(item["points"])
-                    series.append((points[:,0],points[:,1],"#268b48"))
-            title = "좌우 경계 X"
+            series = shape_series(r)
+            title = "Field·측벽·바닥 X"
         elif self.mode == "bow":
-            series = [(r.left_reference - r.left, r.y, "#007d92"), (r.right - r.right_reference, r.y, "#bb4b1e")]
+            series = [(r.left_reference - r.left, r.y, "#007d92", False), (r.right - r.right_reference, r.y, "#bb4b1e", False)]
             title = "좌 / 우 벌어짐 (+ 바깥)"
         else:
-            series = [(r.right - r.left, r.y, "#285fe1")]
+            series = [(r.right - r.left, r.y, "#285fe1", False)]
             title = "CD"
-        all_x = np.concatenate([values for values, _, _ in series])
+        all_x = np.concatenate([values for values, _, _, _ in series])
         xmin, xmax = float(np.min(all_x)), float(np.max(all_x))
         padding = max(1, (xmax - xmin) * .1)
         xmin, xmax = xmin - padding, xmax + padding
-        ymin = float(min(np.min(ys) for _,ys,_ in series))
-        ymax = float(r.y[-1])
+        ymin = float(min(np.min(ys) for _,ys,_,_ in series))
+        ymax = float(max(np.max(ys) for _,ys,_,_ in series))
         self.plot_y_bounds=(ymin,ymax)
         def point(x, y):
             return QPointF(rect.left() + (x - xmin) / (xmax - xmin) * rect.width(),
@@ -539,15 +537,17 @@ class TrenchGraph(QWidget):
                 for i in block[::-1]:cavity.lineTo(point(r.right[i],r.y[i]))
                 cavity.closeSubpath()
                 painter.fillPath(cavity, QColor(0, 125, 146, 25))
-        for values, ys, color in series:
+        for values, ys, color, dashed in series:
             path = QPainterPath()
             stride = max(1, len(ys) // 2000)
-            for j, index in enumerate(range(0, len(ys), stride)):
+            indices = list(range(0, len(ys), stride))
+            if indices[-1] != len(ys) - 1:indices.append(len(ys) - 1)
+            for j, index in enumerate(indices):
                 if j == 0 or (ys is r.y and np.any(np.diff(ys[index-stride:index+1])>1.5)):
                     path.moveTo(point(values[index], ys[index]))
                 else:
                     path.lineTo(point(values[index], ys[index]))
-            painter.setPen(QPen(QColor(color), 2))
+            painter.setPen(_pen(color, 2, dashed))
             painter.drawPath(path)
         if self.mode == "shape":
             for item in (r.field_angles if getattr(self,"show_entrance",True) else []):
@@ -571,7 +571,7 @@ class TrenchGraph(QWidget):
                     painter.drawText(QRectF(point(vx,vy).x()-35,rect.top()+19,70,20),
                                      Qt.AlignmentFlag.AlignCenter,f"{item['angle_deg']:.2f}°")
             y = float(np.clip(self.selected_y if self.selected_y is not None else
-                              (ymin + ymax) / 2, ymin, ymax))
+                              (r.y[0] + r.y[-1]) / 2, r.y[0], r.y[-1]))
             left = float(np.interp(y, r.y, r.left))
             right = float(np.interp(y, r.y, r.right))
             a, b = point(left, y), point(right, y)
