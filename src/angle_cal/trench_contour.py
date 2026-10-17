@@ -13,7 +13,7 @@ from .trench_guides import sweep_samples, in_bands
 from .image_ops import _boundary_profile_index
 
 
-def trace_guide(image, guide, threshold, boundary_mode='inner_rim'):
+def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contrast=False, material_level=None):
     samples=sweep_samples(guide)
     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(samples,axis=0),axis=1))]
     step=max(1.,arc[-1]/20000)
@@ -30,8 +30,9 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim'):
     valid=(xy[:,:,0]>=0)&(xy[:,:,0]<image.shape[1]-1)&(xy[:,:,1]>=0)&(xy[:,:,1]<image.shape[0]-1)
     profiles=cv2.remap(image.astype(np.float32,copy=False),xy[:,:,0].astype(np.float32),
                        xy[:,:,1].astype(np.float32),cv2.INTER_LINEAR,borderMode=cv2.BORDER_REPLICATE)
-    material=image[image>threshold+20]
-    material_level=float(np.percentile(material,75)) if len(material) else threshold+20
+    if material_level is None:
+        material=image[image>threshold+20]
+        material_level=float(np.percentile(material,75)) if len(material) else threshold+20
     candidates=[]
     ks=np.arange(6,len(offsets)-6)
     far=(ks>=15)&(ks+15<len(offsets))
@@ -53,7 +54,7 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim'):
             prominence=b-np.maximum(before,after)
             # A broad material-layer plateau is not a resolved bright rim.
             # Require a local crest before suppressing its gradient flanks.
-            peaks=supported&(b>=np.maximum(a,c))&(b-(a+c)/2>=.5)&(prominence>=5)
+            peaks=supported&(b>=np.maximum(a,c))&(b-(a+c)/2>=(.05 if local_contrast else .5))&(prominence>=5)
             ridge_indices=ks[peaks].tolist()
             for j in np.flatnonzero(peaks):
                 k=ks[j];denom=float(a[j]-2*b[j]+c[j])
@@ -62,7 +63,8 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim'):
                 if abs(offset)<=radius:
                     found.append((offset,float(1.25*prominence[j]+.65*contrast[j]),'ridge',k))
             gradient=np.abs(c-a)/2
-            steep=supported&(np.abs(offsets[ks])<=radius)&(gradient>=8)
+            gradient_floor=max(2.,min(8.,2*float(np.median(np.abs(np.diff(profile)))))) if local_contrast else 8
+            steep=supported&(np.abs(offsets[ks])<=radius)&(gradient>=gradient_floor)
             steep&=(gradient>=np.abs(b-profile[ks-2])/2)&(gradient>=np.abs(profile[ks+2]-b)/2)
             for j in np.flatnonzero(steep):
                 k=ks[j]
@@ -73,13 +75,21 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim'):
                 if abs(offsets[k]+shift)<=radius:
                     found.append((offsets[k]+shift,float(.8*gradient[j]+.65*contrast[j]),'gradient',k))
         ranked=[]
-        dark=np.flatnonzero((np.convolve(profile,np.ones(3)/3,'same')<=threshold+8)&valid[i])
+        dark_level=threshold+8
+        if local_contrast and valid[i].any():
+            local=profile[valid[i]]
+            # A shaded SEM cavity may stay much brighter than the global void
+            # cutoff near one wall. Use the darker local side of a resolved rim,
+            # while retaining ridge barriers and material-background rejection.
+            dark_level=max(dark_level,min(material_level-8,float(np.percentile(local,10)+.5*np.ptp(local))))
+        dark=np.flatnonzero((np.convolve(profile,np.ones(3)/3,'same')<=dark_level)&valid[i])
         barriers=ridge_indices[:]
         # A bright rim must rise above the material background as well as
         # the void. A finite bright layer plateau is otherwise mistaken for
         # a crest halfway inside the solid. Other local peaks still block
         # borrowing a cavity through an intervening real boundary.
         resolved=[k for k in ridge_indices if profile[k]>=material_level+5]
+        if local_contrast:barriers=resolved
         ridge_indices=resolved
         found=[candidate for candidate in found if candidate[2]!='ridge' or candidate[3] in resolved]
         ridges=[offsets[j] for j in ridge_indices]
@@ -219,9 +229,34 @@ def guided_cavity_profile(seed_rows, ridge_image, guides, bands, traces, roi, ri
         yy=top+row_index
         search=bands.get((row_index,'contour'),[])
         values=targets.get(yy,[])
-        if strict and not search:continue
-        body=any(lo<=yy<=hi for lo,hi in spans)
         active=[i for i in active if row_index-nodes[i]['row']<=4]
+        if strict and not search:continue
+        if strict and len(values)>=2:
+            ordered=np.sort(values);split=int(np.argmax(np.diff(ordered)))+1
+            branches=(ordered[:split],ordered[split:])
+            a,b=(float(np.median(branch)) for branch in branches)
+            # Classify an intensity gradient across one cavity from the actual
+            # paired trace, rather than moving its bright wall to a global dark
+            # threshold crossing. The central span must stay darker than BOTH
+            # external material supports; this excludes a pillar between two
+            # different trenches. Missing trace branches cannot use this path.
+            ia,ib=int(round(a-x)),int(round(b-x))
+            trim=max(2,int((ib-ia)*.15))
+            left_context=ridge_image[row_index,max(0,ia-20):max(0,ia-6)]
+            right_context=ridge_image[row_index,min(width,ib+6):min(width,ib+20)]
+            interior=ridge_image[row_index,max(0,ia+trim):min(width,ib-trim)]
+            compact=all(np.ptp(branch)<=max(6,2*max(g['half_width_px'] for g in guides)) for branch in branches)
+            if compact and b-a>8 and len(left_context)>=5 and len(right_context)>=5 and len(interior)>=5:
+                material=min(float(np.median(left_context)),float(np.median(right_context)))
+                contrast_ok=np.percentile(interior,90)<material-8
+                continued=any(nodes[i].get('local_cavity',False)
+                              and abs(nodes[i]['left']-a)<=max(4,2*(row_index-nodes[i]['row']))
+                              and abs(nodes[i]['right']-b)<=max(4,2*(row_index-nodes[i]['row'])) for i in active)
+                if (contrast_ok or continued) and in_bands(a,search) and in_bands(b,search):
+                    seeds=[*seeds,(a-x,b-x)]
+        else:
+            a=b=None
+        body=any(lo<=yy<=hi for lo,hi in spans)
         current=[]
         for seed_left,seed_right in seeds:
             left=float(rim_peak(ridge_image[row_index],seed_left,-1))+x
@@ -259,7 +294,8 @@ def guided_cavity_profile(seed_rows, ridge_image, guides, bands, traces, roi, ri
                 score=previous['score']-min(.5,.02*movement)-.3*(gap-1)
                 if score>best:best,parent=score,i
             nodes.append(dict(row=row_index,left=left,right=right,score=best+reward,parent=parent,
-                              support=support+(nodes[parent]['support'] if parent is not None else 0)))
+                              support=support+(nodes[parent]['support'] if parent is not None else 0),
+                              local_cavity=bool(strict and a is not None and abs(left-a)<6 and abs(right-b)<6)))
             current.append(len(nodes)-1)
         active.extend(current)
     eligible=[i for i,n in enumerate(nodes) if n['support']>=4]

@@ -1050,6 +1050,7 @@ class TrenchPanel(QWidget):
         if self.scale_spin.value()<=0:lines.append('미보정: px 표시 · 스케일바로 보정하세요.')
         if self.step_spin.value()/max(self.scale_spin.value(),1e-9)<1:lines.append('1px 미만 간격은 윤곽 보간값입니다.')
         if r.depth_px is None:lines.append('바닥이 보이지 않아 전체 깊이는 미확정입니다.')
+        if np.any(np.diff(r.y)>1.5):lines.append('일부 경계 미검출 · 해당 CD 제외, GFE 복사 제한')
         if any(t['trace_coverage']<.8 for t in r.guide_traces):lines.append('일부 경계가 끊겼습니다. 곡선 위치·인식 폭을 확인하세요.')
         self.summary_label.setText("\n".join(lines))
         self.summary_label.setMinimumHeight(self.summary_label.fontMetrics().lineSpacing()*(len(lines)+1))

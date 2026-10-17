@@ -343,7 +343,10 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         mode=options.boundary_mode
         if options.bright_trench and mode in ('brightest','darkest'):
             mode='darkest' if mode=='brightest' else 'brightest'
-        traces=[trace_guide(full_ridge,g,threshold,mode) for g in guides]
+        material=ridge_image[ridge_image>threshold+20]
+        local_material=float(np.percentile(material,75)) if len(material) else threshold+20
+        traces=[trace_guide(full_ridge,g,threshold,mode,local_contrast=options.strict_guides,
+                            material_level=local_material if options.strict_guides else None) for g in guides]
         for i,g in enumerate(guides):
             samples=sweep_samples(g);direction=np.gradient(samples,axis=0)
             vertical=np.abs(direction[:,1])>=.75*np.abs(direction[:,0])
