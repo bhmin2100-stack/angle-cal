@@ -21,6 +21,11 @@ def sample(seed):
         bulb=12*np.exp(-((yy-205)/70)**2)
         void|=(xx>center-40-bulb)&(xx<center+40+bulb)&(yy<430)
     image[void]=30
+    # Resolved bright SEM rim, including Field and floor, for the default
+    # crest-based workflow. The separate tests retain plain step-edge coverage.
+    solid=(~void).astype(np.uint8)
+    signed=cv2.distanceTransform(solid,cv2.DIST_L2,5)-cv2.distanceTransform(1-solid,cv2.DIST_L2,5)
+    image+=85*np.exp(-(signed/2.5)**2)
     image=cv2.GaussianBlur(image,(3,3),.6)
     image+=np.random.default_rng(seed).normal(0,1.5,image.shape)
     image[464:467,50:151]=245

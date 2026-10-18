@@ -51,6 +51,8 @@ class TrenchView(QGraphicsView):
         self.scale_mode=False
         self.scale_origin=None
         self.scale_preview=None
+        self.ctrl_pan_last=None
+        self.ctrl_pan_cursor=None
         self.origin = None
         self.rubber = None
         self.image_rect = QRectF()
@@ -88,6 +90,9 @@ class TrenchView(QGraphicsView):
         self.setCursor(Qt.CursorShape.CrossCursor if selected else Qt.CursorShape.OpenHandCursor)
 
     def mousePressEvent(self, event) -> None:
+        if event.button()==Qt.MouseButton.LeftButton and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.ctrl_pan_last=event.position().toPoint();self.ctrl_pan_cursor=self.cursor()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor);event.accept();return
         if self.scale_mode and event.button()==Qt.MouseButton.LeftButton and not self.image_rect.isEmpty():
             p=self.mapToScene(event.position().toPoint())
             self.scale_origin=QPointF(np.clip(p.x(),0,self.image_rect.width()-1),np.clip(p.y(),0,self.image_rect.height()-1))
@@ -103,6 +108,11 @@ class TrenchView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if self.ctrl_pan_last is not None:
+            point=event.position().toPoint();delta=point-self.ctrl_pan_last;self.ctrl_pan_last=point
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value()-delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value()-delta.y())
+            self.notify_viewport();event.accept();return
         if self.scale_origin is not None:
             p=self._scale_point(event);self.scale_preview.setLine(self.scale_origin.x(),self.scale_origin.y(),p.x(),p.y());return
         if self.origin is not None:
@@ -111,6 +121,8 @@ class TrenchView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if self.ctrl_pan_last is not None and event.button()==Qt.MouseButton.LeftButton:
+            self.ctrl_pan_last=None;self.setCursor(self.ctrl_pan_cursor);event.accept();return
         if self.scale_origin is not None:
             start=self.scale_origin;end=self._scale_point(event)
             self.scene().removeItem(self.scale_preview);self.scale_origin=self.scale_preview=None
@@ -663,7 +675,7 @@ class TrenchPanel(QWidget):
         self.guide_delete=QPushButton('삭제');self.guide_delete.clicked.connect(self.guide_editor.remove_selected);tools.addWidget(self.guide_delete)
         self.guide_clear=QPushButton('모두 지우기');self.guide_clear.clicked.connect(self.guide_editor.clear)
         tools.addStretch();root.addWidget(self.guide_bar)
-        self.guide_hint=QLabel('점을 찍고 마지막 더블클릭으로 완료 · 곡선 클릭: 점 추가 · 점 드래그: 보정 · 휠: 인식 폭 · Ctrl+휠: 확대')
+        self.guide_hint=QLabel('점을 찍고 더블클릭으로 완료 · 곡선 클릭: 점 추가 · Ctrl+드래그: 사진 이동 · 휠: 인식 폭 · Ctrl+휠: 확대')
         root.addWidget(self.guide_hint)
         self.guide_bar.setEnabled(False)
         self.guide_button.toggled.connect(self._guide_mode)
@@ -696,6 +708,15 @@ class TrenchPanel(QWidget):
         form.addRow('표시 단위',self.unit_combo)
         self.step_spin=QDoubleSpinBox();self.step_spin.setRange(.001,1e7);self.step_spin.setDecimals(3);self.step_spin.setValue(1)
         form.addRow('CD 깊이 간격 (nm)',self.step_spin)
+        self.rim_reference=QCheckBox('밝은 테두리 기준');self.rim_reference.setChecked(True)
+        self.rim_reference.setToolTip('밝기 최고점을 찾고 빈 공간 쪽으로 이동합니다. 끄면 기존 가이드 인식 기준을 사용합니다.')
+        form.addRow(self.rim_reference)
+        self.rim_inset_spin=QDoubleSpinBox();self.rim_inset_spin.setRange(0,10);self.rim_inset_spin.setDecimals(2);self.rim_inset_spin.setSingleStep(.25);self.rim_inset_spin.setValue(1)
+        self.rim_inset_spin.setToolTip('원본 픽셀 기준. 0은 밝기 최고점, 양수는 빈 공간 쪽 이동입니다. 실제 치수 보정값으로 검증된 값은 아닙니다.')
+        form.addRow('빈 공간 쪽 이동 (px)',self.rim_inset_spin)
+        self.rim_reference.toggled.connect(self.rim_inset_spin.setEnabled)
+        self.rim_reference.toggled.connect(self._settings_changed)
+        self.rim_inset_spin.valueChanged.connect(self._settings_changed)
         self.calibration_note=QLabel('스케일바를 그리면 입력한 길이를 기준으로 보정합니다.');self.calibration_note.setWordWrap(True);controls.addWidget(self.calibration_note)
         self.analyze_button=QPushButton('인식');self.analyze_button.setMinimumHeight(32);self.analyze_button.clicked.connect(self.start_analysis);controls.addWidget(self.analyze_button)
         fit=QPushButton('전체 보기');fit.clicked.connect(self.view.fit_image);controls.addWidget(fit)
@@ -744,6 +765,7 @@ class TrenchPanel(QWidget):
         return {"roi": self.roi, "nm_per_px": self.scale_spin.value(),
                 "workflow_version":2,"automatic_area":self.automatic_area,"step_nm":self.step_spin.value(),
                 "boundary_mode":self.boundary_mode,"scale_bar":self.scale_bar,
+                "rim_reference":self.rim_reference.isChecked(),"rim_inset_px":self.rim_inset_spin.value(),
                 "unit": self.unit_combo.currentData(), "step": self.step_spin.value(),
                 "threshold": self.threshold_spin.value(), "bright": self.bright_check.isChecked(),
                 "smooth": self.smooth_spin.value(), "bow_reference": self.bow_combo.currentData(),
@@ -797,7 +819,7 @@ class TrenchPanel(QWidget):
     def _guides_changed(self):
         self._guide_selection_changed()
         self._settings_changed()
-        self.guide_hint.setText(f'곡선 {len(self.guide_editor.guides)}개 · 곡선 클릭: 점 추가 · 점 드래그: 보정 · Alt+드래그: 곡선 이동 · 휠: 인식 폭')
+        self.guide_hint.setText(f'곡선 {len(self.guide_editor.guides)}개 · 곡선 클릭: 점 추가 · 점 드래그: 보정 · Ctrl+드래그: 사진 이동 · Alt+드래그: 곡선 이동 · 휠: 인식 폭')
 
     def set_tool(self,mode,from_button=False):
         if not from_button:self.guide_button.setChecked(False)
@@ -902,6 +924,8 @@ class TrenchPanel(QWidget):
             editor.restore(self.corner_rois[i], self.corner_spans[i])
         self.automatic_area=bool(state.get('automatic_area',True))
         self.boundary_mode=state.get('boundary_mode',self.boundary_mode)
+        self.rim_reference.setChecked(bool(state.get('rim_reference',True)))
+        self.rim_inset_spin.setValue(state.get('rim_inset_px',1.))
         self.scale_bar=state.get('scale_bar')
         self.scale_spin.setValue(float(nm_per_px if nm_per_px is not None else state.get('nm_per_px',0)))
         for control, key_name, default in ((self.step_spin, "step_nm", 1), (self.threshold_spin, "threshold", 0),
@@ -981,7 +1005,9 @@ class TrenchPanel(QWidget):
         if self.automatic_area:
             # Removed legacy controls must not silently influence the simple
             # workflow when an older project is opened.
-            return TrenchOptions(roi,step,smooth_px=7,wall_guides=normalize_guides(self.guide_editor.guides),boundary_mode=self.boundary_mode,strict_guides=True)
+            return TrenchOptions(roi,step,smooth_px=7,wall_guides=normalize_guides(self.guide_editor.guides),
+                                 boundary_mode='rim_inset' if self.rim_reference.isChecked() else self.boundary_mode,
+                                 rim_inset_px=self.rim_inset_spin.value(),strict_guides=True)
         return TrenchOptions(roi, step, self.threshold_spin.value(),
                              self.bright_check.isChecked(), self.smooth_spin.value(), self.bow_combo.currentData(),
                              self.corner_spin.value(), self.negative_spin.value(),
@@ -1049,6 +1075,7 @@ class TrenchPanel(QWidget):
         lines=[f"깊이  {fmt(r.depth_px)}",f"CD  {fmt(summary['min_cd_px'])} ~ {fmt(summary['max_cd_px'])}",
                f"Bowing 좌 / 우  {fmt(r.left_bowing_px)} / {fmt(r.right_bowing_px)}"]
         if self.scale_spin.value()<=0:lines.append('미보정: px 표시 · 스케일바로 보정하세요.')
+        if r.options.boundary_mode=='rim_inset':lines.append(f'밝기 최고점 → 빈 공간 {r.options.rim_inset_px:g} px')
         if self.step_spin.value()/max(self.scale_spin.value(),1e-9)<1:lines.append('1px 미만 간격은 윤곽 보간값입니다.')
         if r.depth_px is None:lines.append('바닥이 보이지 않아 전체 깊이는 미확정입니다.')
         joined=sum(len(t.get('joins',[])) for t in r.guide_traces)

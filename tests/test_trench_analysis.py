@@ -170,6 +170,7 @@ def test_workspace_real_mouse_roi_worker_navigation_and_exports(qt_app, tmp_path
     panel.resize(1150, 820)
     panel.show()
     panel.set_image(trench_image(bulb=12), "synthetic.png", .5)
+    panel.rim_reference.setChecked(False)  # Plain step image: no bright roof.
     panel.unit_combo.setCurrentIndex(0)
     qt_app.processEvents()
     panel.view.fit_image()

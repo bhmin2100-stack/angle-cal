@@ -31,7 +31,10 @@ def recognize_from_guides(image,options):
             support=sum(t['detected_points'] for t in result.guide_traces)
             candidates.append((result.depth_px is not None,support,len(result.y),bright,result))
         except ValueError:continue
-    if not candidates:raise ValueError('곡선 주변에서 연결된 Trench 경계를 찾지 못했습니다. 곡선을 옮기거나 휠로 인식 폭을 조절하세요.')
+    if not candidates:
+        if options.boundary_mode=='rim_inset':
+            raise ValueError('곡선 범위에서 양쪽의 밝은 테두리를 찾지 못했습니다. 범위·이동량을 확인하세요. 밝은 띠가 없는 영상은 「밝은 테두리 기준」을 끄고 기존 방식으로 인식할 수 있습니다.')
+        raise ValueError('곡선 주변에서 연결된 Trench 경계를 찾지 못했습니다. 곡선을 옮기거나 휠로 인식 폭을 조절하세요.')
     _,_,_,bright,preliminary=max(candidates,key=lambda c:c[:3])
     # The topmost supported cavity row becomes the entrance depth reference.
     # Keep the complete requested contour and its local intensity context.

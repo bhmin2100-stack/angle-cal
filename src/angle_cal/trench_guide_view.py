@@ -244,6 +244,10 @@ class TrenchGuideEditor(QObject):
 
     def eventFilter(self, watched, event):
         if not isValid(self.view):return False
+        # Ctrl+drag always belongs to the image view, even over guide points
+        # or while drawing. Continue the pan if Ctrl is released mid-drag.
+        if self.view.ctrl_pan_last is not None:return False
+        if event.type() in (QEvent.Type.MouseButtonPress,QEvent.Type.MouseButtonDblClick) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:return False
         if self.view.scale_mode or self.interaction_mode=='pan':return False
         kind=event.type()
         if kind==QEvent.Type.KeyPress and self.view.hasFocus():

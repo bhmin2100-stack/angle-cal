@@ -40,6 +40,7 @@ class TrenchOptions:
     wall_guides: tuple = ()
     boundary_mode: str = 'inner_rim'
     strict_guides: bool = False
+    rim_inset_px: float = 1.0
 
 
 @dataclass
@@ -93,7 +94,7 @@ class TrenchResult:
             raise ValueError("nm/px 보정값은 양수여야 합니다.")
         return {
             "format": "anglecal.trench.v1", "options": asdict(self.options),
-            "wall_boundary": "connected_inner_rim_peak_or_gradient",
+            "wall_boundary": "bright_crest_plus_inward_normal_offset" if self.options.boundary_mode=='rim_inset' else "connected_inner_rim_peak_or_gradient",
             "nm_per_px": nm_per_px, "summary": self.summary(),
             "warnings": self.warnings, "corners": self.corners,
             "corner_length_units": {unit: [
@@ -300,6 +301,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         raise ValueError("입구와 양쪽 벽을 포함하는 분석 영역을 이미지 안에 지정하세요 (최소 12×16 px).")
     if not math.isfinite(options.step_px) or options.step_px <= 0:
         raise ValueError("CD 깊이 간격은 양수여야 합니다.")
+    if not math.isfinite(options.rim_inset_px) or not 0<=options.rim_inset_px<=10:
+        raise ValueError('빈 공간 쪽 이동은 0~10 px여야 합니다.')
     if options.bow_reference not in ("entrance", "chord"):
         raise ValueError("지원하지 않는 Bowing 기준입니다.")
     if not math.isfinite(options.negative_slope_deg) or not 0 <= options.negative_slope_deg < 89:
@@ -346,7 +349,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         material=ridge_image[ridge_image>threshold+20]
         local_material=float(np.percentile(material,75)) if len(material) else threshold+20
         traces=[trace_guide(full_ridge,g,threshold,mode,local_contrast=options.strict_guides,
-                            material_level=local_material if options.strict_guides else None) for g in guides]
+                            material_level=local_material if options.strict_guides else None,
+                            rim_inset_px=options.rim_inset_px) for g in guides]
         for i,g in enumerate(guides):
             samples=sweep_samples(g);direction=np.gradient(samples,axis=0)
             vertical=np.abs(direction[:,1])>=.75*np.abs(direction[:,0])
@@ -549,6 +553,9 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         writer.writerow(["section", "name", "value", "unit"])
         writer.writerow(["metadata", "nm_per_px", nm_per_px or "", "nm/px"])
         writer.writerow(["metadata", "bow_reference", result.options.bow_reference, ""])
+        writer.writerow(["metadata", "boundary_mode", result.options.boundary_mode, ""])
+        if result.options.boundary_mode=='rim_inset':
+            writer.writerow(["metadata", "rim_inset_px", result.options.rim_inset_px, "px"])
         writer.writerow(["metadata", "entrance_y_px", result.options.roi[1], "px"])
         writer.writerow(["metadata", "sidewall_end", 90, "% of detected profile"])
         writer.writerow(["metadata", "wall_guides", json.dumps(list(result.options.wall_guides),ensure_ascii=False), "px"])

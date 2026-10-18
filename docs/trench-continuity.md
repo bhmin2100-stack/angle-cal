@@ -1,4 +1,30 @@
-# Trench contour continuity (0.1.11)
+# Trench contour continuity (0.1.12)
+
+## Bright crest reference (0.1.12)
+
+The default automatic workspace now uses `rim_inset`: identify a resolved
+two-sided local bright maximum in tangentially pooled profiles, rank connected
+crest candidates by brightness, then offset along the observed contour normal
+toward the void. No gradient-flank fallback is allowed in this mode. Broad
+roofs use a wider prominence window; a monotonic halo/ramp is rejected. Image
+context up to 64px outside the corridor is used only to distinguish material
+from the shaded void, never as output coordinates. Far-side contrast is used
+before near-side contrast because a near-wall halo can be brighter than solid.
+Ambiguous inward direction is omitted rather than chosen from screen left/right.
+
+The editable offset defaults to 1 original pixel (0 uses the crest), with a
+0..10px range. Actual point displacements, crest positions and inward normals
+are recorded in `rim_peak_points`, `inward_normals` and `rim_inset_px`; join
+points retain null crest references. The checkbox disables this mode for old
+step-edge workflows without changing their saved guide boundary preference.
+Old projects without the new setting open with the new default. Units do not
+change the pixel offset. This is an operational measurement definition, not
+an independently calibrated physical-edge correction.
+
+Short joins can use two observed neighbors within 6 samples on either side.
+Backward endpoint tangents are limited to the chord to avoid loops; mutually
+opposing tangents still reject a join. Shallow floor transitions contribute
+CD intersections rather than being discarded as horizontal Field.
 
 ## Problem and scope
 
@@ -30,7 +56,7 @@ The legacy manual-ROI tracing path keeps its prior behavior.
    path; one contaminated sample may be skipped at an explicit cost.
 5. Require contrast on each original normal for observed points. In 0.1.11,
    short interior omissions (at most 12 px of guide arc length) may be joined
-   with endpoint-tangent cubic interpolation. Both ends need two consecutive
+   with endpoint-tangent cubic interpolation. Both ends need two nearby
    supporting neighbors. Opposing tangents, excessive jumps, out-of-image
    joins and joins leaving the guide corridor are rejected. Check the curve
    at quarter-pixel spacing as well as output points. No endpoints are extended.

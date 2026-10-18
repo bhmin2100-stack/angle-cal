@@ -63,6 +63,7 @@ def test_thumbnail_curve_recognize_scale_and_project_shared(app,tmp_path,monkeyp
     w.addon_actions['trench_analyzer'].setChecked(True);app.processEvents();p=w.trench_panel
     assert w.trench_quick_tools.isVisible() and not w.normal_quick_tools.isVisible()
     assert p.scale_spin.value()==.5
+    p.rim_reference.setChecked(False)  # This fixture is a step with no bright crest.
     p.view.fit_image();p.guide_width.setValue(12);p.start_contour_guide()
     for point in guides()[0]['points'][:-1]:QTest.mouseClick(p.view.viewport(),Qt.MouseButton.LeftButton,pos=p.view.mapFromScene(*point))
     QTest.mouseDClick(p.view.viewport(),Qt.MouseButton.LeftButton,pos=p.view.mapFromScene(*guides()[0]['points'][-1]))
@@ -96,6 +97,7 @@ def test_thumbnail_curve_recognize_scale_and_project_shared(app,tmp_path,monkeyp
 
 def test_load_existing_structure_curve_resize_and_exports(app,tmp_path,monkeypatch):
     p=TrenchPanel();p.resize(1200,850);p.show();p.set_image(trench_image(bulb=12),'curve',.5);app.processEvents();p.view.fit_image()
+    p.rim_reference.setChecked(False)  # Keep testing the supported legacy step-edge mode.
     # New curves round-trip through the existing structure library too.
     template=StructureTemplate('곡선',[],wall_guides=guides())
     payload=structure_template_to_dict(structure_template_from_dict(structure_template_to_dict(template)))
@@ -129,6 +131,8 @@ def test_existing_guide_search_settings_are_inherited(app,tmp_path):
     w.addon_actions['trench_analyzer'].setChecked(True)
     p=w.trench_panel
     assert p.guide_editor.radius==9
+    assert p.options().boundary_mode=='rim_inset'
+    p.rim_reference.setChecked(False)
     assert p.options().boundary_mode=='brightest'
     w.close()
 
