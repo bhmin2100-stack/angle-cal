@@ -180,3 +180,5 @@ image crop remain in effect. Turning the option off applies the crop masks to ev
 Board controls: click empty board space to finish cropping while retaining the selection;
 arrow keys move selected images by 10 board pixels, Ctrl+arrow keys by 1. Delete removes
 only selected board items. Add-ons open as menu tabs in the main window.
+
+이미지 서식에서 지정한 명도·대비·선명도 보정은 Trench 이미지와 전체 보기, 경계 인식에 함께 반영됩니다. 보정값을 바꾸면 이전 분석 결과는 지워지며, 기존 곡선과 스케일을 유지한 상태에서 다시 인식할 수 있습니다. 이미지별 보정값은 프로젝트와 이미지 서식 저장 시 함께 보존됩니다.

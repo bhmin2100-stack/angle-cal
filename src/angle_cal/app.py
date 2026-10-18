@@ -3923,7 +3923,7 @@ class MainWindow(QMainWindow):
             if not self.trench_state.get("wall_guides"):
                 radius=max(self.search_radius_left_spin.value(),self.search_radius_right_spin.value()) if self.split_search_range_checkbox.isChecked() else self.search_radius_spin.value()
                 self.trench_panel.guide_editor.radius=float(radius or 12)
-            self.trench_panel.set_image(self.image_bgr, self.image_path, self.nm_per_px, self.trench_state)
+            self._sync_trench_image()
             self.trench_panel.set_scale_record(next((r for r in self.records.values() if r.kind=="scale"),None))
             self.workspace_stack.setCurrentWidget(self.trench_panel)
         else:
@@ -6079,7 +6079,7 @@ class MainWindow(QMainWindow):
         self._update_search_range_overlay()
         self._apply_visibility()
         if self._trench_active():
-            self.trench_panel.set_image(self.image_bgr,self.image_path,self.nm_per_px,self.trench_state)
+            self._sync_trench_image()
             self.trench_panel.set_scale_record(next((r for r in self.records.values() if r.kind=='scale'),None))
         self._set_status(f"{index + 1}번 스케일 적용: {preset.name}, {preset.nm_per_px:.6g} nm/px")
 
@@ -7736,10 +7736,24 @@ class MainWindow(QMainWindow):
         self._set_image_adjustments(0, 100, 0)
         self._set_status("이미지 보정을 초기화했습니다.")
 
+    def _sync_trench_image(self) -> None:
+        if self.trench_panel is None:
+            return
+        # Keep the adjusted array stable so switching tabs does not discard results.
+        adjustments = tuple(self._image_adjustment_state().values())
+        cached = getattr(self, "_trench_adjusted_cache", None)
+        if cached is None or cached[0] is not self.image_bgr or cached[1] != adjustments:
+            image = self._adjusted_image_bgr() if self.image_bgr is not None else None
+            self._trench_adjusted_cache = (self.image_bgr, adjustments, image)
+        else:
+            image = cached[2]
+        self.trench_panel.set_image(image, self.image_path, self.nm_per_px, self.trench_state)
+
     def _refresh_adjusted_image_display(self) -> None:
         if self.image_bgr is None:
             return
         self.canvas.update_image_pixmap(self._pixmap_from_bgr(self._adjusted_image_bgr()))
+        self._sync_trench_image()
 
     def _show_image(self, keep_view: bool = False) -> None:
         if self.image_bgr is None:
@@ -7754,7 +7768,7 @@ class MainWindow(QMainWindow):
                                  "guide_traces": [],
                                  "rotation": self.image_rotation_degrees}
         if self.trench_panel is not None:
-            self.trench_panel.set_image(self.image_bgr, self.image_path, self.nm_per_px, self.trench_state)
+            self._sync_trench_image()
             self.trench_panel.set_scale_record(next((r for r in self.records.values() if r.kind=="scale"),None))
 
     def set_current_tool(self, tool: str) -> None:
