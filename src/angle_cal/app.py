@@ -4364,10 +4364,13 @@ class MainWindow(QMainWindow):
     def _build_thumbnail_dock(self) -> None:
         dock = QDockWidget("썸네일", self)
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        self.thumbnail_dock = dock
         container = QWidget()
+        self.thumbnail_panel_container = container
         container_layout = QVBoxLayout(container)
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("열"))
+        self.thumbnail_columns_label = QLabel("열")
+        controls.addWidget(self.thumbnail_columns_label)
         self.thumbnail_columns_combo = QComboBox()
         self.thumbnail_columns_combo.addItem("1열", 1)
         self.thumbnail_columns_combo.addItem("2열", 2)
@@ -4392,18 +4395,22 @@ class MainWindow(QMainWindow):
         self.thumbnail_empty_label.setText("이미지 파일이나 폴더를 여기에 놓으면 바로 분석할 수 있습니다.")
         self.thumbnail_empty_label.setWordWrap(True)
         self.thumbnail_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumbnail_empty_label.setAcceptDrops(True)
         self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, self.thumbnail_columns)
         self.thumbnail_rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.thumbnail_container)
-        self.thumbnail_container.setAcceptDrops(True)
-        scroll.viewport().setAcceptDrops(True)
         drop_tip = "탐색기에서 이미지 파일 또는 폴더를 끌어 놓으면 썸네일에 추가하고 첫 이미지를 엽니다."
-        self.thumbnail_container.setToolTip(drop_tip)
-        scroll.viewport().setToolTip(drop_tip)
-        self.thumbnail_empty_label.setToolTip(drop_tip)
-        self.thumbnail_container.installEventFilter(self)
-        scroll.viewport().installEventFilter(self)
-        self.thumbnail_empty_label.installEventFilter(self)
+        for drop_target in (
+            dock,
+            container,
+            self.thumbnail_columns_label,
+            self.thumbnail_columns_combo,
+            scroll,
+            scroll.viewport(),
+            self.thumbnail_container,
+            self.thumbnail_empty_label,
+        ):
+            drop_target.setAcceptDrops(True)
+            drop_target.setToolTip(drop_tip)
+            drop_target.installEventFilter(self)
         self.thumbnail_resize_timer = QTimer(self)
         self.thumbnail_resize_timer.setSingleShot(True)
         self.thumbnail_resize_timer.setInterval(80)
@@ -5544,7 +5551,15 @@ class MainWindow(QMainWindow):
     def _is_thumbnail_drop_event_source(self, watched) -> bool:
         if self._is_thumbnail_event_source(watched):
             return True
-        if hasattr(self, "thumbnail_empty_label") and watched is self.thumbnail_empty_label:
+        static_drop_targets = (
+            getattr(self, "thumbnail_dock", None),
+            getattr(self, "thumbnail_panel_container", None),
+            getattr(self, "thumbnail_columns_label", None),
+            getattr(self, "thumbnail_columns_combo", None),
+            getattr(self, "thumbnail_scroll", None),
+            getattr(self, "thumbnail_empty_label", None),
+        )
+        if watched in static_drop_targets:
             return True
         return watched in self.thumbnail_folder_headers.values()
 

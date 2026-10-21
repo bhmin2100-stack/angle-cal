@@ -137,10 +137,17 @@ def test_drop_folder_on_thumbnail_panel_adds_recursively_without_duplicates(tmp_
     cv2.imwrite(str(second), np.full((30, 40, 3), 170, dtype=np.uint8))
     window = MainWindow()
     try:
-        window._add_dropped_thumbnail_images([str(first)])
-        drop_target = window.thumbnail_buttons[str(first.resolve())]
-        assert drop_target.acceptDrops()
-        assert all(header.acceptDrops() for header in window.thumbnail_folder_headers.values())
+        static_drop_targets = (
+            window.thumbnail_dock,
+            window.thumbnail_panel_container,
+            window.thumbnail_columns_label,
+            window.thumbnail_columns_combo,
+            window.thumbnail_scroll,
+            window.thumbnail_scroll.viewport(),
+            window.thumbnail_container,
+            window.thumbnail_empty_label,
+        )
+        assert all(target.acceptDrops() for target in static_drop_targets)
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(str(root))])
         drag = QDragEnterEvent(
@@ -150,7 +157,7 @@ def test_drop_folder_on_thumbnail_panel_adds_recursively_without_duplicates(tmp_
             Qt.MouseButton.LeftButton,
             Qt.KeyboardModifier.NoModifier,
         )
-        QApplication.sendEvent(drop_target, drag)
+        QApplication.sendEvent(window.thumbnail_dock, drag)
         assert drag.isAccepted()
         drop = QDropEvent(
             QPointF(10, 10),
@@ -159,7 +166,7 @@ def test_drop_folder_on_thumbnail_panel_adds_recursively_without_duplicates(tmp_
             Qt.MouseButton.LeftButton,
             Qt.KeyboardModifier.NoModifier,
         )
-        QApplication.sendEvent(drop_target, drop)
+        QApplication.sendEvent(window.thumbnail_dock, drop)
         assert drop.isAccepted()
         app.processEvents()
 
@@ -167,7 +174,32 @@ def test_drop_folder_on_thumbnail_panel_adds_recursively_without_duplicates(tmp_
         assert len(window.browser_image_paths) == 2
         assert window.browser_roots == [root.resolve()]
         assert window.image_path == str(first.resolve())
-        assert "중복 1개 제외" in window.statusBar().currentMessage()
+        assert all(header.acceptDrops() for header in window.thumbnail_folder_headers.values())
+        assert all(button.acceptDrops() for button in window.thumbnail_buttons.values())
+        assert "분석 준비" in window.statusBar().currentMessage()
+
+        duplicate_drag = QDragEnterEvent(
+            QPoint(5, 5),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(window.thumbnail_columns_combo, duplicate_drag)
+        assert duplicate_drag.isAccepted()
+        duplicate_drop = QDropEvent(
+            QPointF(5, 5),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(window.thumbnail_columns_combo, duplicate_drop)
+        assert duplicate_drop.isAccepted()
+        app.processEvents()
+
+        assert len(window.browser_image_paths) == 2
+        assert "중복 2개 제외" in window.statusBar().currentMessage()
     finally:
         window.close()
 
