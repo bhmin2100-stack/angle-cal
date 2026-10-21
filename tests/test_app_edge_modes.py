@@ -9,8 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import cv2
 import numpy as np
 import pytest
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QWheelEvent
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent, QKeySequence, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QGroupBox, QLabel, QMessageBox, QPushButton
 
 import angle_cal.app as app_module
@@ -80,6 +80,192 @@ def test_tooltips_use_readable_contrast():
         assert "background-color: #111827" in stylesheet
     finally:
         window.close()
+
+
+def test_drop_images_on_thumbnail_panel_adds_and_opens_first_image(tmp_path):
+    app = _app()
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.tif"
+    ignored = tmp_path / "notes.txt"
+    cv2.imwrite(str(first), np.full((40, 60, 3), 80, dtype=np.uint8))
+    cv2.imwrite(str(second), np.full((50, 70, 3), 160, dtype=np.uint8))
+    ignored.write_text("not an image", encoding="utf-8")
+    window = MainWindow()
+    try:
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(first)), QUrl.fromLocalFile(str(ignored)), QUrl.fromLocalFile(str(second))])
+        drag = QDragEnterEvent(
+            QPoint(10, 10),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(window.thumbnail_scroll.viewport(), drag)
+        assert drag.isAccepted()
+
+        drop = QDropEvent(
+            QPointF(10, 10),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(window.thumbnail_scroll.viewport(), drop)
+        assert drop.isAccepted()
+        app.processEvents()
+
+        resolved_first = str(first.resolve())
+        resolved_second = str(second.resolve())
+        assert window.browser_image_paths == [resolved_first, resolved_second]
+        assert window.image_path == resolved_first
+        assert window.selected_thumbnail_paths == {resolved_first}
+        assert set(window.thumbnail_buttons) == {resolved_first, resolved_second}
+        assert "분석 준비" in window.statusBar().currentMessage()
+    finally:
+        window.close()
+
+
+def test_drop_folder_on_thumbnail_panel_adds_recursively_without_duplicates(tmp_path):
+    app = _app()
+    root = tmp_path / "images"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    first = root / "a.png"
+    second = nested / "b.jpg"
+    cv2.imwrite(str(first), np.full((30, 40, 3), 70, dtype=np.uint8))
+    cv2.imwrite(str(second), np.full((30, 40, 3), 170, dtype=np.uint8))
+    window = MainWindow()
+    try:
+        window._add_dropped_thumbnail_images([str(first)])
+        drop_target = window.thumbnail_buttons[str(first.resolve())]
+        assert drop_target.acceptDrops()
+        assert all(header.acceptDrops() for header in window.thumbnail_folder_headers.values())
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(root))])
+        drag = QDragEnterEvent(
+            QPoint(10, 10),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(drop_target, drag)
+        assert drag.isAccepted()
+        drop = QDropEvent(
+            QPointF(10, 10),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(drop_target, drop)
+        assert drop.isAccepted()
+        app.processEvents()
+
+        assert set(window.browser_image_paths) == {str(first.resolve()), str(second.resolve())}
+        assert len(window.browser_image_paths) == 2
+        assert window.browser_roots == [root.resolve()]
+        assert window.image_path == str(first.resolve())
+        assert "중복 1개 제외" in window.statusBar().currentMessage()
+    finally:
+        window.close()
+
+
+def test_open_folder_appends_previous_folder_and_folder_headers_collapse(tmp_path, monkeypatch):
+    app = _app()
+    first_root = tmp_path / "first-folder"
+    second_root = tmp_path / "second-folder"
+    first_root.mkdir()
+    second_root.mkdir()
+    first = first_root / "first.png"
+    second = second_root / "second.png"
+    cv2.imwrite(str(first), np.full((30, 40, 3), 60, dtype=np.uint8))
+    cv2.imwrite(str(second), np.full((30, 40, 3), 180, dtype=np.uint8))
+    selected_folders = iter((str(first_root), str(second_root)))
+    monkeypatch.setattr(
+        app_module.QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: next(selected_folders),
+    )
+    window = MainWindow()
+    try:
+        window.open_folder()
+        window.project_path = "existing.anglecal.json"
+        window.favorite_image_paths = [str(first.resolve())]
+
+        window.open_folder()
+        app.processEvents()
+
+        resolved_first = str(first.resolve())
+        resolved_second = str(second.resolve())
+        first_folder_key = window._resolved_path_key(first_root)
+        second_folder_key = window._resolved_path_key(second_root)
+        assert window.browser_roots == [first_root.resolve(), second_root.resolve()]
+        assert window.browser_image_paths == [resolved_first, resolved_second]
+        assert window.image_path == resolved_second
+        assert window.project_path == "existing.anglecal.json"
+        assert window.favorite_image_paths == [resolved_first]
+        assert set(window.thumbnail_folder_headers) == {first_folder_key, second_folder_key}
+
+        window.thumbnail_folder_headers[first_folder_key].click()
+        app.processEvents()
+
+        assert first_folder_key in window.collapsed_thumbnail_folders
+        assert resolved_first not in window.thumbnail_buttons
+        assert resolved_second in window.thumbnail_buttons
+        assert window.thumbnail_folder_headers[first_folder_key].text().startswith("▶")
+
+        window.thumbnail_folder_headers[first_folder_key].click()
+        app.processEvents()
+
+        assert first_folder_key not in window.collapsed_thumbnail_folders
+        assert resolved_first in window.thumbnail_buttons
+        assert window.thumbnail_folder_headers[first_folder_key].text().startswith("▼")
+    finally:
+        window.close()
+
+
+def test_browser_folder_history_and_collapsed_state_roundtrip(tmp_path):
+    _app()
+    first_root = tmp_path / "first-folder"
+    second_root = tmp_path / "second-folder"
+    first_root.mkdir()
+    second_root.mkdir()
+    first = first_root / "first.png"
+    second = second_root / "second.png"
+    cv2.imwrite(str(first), np.full((30, 40, 3), 70, dtype=np.uint8))
+    cv2.imwrite(str(second), np.full((30, 40, 3), 170, dtype=np.uint8))
+    settings = QSettings(str(tmp_path / "anglecal-test.ini"), QSettings.Format.IniFormat)
+    settings.clear()
+
+    source = MainWindow()
+    restored = MainWindow()
+    try:
+        source._register_browser_root(first_root)
+        source._register_browser_root(second_root)
+        source.browser_image_paths = [str(first.resolve()), str(second.resolve())]
+        source.collapsed_thumbnail_folders = {source._resolved_path_key(first_root)}
+        source._populate_thumbnails()
+        source._load_image_path(str(second.resolve()), preserve_calibration=False)
+        source._save_browser_session(settings)
+
+        assert restored._restore_browser_session(settings) is True
+
+        resolved_first = str(first.resolve())
+        resolved_second = str(second.resolve())
+        first_folder_key = restored._resolved_path_key(first_root)
+        assert restored.browser_roots == [first_root.resolve(), second_root.resolve()]
+        assert restored.browser_image_paths == [resolved_first, resolved_second]
+        assert restored.image_path == resolved_second
+        assert first_folder_key in restored.collapsed_thumbnail_folders
+        assert resolved_first not in restored.thumbnail_buttons
+        assert resolved_second in restored.thumbnail_buttons
+        assert "이전 폴더 복원" in restored.statusBar().currentMessage()
+    finally:
+        source.close()
+        restored.close()
+        settings.clear()
 
 
 def test_recognize_segments_line_mode_by_segment_size():
@@ -1146,12 +1332,136 @@ def test_space_temporarily_switches_to_edge_tool():
 
         assert window.canvas.current_tool == "edge"
         assert window.current_tool == "edge"
+        assert window.canvas._space_edge_active is True
 
         release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
         window.canvas.keyReleaseEvent(release)
 
         assert window.canvas.current_tool == "select"
         assert window.current_tool == "select"
+        assert window.canvas._space_edge_active is False
+    finally:
+        window.close()
+
+
+def test_space_edge_drag_shift_locks_horizontal_and_ctrl_shift_locks_vertical():
+    window = _window_with_edge_image()
+    try:
+        window.set_current_tool("select")
+        start = QPointF(20.0, 30.0)
+        end = QPointF(90.0, 80.0)
+
+        def drag(modifiers: Qt.KeyboardModifier) -> LineRecord:
+            before = {record.id for record in window.records.values() if record.kind == "edge"}
+            space_press = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
+            window.canvas.keyPressEvent(space_press)
+            start_pos = QPointF(window.canvas.mapFromScene(start))
+            end_pos = QPointF(window.canvas.mapFromScene(end))
+            press = QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                start_pos,
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                modifiers,
+            )
+            move = QMouseEvent(
+                QEvent.Type.MouseMove,
+                end_pos,
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.LeftButton,
+                modifiers,
+            )
+            release = QMouseEvent(
+                QEvent.Type.MouseButtonRelease,
+                end_pos,
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.NoButton,
+                modifiers,
+            )
+            window.canvas.mousePressEvent(press)
+            window.canvas.mouseMoveEvent(move)
+            preview = window.canvas._temp_line.line()
+            window.canvas.mouseReleaseEvent(release)
+            space_release = QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
+            window.canvas.keyReleaseEvent(space_release)
+            created = [record for record in window.records.values() if record.kind == "edge" and record.id not in before]
+            assert len(created) == 1
+            if modifiers & Qt.KeyboardModifier.ControlModifier:
+                assert math.isclose(preview.x1(), preview.x2(), abs_tol=0.001)
+            else:
+                assert math.isclose(preview.y1(), preview.y2(), abs_tol=0.001)
+            return created[0]
+
+        horizontal = drag(Qt.KeyboardModifier.ShiftModifier)
+        vertical = drag(Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+
+        assert math.isclose(horizontal.start[1], horizontal.end[1], abs_tol=0.001)
+        assert math.isclose(vertical.start[0], vertical.end[0], abs_tol=0.001)
+        assert window.canvas._panning is False
+        assert window.canvas._space_edge_active is False
+        assert window.canvas.current_tool == "select"
+    finally:
+        window.close()
+
+
+def test_space_edge_shift_constraint_releases_during_drag():
+    window = _window_with_edge_image()
+    try:
+        window.set_current_tool("select")
+        start = QPointF(20.0, 30.0)
+        end = QPointF(90.0, 80.0)
+        start_pos = QPointF(window.canvas.mapFromScene(start))
+        end_pos = QPointF(window.canvas.mapFromScene(end))
+        window.canvas.keyPressEvent(
+            QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
+        )
+        window.canvas.mousePressEvent(
+            QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                start_pos,
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        window.canvas.mouseMoveEvent(
+            QMouseEvent(
+                QEvent.Type.MouseMove,
+                end_pos,
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.ShiftModifier,
+            )
+        )
+        constrained = window.canvas._temp_line.line()
+        assert math.isclose(constrained.y1(), constrained.y2(), abs_tol=0.001)
+
+        window.canvas.mouseMoveEvent(
+            QMouseEvent(
+                QEvent.Type.MouseMove,
+                end_pos,
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        released = window.canvas._temp_line.line()
+        assert not math.isclose(released.y1(), released.y2(), abs_tol=0.001)
+
+        window.canvas.mouseReleaseEvent(
+            QMouseEvent(
+                QEvent.Type.MouseButtonRelease,
+                end_pos,
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        window.canvas.keyReleaseEvent(
+            QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier)
+        )
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        assert not math.isclose(edge.start[1], edge.end[1], abs_tol=0.001)
     finally:
         window.close()
 
@@ -1169,6 +1479,7 @@ def test_ctrl_tab_shows_shortcut_overlay_only_while_held():
         assert "Ctrl+Tab" in text.toPlainText()
         assert "Esc" in text.toPlainText()
         assert "Enter" in text.toPlainText()
+        assert "Shift 수평, Ctrl+Shift 수직" in text.toPlainText()
         assert "스케일/가이드 그리기 Shift" in text.toPlainText()
         assert "Q + 드래그" in text.toPlainText()
         assert "E + 드래그" in text.toPlainText()

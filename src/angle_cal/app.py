@@ -5,6 +5,7 @@ import csv
 from html import escape as xml_escape
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -12,7 +13,7 @@ from typing import Callable, Optional
 import zipfile
 
 import numpy as np
-from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QDrag, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -184,6 +185,7 @@ CURVATURE_RECORD_KEY = 10
 CURVATURE_LABEL_KEY = 11
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 IMAGE_FORMAT_SUFFIX = ".anglecal.format.json"
+BROWSER_SESSION_SETTINGS_KEY = "browser/session-v1"
 NATURAL_SORT_PART_RE = re.compile(r"(\d+)")
 FAVORITE_DEFAULT_GROUP = "기본"
 BOUNDARY_SNAP_MODE_ITEMS = [
@@ -398,6 +400,7 @@ class AngleCanvas(QGraphicsView):
         self._refreshing_point_handles = False
         self._updating_from_point_handle = False
         self._space_edge_previous_tool: Optional[str] = None
+        self._space_edge_active = False
         self._segment_select_previous_tool: Optional[str] = None
         self._segment_drag_origin: Optional[QPoint] = None
         self._segment_drag_active = False
@@ -808,6 +811,11 @@ class AngleCanvas(QGraphicsView):
             return QPointF(start.x(), end.y())
         return QPointF(end.x(), start.y())
 
+    def _line_axis_constraint_active(self) -> bool:
+        return self.current_tool in {"scale", "guide"} or (
+            self.current_tool == "edge" and self._space_edge_active
+        )
+
     def _scale_tool_scene_point(self, view_pos: QPoint) -> QPointF:
         return self._clamp_to_image(self.mapToScene(view_pos))
 
@@ -869,7 +877,7 @@ class AngleCanvas(QGraphicsView):
             "<b>단축키</b><br>"
             "Ctrl+Tab: 누르는 동안 단축키 표시<br>"
             "Esc: 선택 도구 / 그리기 취소<br>"
-            "Space 누르고 있기: 경계선 그리기<br>"
+            "Space 누르고 있기: 경계선 그리기 (Shift 수평, Ctrl+Shift 수직)<br>"
             "스케일/가이드 그리기 Shift: 수평, Ctrl+Shift: 수직<br>"
             "Enter: 경계 인식 / 이어진 선 완료<br>"
             "Q + 드래그: 경계선만 선택<br>"
@@ -1632,6 +1640,11 @@ class AngleCanvas(QGraphicsView):
         if (
             event.button() == Qt.MouseButton.LeftButton
             and event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+            and not (
+                self.current_tool == "edge"
+                and self._space_edge_active
+                and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            )
             and self._begin_object_drag(event.pos(), event.modifiers())
         ):
             event.accept()
@@ -1657,7 +1670,7 @@ class AngleCanvas(QGraphicsView):
             event.button() == Qt.MouseButton.LeftButton
             and (self.current_tool == "pan" or event.modifiers() & Qt.KeyboardModifier.ControlModifier)
             and not (
-                self.current_tool in {"scale", "guide"}
+                self._line_axis_constraint_active()
                 and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
             )
             and self._additive_rubberband_items is None
@@ -1758,7 +1771,7 @@ class AngleCanvas(QGraphicsView):
 
         if self._temp_line is not None and self._drawing_start is not None:
             end = self._clamp_to_image(self.mapToScene(event.pos()))
-            if self.current_tool in {"scale", "guide"}:
+            if self._line_axis_constraint_active():
                 end = self._scale_line_end_for_modifiers(self._drawing_start, end, event.modifiers())
             self._temp_line.setLine(
                 self._drawing_start.x(),
@@ -1846,7 +1859,7 @@ class AngleCanvas(QGraphicsView):
         if self._temp_line is not None and self._drawing_start is not None:
             end = self._clamp_to_image(self.mapToScene(event.pos()))
             start = self._drawing_start
-            if self.current_tool in {"scale", "guide"}:
+            if self._line_axis_constraint_active():
                 end = self._scale_line_end_for_modifiers(start, end, event.modifiers())
             self.scene.removeItem(self._temp_line)
             self._temp_line = None
@@ -1964,6 +1977,7 @@ class AngleCanvas(QGraphicsView):
             event.accept()
             return
         if not event.isAutoRepeat() and event.key() == Qt.Key.Key_Space:
+            self._space_edge_active = True
             if self.current_tool != "edge":
                 self._space_edge_previous_tool = self.current_tool
                 self.set_tool("edge")
@@ -2020,6 +2034,7 @@ class AngleCanvas(QGraphicsView):
         if not event.isAutoRepeat() and event.key() == Qt.Key.Key_Space:
             previous_tool = self._space_edge_previous_tool
             self._space_edge_previous_tool = None
+            self._space_edge_active = False
             if previous_tool is not None:
                 self.set_tool(previous_tool)
             self.temporary_edge_tool_changed.emit(False)
@@ -3035,6 +3050,7 @@ class MainWindow(QMainWindow):
         self._counter = 1
         self.last_measurements: list[dict[str, str | float | int]] = []
         self.browser_root: Optional[Path] = None
+        self.browser_roots: list[Path] = []
         self.browser_image_paths: list[str] = []
         self.favorite_image_paths: list[str] = []
         self.favorite_image_labels: dict[str, str] = {}
@@ -3043,6 +3059,8 @@ class MainWindow(QMainWindow):
         self.current_favorite_group = FAVORITE_DEFAULT_GROUP
         self.current_browser_index = -1
         self.thumbnail_buttons: dict[str, QPushButton] = {}
+        self.thumbnail_folder_headers: dict[str, QPushButton] = {}
+        self.collapsed_thumbnail_folders: set[str] = set()
         self.selected_thumbnail_paths: set[str] = set()
         self.enabled_addon_ids: set[str] = set()
         self.addon_actions: dict[str, QAction] = {}
@@ -3185,6 +3203,8 @@ class MainWindow(QMainWindow):
         self.canvas.scene.selectionChanged.connect(self._update_object_visibility_controls)
         self.setStatusBar(QStatusBar())
         self._set_status("이미지를 불러오면 시작할 수 있습니다.")
+        if self._browser_session_auto_enabled():
+            self._restore_browser_session()
         QTimer.singleShot(1500, self.check_updates_on_startup)
 
     @staticmethod
@@ -3963,6 +3983,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self.trench_panel is not None:
             self.trench_panel.wait_for_worker()
+        if self._browser_session_auto_enabled():
+            self._save_browser_session()
         super().closeEvent(event)
 
     def _show_photo_merge_result(self, result: object) -> None:
@@ -4367,10 +4389,21 @@ class MainWindow(QMainWindow):
         self.thumbnail_layout.setVerticalSpacing(8)
         self.thumbnail_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.thumbnail_empty_label = QLabel("폴더를 열면 이미지가 표시됩니다.")
+        self.thumbnail_empty_label.setText("이미지 파일이나 폴더를 여기에 놓으면 바로 분석할 수 있습니다.")
+        self.thumbnail_empty_label.setWordWrap(True)
+        self.thumbnail_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumbnail_empty_label.setAcceptDrops(True)
         self.thumbnail_layout.addWidget(self.thumbnail_empty_label, 0, 0, 1, self.thumbnail_columns)
         self.thumbnail_rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.thumbnail_container)
+        self.thumbnail_container.setAcceptDrops(True)
+        scroll.viewport().setAcceptDrops(True)
+        drop_tip = "탐색기에서 이미지 파일 또는 폴더를 끌어 놓으면 썸네일에 추가하고 첫 이미지를 엽니다."
+        self.thumbnail_container.setToolTip(drop_tip)
+        scroll.viewport().setToolTip(drop_tip)
+        self.thumbnail_empty_label.setToolTip(drop_tip)
         self.thumbnail_container.installEventFilter(self)
         scroll.viewport().installEventFilter(self)
+        self.thumbnail_empty_label.installEventFilter(self)
         self.thumbnail_resize_timer = QTimer(self)
         self.thumbnail_resize_timer.setSingleShot(True)
         self.thumbnail_resize_timer.setInterval(80)
@@ -4403,6 +4436,7 @@ class MainWindow(QMainWindow):
         self.image_states.clear()
         self.image_path = None
         self.browser_root = None
+        self.browser_roots = []
         self.browser_image_paths = [path]
         self.selected_thumbnail_paths.clear()
         self._thumbnail_anchor_path = None
@@ -4415,6 +4449,69 @@ class MainWindow(QMainWindow):
         self._refresh_favorite_tabs()
         self._populate_thumbnails()
         self._load_image_path(path, preserve_calibration=False)
+        if self._browser_session_auto_enabled():
+            self._save_browser_session()
+
+    @staticmethod
+    def _resolved_path_key(path: Path | str) -> str:
+        return str(Path(path).expanduser().resolve()).casefold()
+
+    @classmethod
+    def _path_is_within(cls, path: Path | str, root: Path | str) -> bool:
+        try:
+            Path(path).expanduser().resolve().relative_to(Path(root).expanduser().resolve())
+            return True
+        except ValueError:
+            return False
+
+    @classmethod
+    def _group_browser_paths_by_folder(cls, paths: list[str]) -> list[str]:
+        folder_order: list[str] = []
+        folder_paths: dict[str, list[str]] = {}
+        folder_values: dict[str, Path] = {}
+        seen: set[str] = set()
+        for item in paths:
+            path = Path(item).expanduser()
+            key = cls._resolved_path_key(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            resolved = str(path.resolve())
+            folder = Path(resolved).parent
+            folder_key = cls._resolved_path_key(folder)
+            if folder_key not in folder_paths:
+                folder_order.append(folder_key)
+                folder_paths[folder_key] = []
+                folder_values[folder_key] = folder
+            folder_paths[folder_key].append(resolved)
+        ordered: list[str] = []
+        for folder_key in folder_order:
+            folder = folder_values[folder_key]
+            ordered.extend(
+                sorted(
+                    folder_paths[folder_key],
+                    key=lambda item: cls._browser_image_sort_key(folder, Path(item)),
+                )
+            )
+        return ordered
+
+    def _register_browser_root(self, root: Path) -> bool:
+        resolved = root.expanduser().resolve()
+        key = self._resolved_path_key(resolved)
+        if any(self._resolved_path_key(item) == key for item in self.browser_roots):
+            return False
+        self.browser_roots.append(resolved)
+        if self.browser_root is None:
+            self.browser_root = resolved
+        return True
+
+    def _matching_browser_root(self, path: Path) -> Optional[Path]:
+        matches = [root for root in self.browser_roots if self._path_is_within(path, root)]
+        if matches:
+            return max(matches, key=lambda root: len(root.parts))
+        if self.browser_root is not None and self._path_is_within(path, self.browser_root):
+            return self.browser_root
+        return None
 
     def open_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "폴더 열기", "")
@@ -4425,24 +4522,102 @@ class MainWindow(QMainWindow):
         if not image_paths:
             QMessageBox.information(self, "폴더 열기", "폴더 안에서 지원되는 이미지 파일을 찾지 못했습니다.")
             return
-        self._save_current_image_state()
-        self.project_path = None
-        self.image_states.clear()
-        self.image_path = None
-        self.browser_root = root
-        self.browser_image_paths = [str(path) for path in image_paths]
-        self.selected_thumbnail_paths.clear()
-        self._thumbnail_anchor_path = None
-        self.favorite_image_paths = []
-        self.favorite_image_labels = {}
-        self.favorite_image_groups = {}
-        self.favorite_group_order = [FAVORITE_DEFAULT_GROUP]
-        self.current_favorite_group = FAVORITE_DEFAULT_GROUP
-        self.current_browser_index = 0
-        self._refresh_favorite_tabs()
+        had_loaded_image = self.image_path is not None
+        if had_loaded_image:
+            self._save_current_image_state()
+        is_new_root = self._register_browser_root(root)
+        existing = {self._resolved_path_key(path) for path in self.browser_image_paths}
+        resolved_paths = [str(path.resolve()) for path in image_paths]
+        added = [path for path in resolved_paths if self._resolved_path_key(path) not in existing]
+        self.browser_image_paths = self._group_browser_paths_by_folder(self.browser_image_paths + added)
+        target = resolved_paths[0]
+        self.collapsed_thumbnail_folders.discard(self._resolved_path_key(Path(target).parent))
+        self.selected_thumbnail_paths = {target}
+        self._thumbnail_anchor_path = target
+        self.current_browser_index = self.browser_image_paths.index(target)
         self._populate_thumbnails()
-        self._load_image_path(self.browser_image_paths[0], preserve_calibration=True)
-        self._set_status(f"폴더 로드: {root.name}, 이미지 {len(self.browser_image_paths)}개")
+        self._load_image_path(target, preserve_calibration=had_loaded_image)
+        if self._browser_session_auto_enabled():
+            self._save_browser_session()
+        action = "폴더 추가" if is_new_root else "폴더 새로 고침"
+        self._set_status(
+            f"{action}: {root.name}, 새 이미지 {len(added)}개 · 전체 {len(self.browser_image_paths)}개"
+        )
+
+    @staticmethod
+    def _browser_session_auto_enabled() -> bool:
+        if os.environ.get("ANGLECAL_DISABLE_BROWSER_SESSION") == "1":
+            return False
+        return os.environ.get("QT_QPA_PLATFORM", "").casefold() not in {"offscreen", "minimal"}
+
+    @staticmethod
+    def _browser_session_settings() -> QSettings:
+        return QSettings("AngleCal", "AngleCal")
+
+    def _save_browser_session(self, settings: Optional[QSettings] = None) -> None:
+        target_settings = settings or self._browser_session_settings()
+        roots = [str(root) for root in self.browser_roots]
+        standalone_files = [
+            path
+            for path in self.browser_image_paths
+            if Path(path).is_file()
+            and not any(self._path_is_within(path, root) for root in self.browser_roots)
+        ]
+        payload = {
+            "roots": roots,
+            "standalone_files": standalone_files,
+            "collapsed_folders": sorted(self.collapsed_thumbnail_folders),
+            "last_image": self.image_path or "",
+        }
+        target_settings.setValue(BROWSER_SESSION_SETTINGS_KEY, json.dumps(payload, ensure_ascii=False))
+        target_settings.sync()
+
+    def _restore_browser_session(self, settings: Optional[QSettings] = None) -> bool:
+        source_settings = settings or self._browser_session_settings()
+        raw = source_settings.value(BROWSER_SESSION_SETTINGS_KEY, "")
+        if not raw:
+            return False
+        try:
+            payload = json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+
+        self.browser_root = None
+        self.browser_roots = []
+        paths: list[str] = []
+        for item in payload.get("roots", []):
+            root = Path(str(item)).expanduser()
+            self._register_browser_root(root)
+            if root.is_dir():
+                paths.extend(str(path.resolve()) for path in self._scan_folder_images(root))
+        for item in payload.get("standalone_files", []):
+            path = Path(str(item)).expanduser()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
+                paths.append(str(path.resolve()))
+
+        self.browser_image_paths = self._group_browser_paths_by_folder(paths)
+        self.collapsed_thumbnail_folders = {
+            str(item).casefold() for item in payload.get("collapsed_folders", []) if item
+        }
+        if not self.browser_image_paths:
+            self._populate_thumbnails()
+            return False
+
+        by_key = {self._resolved_path_key(path): path for path in self.browser_image_paths}
+        last_image_value = str(payload.get("last_image") or "")
+        last_image = by_key.get(self._resolved_path_key(last_image_value)) if last_image_value else None
+        target = last_image or self.browser_image_paths[0]
+        self.current_browser_index = self.browser_image_paths.index(target)
+        self.selected_thumbnail_paths = {target}
+        self._thumbnail_anchor_path = target
+        self._populate_thumbnails()
+        self._load_image_path(target, preserve_calibration=False)
+        self._set_status(
+            f"이전 폴더 복원: {len(self.browser_roots)}개 폴더 · 이미지 {len(self.browser_image_paths)}개"
+        )
+        return True
 
     def _load_image_path(self, path: str, preserve_calibration: bool = False) -> None:
         if self.image_path and self.image_path != path:
@@ -4736,6 +4911,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_container.setFixedWidth(max(1, self.thumbnail_scroll.viewport().width()))
         self._clear_thumbnail_layout()
         self.thumbnail_buttons.clear()
+        self.thumbnail_folder_headers.clear()
         self.selected_thumbnail_paths = {
             path for path in self.selected_thumbnail_paths if path in self.browser_image_paths
         }
@@ -4749,6 +4925,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_empty_label.hide()
         row = 0
         current_folder: Optional[Path] = None
+        current_folder_collapsed = False
         col = 0
         thumb_width, thumb_height, icon_width, icon_height = self._thumbnail_dimensions()
         for image_path in self.browser_image_paths:
@@ -4759,23 +4936,38 @@ class MainWindow(QMainWindow):
                     row += 1
                     col = 0
                 header_text = self._thumbnail_folder_label(folder)
-                header = QLabel(header_text)
-                header.setToolTip(header_text)
+                folder_key = self._resolved_path_key(folder)
+                current_folder_collapsed = folder_key in self.collapsed_thumbnail_folders
+                arrow = "▶" if current_folder_collapsed else "▼"
+                header = QPushButton(f"{arrow}  {header_text}")
+                header.setToolTip(f"{header_text}\n클릭하여 썸네일 접기/펼치기")
+                header.setCursor(Qt.CursorShape.PointingHandCursor)
+                header.setFlat(True)
                 header.setMinimumWidth(0)
+                header.setAcceptDrops(True)
                 header.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-                header.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 header.setStyleSheet(
-                    "font-weight:700; font-size:13px; padding:8px 8px; "
+                    "QPushButton { text-align:left; font-weight:700; font-size:13px; padding:8px 8px; "
                     "margin-top:8px; background:#203040; color:#ffffff; "
-                    "border-left:4px solid #4cc9f0; border-radius:2px;"
+                    "border:0; border-left:4px solid #4cc9f0; border-radius:2px; } "
+                    "QPushButton:hover { background:#2b4256; }"
                 )
+                header.clicked.connect(
+                    lambda checked=False, selected_folder=folder: self._toggle_thumbnail_folder(selected_folder)
+                )
+                header.installEventFilter(self)
                 self.thumbnail_layout.addWidget(header, row, 0, 1, self.thumbnail_columns)
+                self.thumbnail_folder_headers[folder_key] = header
                 row += 1
                 current_folder = folder
                 col = 0
 
+            if current_folder_collapsed:
+                continue
+
             button = QPushButton()
             button.setCheckable(True)
+            button.setAcceptDrops(True)
             button.setIcon(self._thumbnail_icon(path))
             button.setIconSize(QSize(icon_width, icon_height))
             button.setFixedSize(thumb_width, thumb_height)
@@ -5057,15 +5249,30 @@ class MainWindow(QMainWindow):
                 widget.setParent(None)
 
     def _thumbnail_folder_label(self, folder: Path) -> str:
-        if self.browser_root is None:
+        matching_root = self._matching_browser_root(folder)
+        if matching_root is None:
             return folder.name or str(folder)
         try:
-            relative = folder.relative_to(self.browser_root)
+            relative = folder.relative_to(matching_root)
         except ValueError:
             return str(folder)
         if str(relative) == ".":
-            return self.browser_root.name
-        return f"{self.browser_root.name} / {relative}"
+            return matching_root.name
+        return f"{matching_root.name} / {relative}"
+
+    def _toggle_thumbnail_folder(self, folder: Path) -> None:
+        key = self._resolved_path_key(folder)
+        if key in self.collapsed_thumbnail_folders:
+            self.collapsed_thumbnail_folders.remove(key)
+            state = "펼침"
+        else:
+            self.collapsed_thumbnail_folders.add(key)
+            state = "접힘"
+        self._hide_thumbnail_hover_preview()
+        self._populate_thumbnails()
+        if self._browser_session_auto_enabled():
+            self._save_browser_session()
+        self._set_status(f"썸네일 폴더 {state}: {self._thumbnail_folder_label(folder)}")
 
     def _thumbnail_icon(self, path: Path) -> QIcon:
         image = read_image(path)
@@ -5162,9 +5369,134 @@ class MainWindow(QMainWindow):
                 self.thumbnail_hover_timer.start()
             elif event.type() in (QEvent.Type.Leave, QEvent.Type.Hide):
                 self._hide_thumbnail_hover_preview()
+        if self._is_thumbnail_drop_event_source(watched) and self._handle_thumbnail_drop_event(event):
+            return True
         if self._is_thumbnail_event_source(watched) and self._handle_thumbnail_event(watched, event):
             return True
         return super().eventFilter(watched, event)
+
+    def _thumbnail_drop_paths(self, mime_data: QMimeData) -> list[str]:
+        if not mime_data.hasUrls():
+            return []
+        paths: list[str] = []
+        seen: set[str] = set()
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            source = Path(url.toLocalFile()).expanduser()
+            candidates = self._scan_folder_images(source) if source.is_dir() else [source]
+            for candidate in candidates:
+                if not candidate.is_file() or candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+                    continue
+                resolved = str(candidate.resolve())
+                key = resolved.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                paths.append(resolved)
+        return paths
+
+    @staticmethod
+    def _thumbnail_mime_has_supported_items(mime_data: QMimeData) -> bool:
+        if not mime_data.hasUrls():
+            return False
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            source = Path(url.toLocalFile()).expanduser()
+            if source.is_dir() or (source.is_file() and source.suffix.lower() in IMAGE_EXTENSIONS):
+                return True
+        return False
+
+    def _set_thumbnail_drop_highlight(self, active: bool) -> None:
+        if not hasattr(self, "thumbnail_scroll"):
+            return
+        self.thumbnail_scroll.viewport().setStyleSheet(
+            "background:#e9f5ff; border:2px dashed #1683d8;" if active else ""
+        )
+
+    def _handle_thumbnail_drop_event(self, event) -> bool:
+        event_type = event.type()
+        if event_type in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+            if self._thumbnail_mime_has_supported_items(event.mimeData()):
+                self._set_thumbnail_drop_highlight(True)
+                event.setDropAction(Qt.DropAction.CopyAction)
+                event.accept()
+                return True
+            return False
+        if event_type == QEvent.Type.DragLeave:
+            self._set_thumbnail_drop_highlight(False)
+            event.accept()
+            return True
+        if event_type == QEvent.Type.Drop:
+            self._set_thumbnail_drop_highlight(False)
+            paths = self._thumbnail_drop_paths(event.mimeData())
+            roots = [
+                Path(url.toLocalFile()).expanduser().resolve()
+                for url in event.mimeData().urls()
+                if url.isLocalFile() and Path(url.toLocalFile()).expanduser().is_dir()
+            ]
+            if not paths:
+                if roots:
+                    self._set_status("드롭한 폴더에서 지원되는 이미지 파일을 찾지 못했습니다.")
+                    event.setDropAction(Qt.DropAction.CopyAction)
+                    event.accept()
+                    return True
+                return False
+            self._add_dropped_thumbnail_images(paths, roots=roots)
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            return True
+        return False
+
+    def _add_dropped_thumbnail_images(
+        self,
+        paths: list[str],
+        roots: Optional[list[Path]] = None,
+    ) -> None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in paths:
+            path = Path(item).expanduser()
+            if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            resolved = str(path.resolve())
+            key = resolved.casefold()
+            if key not in seen:
+                seen.add(key)
+                normalized.append(resolved)
+        if not normalized:
+            self._set_status("드롭한 항목에서 지원되는 이미지 파일을 찾지 못했습니다.")
+            return
+
+        had_loaded_image = self.image_path is not None
+        for root in roots or []:
+            if root.is_dir():
+                self._register_browser_root(root)
+        existing_by_key = {
+            self._resolved_path_key(path): path for path in self.browser_image_paths
+        }
+        added = [path for path in normalized if self._resolved_path_key(path) not in existing_by_key]
+        if not self.browser_image_paths and self.browser_root is None:
+            parents = {Path(path).parent for path in normalized}
+            self.browser_root = next(iter(parents)) if len(parents) == 1 else None
+        self.browser_image_paths.extend(added)
+        self.browser_image_paths = self._group_browser_paths_by_folder(self.browser_image_paths)
+
+        target = existing_by_key.get(self._resolved_path_key(normalized[0]), normalized[0])
+        self.collapsed_thumbnail_folders.discard(self._resolved_path_key(Path(target).parent))
+        self.selected_thumbnail_paths = {target}
+        self._thumbnail_anchor_path = target
+        self.current_browser_index = self.browser_image_paths.index(target)
+        self._populate_thumbnails()
+        self._load_image_path(target, preserve_calibration=had_loaded_image)
+        duplicate_count = len(normalized) - len(added)
+        detail = f", 중복 {duplicate_count}개 제외" if duplicate_count else ""
+        self._set_status(
+            f"썸네일 드롭: {len(added)}개 추가{detail} · {Path(target).name} 분석 준비"
+        )
+        if self._browser_session_auto_enabled():
+            self._save_browser_session()
 
     def _show_thumbnail_hover_preview(self) -> None:
         path = self.thumbnail_hover_path
@@ -5208,6 +5540,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, "thumbnail_scroll") and watched is self.thumbnail_scroll.viewport():
             return True
         return watched in self.thumbnail_buttons.values()
+
+    def _is_thumbnail_drop_event_source(self, watched) -> bool:
+        if self._is_thumbnail_event_source(watched):
+            return True
+        if hasattr(self, "thumbnail_empty_label") and watched is self.thumbnail_empty_label:
+            return True
+        return watched in self.thumbnail_folder_headers.values()
 
     def _thumbnail_event_pos(self, watched, event) -> QPoint:
         raw_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
@@ -5353,6 +5692,11 @@ class MainWindow(QMainWindow):
             self.favorite_group_order.insert(0, FAVORITE_DEFAULT_GROUP)
         self.current_favorite_group = str(payload.get("current_favorite_group") or self.favorite_group_order[0])
         self.browser_root = browser_root_path if browser_root_path else (Path(self.browser_image_paths[0]).parent if len(self.browser_image_paths) > 1 else None)
+        self.browser_roots = (
+            [self.browser_root.expanduser().resolve()]
+            if self.browser_root is not None and self.browser_root.is_dir()
+            else []
+        )
         self.current_browser_index = self.browser_image_paths.index(image_path) if image_path in self.browser_image_paths else 0
         self.project_path = path
         self.nm_per_px = payload.get("nm_per_px")
