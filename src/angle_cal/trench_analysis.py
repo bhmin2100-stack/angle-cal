@@ -22,6 +22,7 @@ from .trench_guides import normalize_guides, prepare_guide_bands, in_bands, swee
 from .trench_contour import trace_guide, guided_cavity_profile
 from .trench_guided_surface import measure_guided_surfaces
 from .trench_smoothing import smooth_traces, smoothing_parameters, METHODS
+from .trench_field_metrics import measure_field_metrics
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class TrenchOptions:
     rim_inset_px: float = 1.0
     contour_smoothing: str = 'robust'
     contour_strength: float = 0.0
+    continuous_guides: bool = False
 
 
 @dataclass
@@ -72,6 +74,12 @@ class TrenchResult:
     field_angles: list[dict] = field(default_factory=list)
     guide_diagnostics: list[dict] = field(default_factory=list)
     guide_traces: list[dict] = field(default_factory=list)
+    field_measurements: dict = field(default_factory=dict)
+
+    @property
+    def depth_origin_px(self):
+        value = self.field_measurements.get('reference_y_px')
+        return self.options.roi[1] if value is None else value
 
     def summary(self) -> dict:
         return {
@@ -88,6 +96,9 @@ class TrenchResult:
             "min_cd_px": float(np.min(self.right - self.left)),
             "max_cd_px": float(np.max(self.right - self.left)),
             "threshold": self.threshold,
+            "tcd_px": self.field_measurements.get('tcd_px'),
+            "field_depth_px": self.field_measurements.get('depth_px'),
+            "field_reference_y_px": self.field_measurements.get('reference_y_px'),
             **{f"{item['side']}_field_{key}":item.get(key) for item in self.field_angles
                for key in ("length_px","tilt_deg","rms_px")},
         }
@@ -95,6 +106,10 @@ class TrenchResult:
     def to_dict(self, nm_per_px: float | None = None) -> dict:
         if nm_per_px is not None and (not math.isfinite(nm_per_px) or nm_per_px <= 0):
             raise ValueError("nm/px 보정값은 양수여야 합니다.")
+        exchange=None;exchange_error=None
+        if nm_per_px is not None:
+            try:exchange=trench_profile_exchange(self,nm_per_px)
+            except ValueError as exc:exchange_error=str(exc)
         return {
             "format": "anglecal.trench.v1", "options": asdict(self.options),
             "wall_boundary": "bright_crest_plus_inward_normal_offset" if self.options.boundary_mode=='rim_inset' else "connected_inner_rim_peak_or_gradient",
@@ -108,6 +123,11 @@ class TrenchResult:
             "field_angles": self.field_angles,
             "guide_diagnostics": self.guide_diagnostics,
             "guide_traces": self.guide_traces,
+            "field_measurements": self.field_measurements,
+            "profile_exchange":exchange,"profile_exchange_error":exchange_error,
+            "field_measurement_units": {unit: {key.removesuffix('_px')+'_'+unit: self.field_measurements.get(key)*factor
+                if self.field_measurements.get(key) is not None else None for key in ('tcd_px','depth_px','left_depth_px','right_depth_px')}
+                for unit,factor in (("nm",nm_per_px),("angstrom",(nm_per_px or 0)*10)) if factor},
             "guide_method": "ordered_normal_contour_then_cavity_classification" if self.guide_traces else "automatic",
             "field_length_units":{unit:[{key.replace("_px","_"+unit):item.get(key)*factor if item.get(key) is not None else None
                                         for key in ("length_px","rms_px","wall_rms_px")} for item in self.field_angles]
@@ -118,7 +138,7 @@ class TrenchResult:
         }
 
 
-def trench_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
+def _legacy_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
     """GFE surface path: right Field, right wall, floor, left wall, left Field.
 
     GFE expects two numeric columns in angstroms, with depth negative. Field is
@@ -173,12 +193,71 @@ def trench_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
     factor = nm_per_px * 10
     lines = ["X\tY"]
     previous = None
-    for x, yy in points:
+    for x, yy in reversed(points):
         line = f"{(x - center) * factor:.9f}\t{(reference - yy) * factor:.9f}"
         if line != previous:
             lines.append(line)
             previous = line
     return "\n".join(lines) + "\n"
+
+
+def trench_profile_exchange(result: TrenchResult, nm_per_px: float) -> dict:
+    """Gapseam open surface: ordered original contour, Å, positive Y upward.
+
+    Never sort/reconstruct a guided surface from wall rows: doing so destroys
+    overhangs and rounded floors. Only reverse the complete ordered sequence.
+    """
+    if not math.isfinite(nm_per_px) or nm_per_px<=0:
+        raise ValueError('GFE는 Å 좌표를 사용합니다. 먼저 nm/px 스케일을 보정하세요.')
+    if result.depth_px is None:
+        raise ValueError('바닥이 검출되지 않아 GFE 형상을 복사할 수 없습니다. 바닥까지 포함해 다시 분석하세요.')
+    if len(result.field_angles)!=2 or any(item.get('status')!='valid' for item in result.field_angles):
+        raise ValueError('좌우 Field가 미확정입니다. 양쪽 상단 Field까지 곡선에 포함해 다시 인식하세요.')
+    lf,rf=result.field_angles
+    metrics=result.field_measurements
+    anchors=metrics.get('anchors',{})
+    center=(anchors['left'][0]+anchors['right'][0])/2 if len(anchors)==2 else (float(result.left[0])+float(result.right[0]))/2
+    reference=metrics.get('reference_y_px')
+    if reference is None:reference=float((np.polyval(lf['line'],result.left[0])+np.polyval(rf['line'],result.right[0]))/2)
+    if result.options.strict_guides:
+        candidates=[]
+        for trace in result.guide_traces:
+            if len(trace['segments'])!=1:continue
+            p=np.asarray(trace['segments'][0],float)
+            if len(p)<4 or not np.isfinite(p).all():continue
+            if p[0,0]>p[-1,0]:p=p[::-1]
+            # Endpoints must actually reach opposite Fields, not arbitrary
+            # wall endpoints joined across the mouth or a second trench.
+            if (p[0,0]>=max(q[0] for q in lf['points']) or p[-1,0]<=min(q[0] for q in rf['points'])
+                    or np.min(np.linalg.norm(np.asarray(lf['points'])-p[0],axis=1))>8
+                    or np.min(np.linalg.norm(np.asarray(rf['points'])-p[-1],axis=1))>8
+                    or np.max(p[:,1])<result.y[-1]-2):continue
+            if not points_in_guides(p,result.options.wall_guides).all():continue
+            candidates.append(p)
+        if len(candidates)!=1:
+            raise ValueError('GFE 좌표는 양쪽 Field·벽·바닥이 하나로 연결된 곡선이 필요합니다. 한 트랜치를 하나의 가이드로 포함하세요.')
+        p=candidates[0]
+        converted=np.column_stack(((p[:,0]-center)*nm_per_px*10,(reference-p[:,1])*nm_per_px*10))
+        kept=[converted[0].tolist()]
+        for point in converted[1:]:
+            if np.max(np.abs(point-kept[-1]))>1e-10:kept.append(point.tolist())
+        points=kept
+        source='ordered_guide_contour'
+    else:
+        points=np.loadtxt(_legacy_gfe_tsv(result,nm_per_px).splitlines()[1:]).tolist()
+        source='legacy_wall_field_reconstruction'
+    if len(points)<2 or points[-1][0]-points[0][0]<=1e-12:
+        raise ValueError('열린 표면의 양쪽 Field 끝점을 확인하세요.')
+    return dict(schema='trench-profile/v1',units='A',coordinate_system=dict(x_positive='right',y_positive='up'),
+                surface_order='left_to_right',surface_closed=False,field_y=0.,points=points,initial_voids=[],
+                origin_pixel=[float(center),float(reference)],nm_per_px=float(nm_per_px),source=source,
+                interpolation_included=any(t.get('interpolated_points',0)>0 for t in result.guide_traces),
+                initial_voids_source='not_analyzed')
+
+
+def trench_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
+    payload=trench_profile_exchange(result,nm_per_px)
+    return 'X\tY\n'+''.join(f'{x:.9f}\t{y:.9f}\n' for x,y in payload['points'])
 
 
 def _runs(row: np.ndarray, threshold: float) -> list[tuple[float, float]]:
@@ -296,7 +375,7 @@ def find_local_bowing(y: np.ndarray, left: np.ndarray, right: np.ndarray,
     return sorted(features, key=lambda item: (item["start_y"], item["side"]))
 
 
-def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
+def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference=None) -> TrenchResult:
     if image is None or image.size == 0:
         raise ValueError("먼저 이미지를 불러오세요.")
     x, top, width, height = (int(v) for v in options.roi)
@@ -358,7 +437,9 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         local_material=float(np.percentile(material,75)) if len(material) else threshold+20
         traces=[trace_guide(full_ridge,g,threshold,mode,local_contrast=options.strict_guides,
                             material_level=local_material if options.strict_guides else None,
-                            rim_inset_px=options.rim_inset_px) for g in guides]
+                            rim_inset_px=options.rim_inset_px,continuous=options.continuous_guides) for g in guides]
+        if options.continuous_guides and any(len(t['segments'])>1 for t in traces):
+            raise ValueError('같은 구간의 경계를 인식 범위 안에서 연결할 수 없습니다. 끊긴 부분의 곡선 위치·폭을 보정하세요.')
         traces = smooth_traces(traces, guides, options.contour_smoothing,
                                options.contour_strength, image.shape)
         for i,g in enumerate(guides):
@@ -447,9 +528,10 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
                         '보정 전 윤곽을 함께 저장합니다. Depth의 바닥 폐쇄 판단은 기존 밝기 기준입니다.')
     joined=sum(len(t.get('joins',[])) for t in traces)
     if joined:
-        warnings.append(f'짧은 경계 누락 {joined}곳을 주변 윤곽 방향으로 보간해 연결했습니다. 연결 구간은 추정 형상이며 저장 결과에 기록됩니다.')
+        warnings.append(f'경계 누락 {joined}곳을 인식 범위 안에서 보간해 연결했습니다. 연결 구간은 추정 형상이며 저장 결과에 기록됩니다.')
     if np.any(np.diff(y)>1.5):
-        warnings.append('윤곽에 미검출 구간이 있습니다. 해당 구간은 측정·CD 보간에서 제외하며 GFE 복사를 제한합니다.')
+        warnings.append('일부 깊이에 양쪽 측벽 교차점이 없어 해당 CD를 제외합니다. GFE는 연속된 전체 표면이 있으면 그 좌표를 사용합니다.'
+                        if options.continuous_guides else '윤곽에 미검출 구간이 있습니다. 해당 구간은 측정·CD 보간에서 제외하며 GFE 복사를 제한합니다.')
     diagnostics = []
     for index, guide in enumerate(guides):
         requested = [yy for yy,intervals in per_guide[index].items() if intervals]
@@ -463,7 +545,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
                                 detected_rows=detected_rows,coverage=coverage,points=used,
                                 role=role,trace_coverage=traces[index]['trace_coverage'],trace_status=traces[index]['status']))
         if coverage<.8 or traces[index]['status']!='valid':
-            warnings.append(f"윤곽 가이드 {index+1}: 범위 내 검출 {coverage:.0%}, 곡선 추적 {traces[index]['trace_coverage']:.0%}. 끊긴 구간을 확인하세요.")
+            message='보간 구간을 확인하세요.' if traces[index].get('continuity_complete') else '끊긴 구간을 확인하세요.'
+            warnings.append(f"윤곽 가이드 {index+1}: 범위 내 검출 {coverage:.0%}, 곡선 추적 {traces[index]['trace_coverage']:.0%}. {message}")
     if len(candidates) > 1 and len(candidates[1]) >= len(track) * .6:
         warnings.append("긴 경계 후보가 여러 개입니다. 표시된 경계를 확인하거나 한 Trench로 영역을 좁히세요.")
     if y[0] - top > max(3, height * .03):
@@ -531,10 +614,15 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         connect_entrance(item, corner)
     if any(corner["status"] != "valid" for corner in corners):
         warnings.append("일부 입구 R은 미확정입니다. 입구 곡률 탭에서 윤곽과 판정 이유를 확인하세요.")
-    first_sample = math.ceil((y[0] - top) / options.step_px) * options.step_px
+    reference_fields,reference_corners = field_reference if field_reference is not None else (field_angles,corners)
+    field_metrics = measure_field_metrics(reference_fields,traces,guides,y,left,right,closed,reference_corners) if options.strict_guides else {}
+    if field_metrics:field_metrics['field_reference_scope']='unsmoothed_image_contour' if field_reference is not None else 'current_contour'
+    reference_y = field_metrics.get('reference_y_px')
+    if reference_y is None: reference_y = top
+    first_sample = max(0, math.ceil((y[0] - reference_y) / options.step_px)) * options.step_px
     if (observed_depth-first_sample)/options.step_px>100000:
         raise ValueError('CD 깊이 간격을 늘려주세요. 한 번에 최대 100,000개 지점을 측정합니다.')
-    sample_y = np.arange(first_sample, observed_depth + 1e-8, options.step_px) + top
+    sample_y = np.arange(first_sample, y[-1]-reference_y + 1e-8, options.step_px) + reference_y
     if len(sample_y) and np.any(np.diff(y)>1.5):
         high_index=np.clip(np.searchsorted(y,sample_y),1,len(y)-1)
         missing=(y[high_index]-y[high_index-1]>1.5)&(sample_y>y[high_index-1]+1e-7)&(sample_y<y[high_index]-1e-7)
@@ -555,7 +643,7 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
                         left_ref, right_ref, depth, observed_depth,
                         max(0.0, float(left_bow[li])), max(0.0, float(right_bow[ri])),
                         float(y[li]), float(y[ri]), angles[0], angles[1], corners, threshold, warnings,
-                        local, field_angles, diagnostics, traces)
+                        local, field_angles, diagnostics, traces, field_metrics)
 
 
 def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float | None = None) -> None:
@@ -575,6 +663,9 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         writer.writerow(["metadata", "sidewall_end", 90, "% of detected profile"])
         writer.writerow(["metadata", "wall_guides", json.dumps(list(result.options.wall_guides),ensure_ascii=False), "px"])
         writer.writerow(["metadata","guide_method","ordered_normal_contour_then_cavity_classification" if result.guide_traces else "automatic",""])
+        writer.writerow(["metadata","continuous_guides",result.options.continuous_guides,""])
+        writer.writerow(["metadata","depth_reference_y_px",result.depth_origin_px,"px"])
+        writer.writerow(["field_measurements","result",json.dumps(result.field_measurements,ensure_ascii=False,allow_nan=False),"px"])
         for index,trace in enumerate(result.guide_traces):
             writer.writerow(["contour_trace",index+1,json.dumps(trace,ensure_ascii=False,allow_nan=False),"px"])
         for item in result.guide_diagnostics:
@@ -620,6 +711,6 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         writer.writerow([])
         writer.writerow(["depth_px", "left_x_px", "right_x_px", "cd_px", "depth_nm", "cd_nm"])
         for y, left, right in zip(result.sample_y, result.sample_left, result.sample_right):
-            depth, cd = float(y - result.options.roi[1]), float(right - left)
+            depth, cd = float(y - result.depth_origin_px), float(right - left)
             writer.writerow([depth, float(left), float(right), cd,
                              depth * nm_per_px if nm_per_px else "", cd * nm_per_px if nm_per_px else ""])

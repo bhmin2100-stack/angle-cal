@@ -7,7 +7,7 @@ from .trench_guides import normalize_guides, sweep_samples
 
 
 def recognize_from_guides(image,options):
-    options=replace(options,strict_guides=True)
+    options=replace(options,strict_guides=True,continuous_guides=True)
     guides=normalize_guides(options.wall_guides,image.shape)
     if not guides:raise ValueError('먼저 곡선을 그리거나 구조를 불러온 뒤 인식을 누르세요.')
     h,w=image.shape[:2];candidates=[]
@@ -24,7 +24,8 @@ def recognize_from_guides(image,options):
     x1,y1=np.minimum([w,h],np.ceil(np.max(upper,axis=0)).astype(int)+1)
     context=(int(x0),int(y0),int(x1-x0),int(y1-y0))
     # Try both contrast directions internally. The user need not know whether
-    # the specimen/void is bright. Never substitute drawn coordinates.
+    # the specimen/void is bright. Observations require image evidence;
+    # explicitly labeled interior joins may follow the selected guide path.
     for bright in (False,True):
         try:
             # Smoothing must not change polarity selection or move the entrance
@@ -47,4 +48,5 @@ def recognize_from_guides(image,options):
         levels=[float(np.polyval(item['line'],edge[0])) for item,edge in zip(fields,(preliminary.left,preliminary.right))]
         if max(levels)-min(levels)<=options.field_search_px and abs(np.mean(levels)-top)<=options.field_search_px:
             top=max(0,int(math.floor(np.mean(levels))))
-    return analyze_trench(image,replace(options,roi=(context[0],top,context[2],int(y1-top)),bright_trench=bright,wall_guides=guides))
+    return analyze_trench(image,replace(options,roi=(context[0],top,context[2],int(y1-top)),bright_trench=bright,wall_guides=guides),
+                          field_reference=(preliminary.field_angles,preliminary.corners))

@@ -13,11 +13,11 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QMenu, QToolButton,
     QFormLayout, QGraphicsItem, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QPushButton, QScrollArea, QSpinBox, QSplitter, QInputDialog,
-    QSizePolicy, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QSizePolicy, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget, QLayout,
 )
 
 from .image_ops import bgr_to_rgb8_for_display
-from .trench_analysis import TrenchOptions, TrenchResult, analyze_trench, export_trench_csv, trench_gfe_tsv
+from .trench_analysis import TrenchOptions, TrenchResult, analyze_trench, export_trench_csv, trench_gfe_tsv, trench_profile_exchange
 from .trench_guides import normalize_guides
 from .trench_guide_view import TrenchGuideEditor
 from .trench_workflow import recognize_from_guides
@@ -538,7 +538,7 @@ class TrenchGraph(QWidget):
             painter.drawLine(QPointF(rect.left(), py), QPointF(rect.right(), py))
             painter.setPen(QColor("#425368"))
             painter.drawText(QRectF(0, py - 10, 55, 20), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                             f"{(y - r.options.roi[1]) * self.factor:.3g}")
+                             f"{(y - getattr(r,'depth_origin_px',r.options.roi[1])) * self.factor:.3g}")
         for item in (r.local_bowing if getattr(self,"show_entrance",True) else []):
             a, b = point(xmin, item["start_y"]).y(), point(xmax, item["negative_end_y"]).y()
             painter.fillRect(QRectF(rect.left(), a, rect.width(), max(1, b - a)), QColor(255, 171, 64, 22))
@@ -564,6 +564,15 @@ class TrenchGraph(QWidget):
             painter.setPen(_pen(color, 2, dashed))
             painter.drawPath(path)
         if self.mode == "shape":
+            metrics = getattr(r,'field_measurements',{})
+            if metrics.get('tcd_status') == 'valid':
+                anchors = metrics['anchors']; ref = metrics['reference_y_px']
+                a, b = point(anchors['left'][0], ref), point(anchors['right'][0], ref)
+                painter.setPen(_pen('#268b48', 1.5))
+                painter.drawLine(a, b)
+                for p in (a,b):painter.drawLine(p+QPointF(0,-4),p+QPointF(0,4))
+                painter.drawText(QRectF(rect.left(), max(rect.top()+20,a.y()-22),rect.width(),20),
+                                 Qt.AlignmentFlag.AlignCenter,f"TCD {metrics['tcd_px']*self.factor:.4g} {self.unit}")
             for item in (r.field_angles if getattr(self,"show_entrance",True) else []):
                 if item["angle_status"] == "valid":
                     vx,vy=item["vertex"]
@@ -708,6 +717,8 @@ class TrenchPanel(QWidget):
         sidebar_scroll=QScrollArea();sidebar_scroll.setWidgetResizable(True);sidebar_scroll.setWidget(sidebar)
         sidebar_scroll.setMinimumWidth(240);sidebar_scroll.setMaximumWidth(290);body.addWidget(sidebar_scroll)
         controls=QVBoxLayout(sidebar);controls.setContentsMargins(6,4,6,4)
+        controls.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        self.controls_layout=controls
         controls.addWidget(QLabel('스케일'))
         form=QFormLayout();controls.addLayout(form)
         self.scale_spin=QDoubleSpinBox();self.scale_spin.setRange(0,1e9);self.scale_spin.setDecimals(8);self.scale_spin.setSpecialValueText('미보정')
@@ -737,6 +748,7 @@ class TrenchPanel(QWidget):
         self.summary_label=QLabel('곡선을 그리거나 구조를 불러오세요.');self.summary_label.setWordWrap(True);self.summary_label.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred);controls.addWidget(self.summary_label)
         self.export_button=QToolButton();self.export_button.setText('Export · GFE 좌표 복사');self.export_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         menu=QMenu(self.export_button);menu.addAction('GFE 좌표 복사',self.copy_gfe_coordinates);menu.addAction('파일 저장 (CSV / JSON / PNG)…',self.export_dialog)
+        menu.addAction('GFE 교환 JSON 저장…',self.export_profile_dialog)
         self.export_button.setMenu(menu);self.export_button.clicked.connect(self.copy_gfe_coordinates);self.export_button.setEnabled(False);controls.addWidget(self.export_button);controls.addStretch()
         # Compatibility objects for old projects and the independent backend.
         # These are not part of the simplified workspace or image overlays.
@@ -787,6 +799,7 @@ class TrenchPanel(QWidget):
                 "negative_angle": self.negative_spin.value(), "corner": self.corner_spin.value(),
                 "field_search":self.field_spin.value(),"angle_start":self.angle_start.value(),"angle_end":self.angle_end.value(),
                 "field_angles":self.result.field_angles if self.result is not None else None,
+                "field_measurements":self.result.field_measurements if self.result is not None else None,
                 "corner_rois": list(self.corner_rois), "corner_spans": list(self.corner_spans),
                 "corner_results": self.result.corners if self.result is not None else None,
                 "wall_guides":list(normalize_guides(self.guide_editor.guides)),
@@ -1132,27 +1145,40 @@ class TrenchPanel(QWidget):
         fmt = lambda value: "미확정" if value is None else f"{value * factor:.4g} {unit}"
         angle = lambda value: "미확정" if value is None else f"{value:.2f}°"
         summary = r.summary()
-        lines=[f"깊이  {fmt(r.depth_px)}",f"CD  {fmt(summary['min_cd_px'])} ~ {fmt(summary['max_cd_px'])}",
+        metrics = r.field_measurements
+        field_found = metrics.get('field_status') == 'valid'
+        depth_text = f"Field → 최하단 깊이  {fmt(metrics.get('depth_px'))}" if field_found else f"깊이  {fmt(r.depth_px)}"
+        lines=[depth_text,f"TCD (Field 입구 폭)  {fmt(metrics.get('tcd_px'))}",
+               f"CD  {fmt(summary['min_cd_px'])} ~ {fmt(summary['max_cd_px'])}",
                f"Bowing 좌 / 우  {fmt(r.left_bowing_px)} / {fmt(r.right_bowing_px)}"]
+        if field_found:
+            lines.append('Field 자동 인식 · '+metrics['reason'])
+        if metrics.get('tcd_basis')=='segmented_transition_estimate':lines.append('TCD: 둥근 접점 미확정 · 평탄 구간 끝점으로 추정')
+        elif r.options.strict_guides:
+            lines.append('위쪽 평평한 Field까지 곡선을 그리면 깊이·TCD를 자동 계측합니다.')
+        if field_found and metrics.get('tcd_status') != 'valid':lines.append(metrics['tcd_reason'])
+        if metrics.get('bottom_source') == 'interpolated':lines.append('최하단에 보간 구간이 포함됩니다.')
         if r.options.contour_strength:
             shifts = [t['smoothing']['max_displacement_px'] for t in r.guide_traces if 'smoothing' in t]
             lines.append(f'윤곽 보정 {METHODS[r.options.contour_smoothing]} {r.options.contour_strength:g}/100')
             lines.append(f'최대 이동 {max(shifts, default=0):.2f} px · 회색 점선: 보정 전')
-            lines.append('Depth 바닥 판단은 기존 밝기 기준입니다.')
+            lines.append('바닥 폐쇄 확인 후 최하단 윤곽으로 깊이를 계산합니다.')
         if self.scale_spin.value()<=0:lines.append('미보정: px 표시 · 스케일바로 보정하세요.')
         if r.options.boundary_mode=='rim_inset':lines.append(f'밝기 최고점 → 빈 공간 {r.options.rim_inset_px:g} px')
         if self.step_spin.value()/max(self.scale_spin.value(),1e-9)<1:lines.append('1px 미만 간격은 윤곽 보간값입니다.')
         if r.depth_px is None:lines.append('바닥이 보이지 않아 전체 깊이는 미확정입니다.')
         joined=sum(len(t.get('joins',[])) for t in r.guide_traces)
-        if joined:lines.append(f'짧은 누락 {joined}곳 연결 · 보간 구간 포함')
-        if np.any(np.diff(r.y)>1.5):lines.append('일부 경계 미검출 · 해당 CD 제외, GFE 복사 제한')
-        if any(t['trace_coverage']<.8 for t in r.guide_traces):lines.append('일부 경계가 끊겼습니다. 곡선 위치·인식 폭을 확인하세요.')
+        if joined:lines.append(f'경계 누락 {joined}곳 연결 · 보간 구간 포함')
+        if np.any(np.diff(r.y)>1.5):lines.append('일부 깊이의 양쪽 교차점 미확정 · 해당 CD 제외')
+        if any(t['trace_coverage']<.8 for t in r.guide_traces):lines.append('직접 검출이 부족한 구간이 있습니다. 보간 형상을 확인하세요.')
         self.summary_label.setText("\n".join(lines))
-        self.summary_label.setMinimumHeight(self.summary_label.fontMetrics().lineSpacing()*(len(lines)+1))
+        self.summary_label.setMinimumHeight(max(self.summary_label.heightForWidth(max(200,self.summary_label.width())),
+                                               self.summary_label.fontMetrics().lineSpacing()*(len(lines)+1)))
+        self.controls_layout.activate()
         self.cd_table.setHorizontalHeaderLabels([f"깊이 ({unit})", f"CD ({unit})", "왼쪽 X (px)", "오른쪽 X (px)"])
         self.cd_table.setRowCount(len(r.sample_y))
         for row, (y, l, right) in enumerate(zip(r.sample_y, r.sample_left, r.sample_right)):
-            for col, value in enumerate(((y - r.options.roi[1]) * factor, (right - l) * factor, l, right)):
+            for col, value in enumerate(((y - r.depth_origin_px) * factor, (right - l) * factor, l, right)):
                 self.cd_table.setItem(row, col, QTableWidgetItem(f"{value:.5g}"))
         self.local_table.setHorizontalHeaderLabels(["측벽", f"시작 ({unit})", f"Nega 끝 ({unit})", f"국부 Bow ({unit})", f"현 대비 ({unit})", "역경사°"])
         self.local_table.setRowCount(len(r.local_bowing))
@@ -1219,15 +1245,33 @@ class TrenchPanel(QWidget):
                 if yy-previous_y>1.5:path.moveTo(float(xx),float(yy))
                 else:path.lineTo(float(xx),float(yy))
             self.overlays.append(scene.addPath(path, _pen(color, 1.5, color in ("#9cdfcc", "#efcfa3"))))
-        if r.depth_px is not None:
+        metrics=r.field_measurements
+        for item in r.field_angles:
+            if item.get('source')!='guide' or item.get('status')!='valid' or not item.get('points'):continue
+            points=metrics.get('flat_supports',{}).get(item['side'],item['points']);path=QPainterPath(QPointF(*points[0]))
+            for point in points[1:]:path.lineTo(QPointF(*point))
+            self.overlays.append(scene.addPath(path,_pen('#60ed8d',2)))
+            label=scene.addSimpleText('Field');label.setBrush(QColor('#60ed8d'))
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,True)
+            label.setPos(points[len(points)//2][0],points[len(points)//2][1]-22);self.overlays.append(label)
+        if metrics.get('tcd_status')=='valid':
+            a,b=metrics['anchors']['left'],metrics['anchors']['right'];ref=metrics['reference_y_px']
+            self.overlays.append(scene.addLine(a[0],ref,b[0],ref,_pen('#60ed8d',1.5)))
+            for p in (a,b):self.overlays.append(scene.addLine(p[0],min(ref,p[1])-4,p[0],max(ref,p[1])+4,_pen('#60ed8d')))
+            label=scene.addSimpleText(f"TCD {metrics['tcd_px']*factor:.4g} {unit}");label.setBrush(QColor('#60ed8d'))
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,True)
+            label.setPos((a[0]+b[0])/2-label.boundingRect().width()/2,ref-44);self.overlays.append(label)
+        depth_value=metrics.get('depth_px') if metrics.get('field_status')=='valid' else r.depth_px
+        depth_top=r.depth_origin_px
+        if depth_value is not None:
             depth_x = float(np.max(r.right))+max(12,w*.015)
-            self.overlays.append(scene.addLine(depth_x, y, depth_x, y + r.depth_px, _pen("#e6edfa", 1.5, True)))
-            for end_y in (y, y + r.depth_px):
+            self.overlays.append(scene.addLine(depth_x, depth_top, depth_x, depth_top + depth_value, _pen("#e6edfa", 1.5, True)))
+            for end_y in (depth_top, depth_top + depth_value):
                 self.overlays.append(scene.addLine(depth_x - 6, end_y, depth_x + 6, end_y, _pen("#e6edfa")))
-            label = scene.addText(f"Depth {r.depth_px * factor:.4g} {unit}")
+            label = scene.addText(f"Depth {depth_value * factor:.4g} {unit}")
             label.setDefaultTextColor(QColor("#ffffff"))
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            label.setPos(depth_x + 10, y + r.depth_px * .55)
+            label.setPos(depth_x + 10, depth_top + depth_value * .55)
             self.overlays.append(label)
         self.selected_line = scene.addLine(0, 0, 0, 0, _pen("#fb4fc5", 2))
         self.selected_band = scene.addRect(QRectF(), _pen("#fb4fc5", 1, True))
@@ -1299,7 +1343,18 @@ class TrenchPanel(QWidget):
             self.hint.setText(f"GFE 복사 실패: {exc}")
             return
         QApplication.clipboard().setText(table)
-        self.hint.setText(f"GFE 좌표 {len(table.splitlines()) - 1}개 복사 완료 (Å). GFE 표에서 Ctrl+V로 붙여넣으세요.")
+        self.hint.setText(f"GFE 좌표 {len(table.splitlines()) - 1}개 복사 완료 (Å · 왼쪽 Field→바닥→오른쪽 Field). GFE 표에서 Ctrl+V로 붙여넣으세요.")
+
+    def export_profile_dialog(self):
+        if self.result is None:return
+        try:
+            payload=trench_profile_exchange(self.result,self.scale_spin.value())
+            path,_=QFileDialog.getSaveFileName(self,'GFE 교환 JSON 저장','trench-profile.json','JSON (*.json)')
+            if not path:return
+            if not Path(path).suffix:path+='.json'
+            Path(path).write_text(json.dumps(payload,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+            self.hint.setText('GFE 열린 표면 좌표 저장 완료 (Å · trench-profile/v1)')
+        except (ValueError,OSError) as exc:self.hint.setText(f'GFE 저장 실패: {exc}')
 
     def export_dialog(self):
         stem = Path(self.image_path).stem if self.image_path else "trench"

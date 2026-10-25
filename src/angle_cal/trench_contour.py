@@ -98,7 +98,48 @@ def _connect_short_gaps(chosen, distance, guide, image_shape):
     return connected,joins
 
 
-def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contrast=False, material_level=None, rim_inset_px=1.):
+def _connect_region_gaps(chosen, distance, centers, guide, image_shape):
+    """Complete interior holes of ONE guide, with explicitly inferred geometry.
+
+    Prefer observed endpoint tangents. For curved missing intervals, transport
+    endpoint residuals along the guide instead of cutting across its corridor.
+    Never extend unsupported ends or combine separate guides. If no in-image,
+    in-corridor route exists, the caller must reject a disconnected result.
+    """
+    connected, joins = _connect_short_gaps(chosen, distance, guide, image_shape)
+    indices = sorted(connected)
+    h, w = image_shape[:2]
+    for a, b in zip(indices, indices[1:]):
+        if b == a+1:
+            continue
+        p, q = np.asarray(connected[a]), np.asarray(connected[b])
+        span = distance[b]-distance[a]
+        residual = np.array([p-centers[a], q-centers[b]])
+        # An abrupt transverse switch is a competing branch, not a blank rim.
+        if np.linalg.norm(residual[1]-residual[0]) > max(6., .75*span):
+            continue
+        ds = np.linspace(distance[a], distance[b], max(8, int(np.ceil(span*4))+1))
+        base = np.column_stack([np.interp(ds, distance[a:b+1], centers[a:b+1, axis]) for axis in (0, 1)])
+        t = ((ds-distance[a])/span)[:, None]
+        blend = t*t*(3-2*t)
+        # Smooth endpoint residual interpolation keeps a long missing floor or
+        # entrance on the drawn route, not on a chord across the empty trench.
+        dense = base + (1-blend)*residual[0] + blend*residual[1]
+        if (np.any(dense < 0) or np.any(dense[:, 0] > w-1) or np.any(dense[:, 1] > h-1)
+                or not points_in_guides(dense, (guide,)).all()):
+            continue
+        missing = np.arange(a+1, b)
+        points = np.column_stack([np.interp(distance[missing], ds, dense[:, axis]) for axis in (0, 1)])
+        if not points_in_guides(points, (guide,)).all():
+            continue
+        connected.update({int(i): point.tolist() for i, point in zip(missing, points)})
+        joins.append(dict(start_index=a, end_index=b, length_px=float(span),
+                          points=[p.tolist(), *points.tolist(), q.tolist()],
+                          method='guide_corridor_residual_interpolation', source='inferred'))
+    return connected, sorted(joins, key=lambda join: join['start_index'])
+
+
+def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contrast=False, material_level=None, rim_inset_px=1., continuous=False):
     samples=sweep_samples(guide)
     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(samples,axis=0),axis=1))]
     step=max(1.,arc[-1]/20000)
@@ -271,7 +312,8 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         candidates.append(ranked)
     # Viterbi along the ordered guide. Keep multiple candidates until the
     # complete local path is evaluated; a strong isolated peak cannot win a
-    # row independently. Only bounded short holes are connected afterwards.
+    # row independently. Interior holes are connected afterwards according to
+    # the requested bounded or continuous-region policy.
     chosen={}
     blocks=[]
     supported=[i for i,c in enumerate(candidates) if c]
@@ -324,7 +366,9 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         chosen,peak_points,inward_normals=inset_rim(chosen,centers,normals,profiles,offsets,guide,image.shape,rim_inset_px)
         measured=dict(chosen)
     joins=[]
-    if local_contrast:chosen,joins=_connect_short_gaps(chosen,distance,guide,image.shape)
+    if continuous:
+        chosen,joins=_connect_region_gaps(chosen,distance,centers,guide,image.shape)
+    elif local_contrast:chosen,joins=_connect_short_gaps(chosen,distance,guide,image.shape)
     spreads=[spread_by_index.get(i) if i in measured else None for i in sorted(chosen)]
     for i,point in sorted(chosen.items()):
         if not segments or i!=segments[-1][-1][0]+1:segments.append([])
@@ -338,12 +382,14 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
                 inward_normals=[inward_normals.get(i) for i in sorted(chosen)] if boundary_mode=='rim_inset' else [],
                 preprocessing=(dict(tangent_median_samples=2*median_half+1,tangent_sample_step_px=sample_step,
                                     tangent_gaussian_sigma_px=tangent_sigma*sample_step,normal_gaussian_sigma_px=.8,
-                                    missing_policy='bounded_short_gap_connection',max_join_length_px=12,
+                                    missing_policy='continuous_region_interpolation' if continuous else 'bounded_short_gap_connection',
+                                    max_join_length_px=None if continuous else 12,
                                     measurement_scope='guide_corridor') if local_contrast else None),
                 trace_coverage=coverage,status='valid' if coverage>=.95 else 'partial',
                 connected_coverage=len(chosen)/len(centers),interpolated_points=len(chosen)-len(measured),
+                continuity_requested=continuous,continuity_complete=bool(segments) and len(segments)==1,
                 joins=joins,point_sources=['measured' if i in measured else 'interpolated' for i in sorted(chosen)],
-                reason=('짧은 누락을 주변 경계 방향으로 연결했습니다.' if joins else '곡선 방향의 연결된 명암 경계')
+                reason=('검출 경계 사이의 누락을 인식 범위 안에서 보간해 연결했습니다.' if joins else '곡선 방향의 연결된 명암 경계')
                        if len(segments)<=1 else '연결할 근거가 부족한 구간이 남아 있습니다.',
                 segments=[[point for _,point in segment] for segment in segments],
                 points=[point for _,point in sorted(chosen.items())],edge_spreads_px=spreads)

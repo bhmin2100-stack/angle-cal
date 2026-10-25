@@ -320,8 +320,8 @@ def test_gfe_path_units_field_order_and_full_profile():
     center = (result.left[0] + result.right[0]) / 2
     lf,rf=result.field_angles
     reference=(np.polyval(lf["line"],result.left[0])+np.polyval(rf["line"],result.right[0]))/2
-    assert points[0] == pytest.approx([(rf["points"][-1][0]-center)*5,(reference-rf["points"][-1][1])*5])
-    assert points[-1] == pytest.approx([(lf["points"][0][0]-center)*5,(reference-lf["points"][0][1])*5])
+    assert points[0] == pytest.approx([(lf["points"][0][0]-center)*5,(reference-lf["points"][0][1])*5])
+    assert points[-1] == pytest.approx([(rf["points"][-1][0]-center)*5,(reference-rf["points"][-1][1])*5])
     assert points[:, 1].min() == pytest.approx((reference-20-result.depth_px) * 5)
     assert len(points) >= 2 * len(result.y)
     assert len(points) > 2 * len(result.sample_y)
@@ -329,7 +329,7 @@ def test_gfe_path_units_field_order_and_full_profile():
     center = (result.left[0] + result.right[0]) / 2
     for x, y in zip(result.right, result.y):
         assert np.min(np.linalg.norm(points - [(x-center)*5, (reference-y)*5], axis=1)) < 1e-7
-    assert points[0,0]>0 and points[-1,0]<0
+    assert points[0,0]<0 and points[-1,0]>0
 
 
 def test_gfe_clipboard_export_and_failure_preserves_clipboard(qt_app):

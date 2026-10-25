@@ -1,5 +1,30 @@
 # Trench contour continuity (0.1.12)
 
+## Continuous selected region (0.1.15)
+
+The automatic guide workflow now explicitly enables `continuous_guides`.
+This supersedes the old 12 px limit described below for that workflow only.
+Low-level tracing/manual analysis defaults retain the bounded policy.
+Between the first and last supported points of each guide, use short tangent
+joins first, then interpolate endpoint residuals along the sampled guide path
+for longer missing intervals. The latter is inferred geometry, not new image
+evidence. All joins are checked at quarter-pixel guide-length spacing against
+image bounds and that individual guide's corridor. Abrupt transverse branch
+switches are rejected. Guides are never joined to one another, and unsupported
+ends are never extended. If a trace still has interior gaps, automatic analysis
+fails with a guide-adjustment message instead of returning a broken contour.
+
+Connected geometry feeds smoothing, cavity association, CD, overlays and the
+graph/export paths. Detection coverage and crest references still refer only
+to image evidence; inferred points have null crest, normal and edge spread.
+`continuity_requested`, `continuity_complete`, `point_sources`, `joins`, and
+`interpolated_points` retain provenance in JSON/CSV. The UI reports the join
+count without mislabelling a low observed coverage as a visual break. Depth
+still requires the existing brightness-based closure test. No physical-edge
+accuracy is implied. `tests/test_trench_region_continuity.py` covers long wall
+gaps, curved floor routing, reversed guides, smoothing, blank images, competing
+branches, inward offsets, polarity/16-bit inputs, CD, graph and saved results.
+
 ## Bright crest reference (0.1.12)
 
 The default automatic workspace now uses `rim_inset`: identify a resolved
