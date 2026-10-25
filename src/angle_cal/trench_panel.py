@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QMenu, QToolButton,
     QFormLayout, QGraphicsItem, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
@@ -710,8 +710,20 @@ class TrenchPanel(QWidget):
         lower=QSplitter(Qt.Orientation.Horizontal);left.addWidget(lower)
         self.graph=TrenchGraph();lower.addWidget(self.graph)
         self.tables=QTabWidget();self.cd_table=self._table(['깊이','CD','왼쪽 X','오른쪽 X'])
+        self.profile_page=QWidget();profile_layout=QVBoxLayout(self.profile_page)
+        profile_layout.setContentsMargins(4,4,4,4)
+        self.profile_status=QLabel('분석 후 Gapseam용 X·Y 좌표가 표시됩니다.');self.profile_status.setWordWrap(True)
+        self.profile_table=self._table(['X (Å)','Y (Å)'])
+        self.profile_table.setObjectName('gapseam_coordinates')
+        self.profile_table.setSortingEnabled(False)
+        self.profile_table.setToolTip('왼쪽 Field → 왼쪽 벽 → 바닥 → 오른쪽 벽 → 오른쪽 Field. Ctrl+A, Ctrl+C로 좌표를 복사합니다.')
+        profile_layout.addWidget(self.profile_status);profile_layout.addWidget(self.profile_table)
+        self.profile_copy_shortcut=QShortcut(QKeySequence.StandardKey.Copy,self.profile_table)
+        self.profile_copy_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.profile_copy_shortcut.activated.connect(self._copy_profile_rows)
         self.local_table=self._table(['측벽','시작 깊이','Nega 끝','국부 Bow','현 대비','역경사°'])
-        self.tables.addTab(self.cd_table,'깊이별 CD');self.tables.tabBar().hide();lower.addWidget(self.tables)
+        self.tables.addTab(self.profile_page,'Gapseam 좌표 (Å)')
+        self.tables.addTab(self.cd_table,'깊이별 CD');lower.addWidget(self.tables)
         self.cd_table.cellClicked.connect(self._cd_selected);self.graph.depth_selected.connect(self.select_depth)
         left.setSizes([560,230]);lower.setSizes([320,500])
         sidebar=QWidget()
@@ -1023,6 +1035,8 @@ class TrenchPanel(QWidget):
         self.graph.selected_y = None
         self.graph.update()
         self.cd_table.setRowCount(0)
+        self.profile_table.setRowCount(0)
+        self.profile_status.setText('분석 후 Gapseam용 X·Y 좌표가 표시됩니다.')
         self.local_table.setRowCount(0)
         self.export_button.setEnabled(False)
         self.summary_label.setText("곡선을 그리거나 불러온 뒤 인식을 누르세요.")
@@ -1223,6 +1237,7 @@ class TrenchPanel(QWidget):
         for row, (y, l, right) in enumerate(zip(r.sample_y, r.sample_left, r.sample_right)):
             for col, value in enumerate(((y - r.depth_origin_px) * factor, (right - l) * factor, l, right)):
                 self.cd_table.setItem(row, col, QTableWidgetItem(f"{value:.5g}"))
+        self._render_profile_coordinates()
         self.local_table.setHorizontalHeaderLabels(["측벽", f"시작 ({unit})", f"Nega 끝 ({unit})", f"국부 Bow ({unit})", f"현 대비 ({unit})", "역경사°"])
         self.local_table.setRowCount(len(r.local_bowing))
         for row, item in enumerate(r.local_bowing):
@@ -1388,6 +1403,32 @@ class TrenchPanel(QWidget):
             return
         QApplication.clipboard().setText(table)
         self.hint.setText(f"GFE 좌표 {len(table.splitlines()) - 1}개 복사 완료 (Å · 왼쪽 Field→바닥→오른쪽 Field). GFE 표에서 Ctrl+V로 붙여넣으세요.")
+
+    def _render_profile_coordinates(self):
+        self.profile_table.setRowCount(0)
+        try:
+            rows=trench_gfe_tsv(self.result,self.scale_spin.value()).splitlines()[1:]
+        except ValueError as exc:
+            self.profile_status.setText(f'Gapseam 좌표 미확정: {exc}')
+            return
+        self.profile_table.setUpdatesEnabled(False)
+        try:
+            self.profile_table.setRowCount(len(rows))
+            for row,line in enumerate(rows):
+                for col,value in enumerate(line.split('\t')):
+                    item=QTableWidgetItem(value)
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
+                    self.profile_table.setItem(row,col,item)
+        finally:self.profile_table.setUpdatesEnabled(True)
+        self.profile_status.setText(f'{len(rows):,}점 · Å · 입구 중앙 X=0 / Field 기준 Y=0 · 깊이 음수\n왼쪽 Field → 왼쪽 벽 → 바닥 → 오른쪽 벽 → 오른쪽 Field · 열린 윤곽')
+
+    def _copy_profile_rows(self):
+        rows=sorted({index.row() for index in self.profile_table.selectedIndexes()})
+        if not rows:return
+        text='\n'.join('\t'.join(self.profile_table.item(row,col).text() for col in (0,1)) for row in rows)+'\n'
+        QApplication.clipboard().setText(text)
+        self.hint.setText(f'Gapseam 좌표 {len(rows):,}점 복사 완료 (Å · X/Y). 전체 윤곽은 Ctrl+A 후 Ctrl+C 또는 Export를 사용하세요.')
 
     def export_profile_dialog(self):
         if self.result is None:return
