@@ -21,6 +21,7 @@ from .trench_surface import measure_field_angles, connect_entrance
 from .trench_guides import normalize_guides, prepare_guide_bands, in_bands, sweep_samples, points_in_guides
 from .trench_contour import trace_guide, guided_cavity_profile
 from .trench_guided_surface import measure_guided_surfaces
+from .trench_smoothing import smooth_traces, smoothing_parameters, METHODS
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,8 @@ class TrenchOptions:
     boundary_mode: str = 'inner_rim'
     strict_guides: bool = False
     rim_inset_px: float = 1.0
+    contour_smoothing: str = 'robust'
+    contour_strength: float = 0.0
 
 
 @dataclass
@@ -303,6 +306,11 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         raise ValueError("CD 깊이 간격은 양수여야 합니다.")
     if not math.isfinite(options.rim_inset_px) or not 0<=options.rim_inset_px<=10:
         raise ValueError('빈 공간 쪽 이동은 0~10 px여야 합니다.')
+    smoothing_parameters(options.contour_strength)
+    if options.contour_smoothing not in METHODS:
+        raise ValueError('지원하지 않는 윤곽 보정 방식입니다.')
+    if options.contour_strength and not options.wall_guides:
+        raise ValueError('윤곽 보정은 곡선 가이드 인식에서 사용할 수 있습니다.')
     if options.bow_reference not in ("entrance", "chord"):
         raise ValueError("지원하지 않는 Bowing 기준입니다.")
     if not math.isfinite(options.negative_slope_deg) or not 0 <= options.negative_slope_deg < 89:
@@ -351,6 +359,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
         traces=[trace_guide(full_ridge,g,threshold,mode,local_contrast=options.strict_guides,
                             material_level=local_material if options.strict_guides else None,
                             rim_inset_px=options.rim_inset_px) for g in guides]
+        traces = smooth_traces(traces, guides, options.contour_smoothing,
+                               options.contour_strength, image.shape)
         for i,g in enumerate(guides):
             samples=sweep_samples(g);direction=np.gradient(samples,axis=0)
             vertical=np.abs(direction[:,1])>=.75*np.abs(direction[:,0])
@@ -432,6 +442,9 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions) -> TrenchResult:
     if np.any(left>=right):
         raise ValueError('좌우 가이드 또는 경계가 교차합니다. 가이드의 좌우와 인식 폭을 확인하세요.')
     warnings: list[str] = []
+    if options.contour_strength:
+        warnings.append(f'윤곽 보정: {METHODS[options.contour_smoothing]} {options.contour_strength:g}/100. '
+                        '보정 전 윤곽을 함께 저장합니다. Depth의 바닥 폐쇄 판단은 기존 밝기 기준입니다.')
     joined=sum(len(t.get('joins',[])) for t in traces)
     if joined:
         warnings.append(f'짧은 경계 누락 {joined}곳을 주변 윤곽 방향으로 보간해 연결했습니다. 연결 구간은 추정 형상이며 저장 결과에 기록됩니다.')
@@ -554,6 +567,8 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         writer.writerow(["metadata", "nm_per_px", nm_per_px or "", "nm/px"])
         writer.writerow(["metadata", "bow_reference", result.options.bow_reference, ""])
         writer.writerow(["metadata", "boundary_mode", result.options.boundary_mode, ""])
+        writer.writerow(["metadata", "contour_smoothing", result.options.contour_smoothing, ""])
+        writer.writerow(["metadata", "contour_strength", result.options.contour_strength, "0..100"])
         if result.options.boundary_mode=='rim_inset':
             writer.writerow(["metadata", "rim_inset_px", result.options.rim_inset_px, "px"])
         writer.writerow(["metadata", "entrance_y_px", result.options.roi[1], "px"])

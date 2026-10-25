@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, QThread, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QMenu, QToolButton,
@@ -23,6 +23,8 @@ from .trench_guide_view import TrenchGuideEditor
 from .trench_workflow import recognize_from_guides
 from .trench_structure import structure_guides
 from .trench_plot import shape_series
+from .trench_smoothing_controls import SmoothingControls
+from .trench_smoothing import METHODS
 
 
 def _pen(color: str, width: float = 1.5, dashed: bool = False) -> QPen:
@@ -510,7 +512,7 @@ class TrenchGraph(QWidget):
         rect = QRectF(60, 28, max(30, self.width() - 85), max(30, self.height() - 60))
         self.plot_rect = rect
         if self.mode == "shape":
-            series = shape_series(r)
+            series = shape_series(r, getattr(self, 'show_raw', False))
             title = "Field·측벽·바닥 X"
         elif self.mode == "bow":
             series = [(r.left_reference - r.left, r.y, "#007d92", False), (r.right - r.right_reference, r.y, "#bb4b1e", False)]
@@ -646,6 +648,11 @@ class TrenchPanel(QWidget):
         self.corner_rois = [None, None]
         self.corner_spans = [None, None]
         self.reanalysis_requested = False
+        self._smoothing_reapply = False
+        self._has_analysis_request = False
+        self.smoothing_timer = QTimer(self)
+        self.smoothing_timer.setSingleShot(True)
+        self.smoothing_timer.timeout.connect(self._apply_smoothing)
         self.overlays = []
         self.selected_line = None
         self.selected_band = None
@@ -697,7 +704,9 @@ class TrenchPanel(QWidget):
         self.tables.addTab(self.cd_table,'깊이별 CD');self.tables.tabBar().hide();lower.addWidget(self.tables)
         self.cd_table.cellClicked.connect(self._cd_selected);self.graph.depth_selected.connect(self.select_depth)
         left.setSizes([560,230]);lower.setSizes([320,500])
-        sidebar=QWidget();sidebar.setMinimumWidth(220);sidebar.setMaximumWidth(270);body.addWidget(sidebar)
+        sidebar=QWidget()
+        sidebar_scroll=QScrollArea();sidebar_scroll.setWidgetResizable(True);sidebar_scroll.setWidget(sidebar)
+        sidebar_scroll.setMinimumWidth(240);sidebar_scroll.setMaximumWidth(290);body.addWidget(sidebar_scroll)
         controls=QVBoxLayout(sidebar);controls.setContentsMargins(6,4,6,4)
         controls.addWidget(QLabel('스케일'))
         form=QFormLayout();controls.addLayout(form)
@@ -717,6 +726,11 @@ class TrenchPanel(QWidget):
         self.rim_reference.toggled.connect(self.rim_inset_spin.setEnabled)
         self.rim_reference.toggled.connect(self._settings_changed)
         self.rim_inset_spin.valueChanged.connect(self._settings_changed)
+        self.smoothing_controls = SmoothingControls()
+        controls.addWidget(self.smoothing_controls)
+        self.smoothing_controls.changed.connect(self._smoothing_changed)
+        self.smoothing_controls.released.connect(self._schedule_smoothing)
+        self.smoothing_controls.comparison_changed.connect(self._smoothing_comparison)
         self.calibration_note=QLabel('스케일바를 그리면 입력한 길이를 기준으로 보정합니다.');self.calibration_note.setWordWrap(True);controls.addWidget(self.calibration_note)
         self.analyze_button=QPushButton('인식');self.analyze_button.setMinimumHeight(32);self.analyze_button.clicked.connect(self.start_analysis);controls.addWidget(self.analyze_button)
         fit=QPushButton('전체 보기');fit.clicked.connect(self.view.fit_image);controls.addWidget(fit)
@@ -764,6 +778,7 @@ class TrenchPanel(QWidget):
     def state(self) -> dict:
         return {"roi": self.roi, "nm_per_px": self.scale_spin.value(),
                 "workflow_version":2,"automatic_area":self.automatic_area,"step_nm":self.step_spin.value(),
+                "contour_smoothing":self.smoothing_controls.state(),
                 "boundary_mode":self.boundary_mode,"scale_bar":self.scale_bar,
                 "rim_reference":self.rim_reference.isChecked(),"rim_inset_px":self.rim_inset_spin.value(),
                 "unit": self.unit_combo.currentData(), "step": self.step_spin.value(),
@@ -887,6 +902,9 @@ class TrenchPanel(QWidget):
                 self.scale_spin.setValue(nm_per_px or 0)
             return
         self.loading = True
+        self.smoothing_timer.stop()
+        self._smoothing_reapply = False
+        self._has_analysis_request = False
         self.reanalysis_requested = False
         self.source_key, self.source_calibration = key, nm_per_px
         self.image, self.image_path = image, path or ""
@@ -910,6 +928,7 @@ class TrenchPanel(QWidget):
                 editor.set_image(pixmap)
             self.view.notify_viewport()
         state = state or {}
+        self.smoothing_controls.restore(state.get("contour_smoothing"))
         try:
             guides=normalize_guides(state.get('wall_guides',()),image.shape if image is not None else None)
             self.guide_editor.restore(guides)
@@ -980,9 +999,41 @@ class TrenchPanel(QWidget):
         for editor in self.surface_editors:
             editor.show_result(None)
 
+    def _smoothing_comparison(self, enabled):
+        self.graph.show_raw = enabled
+        self.graph.update()
+        if not self.loading:
+            self._draw_overlay()
+            self.state_changed.emit(self.state())
+
+    def _smoothing_changed(self):
+        if self.loading:
+            return
+        reapply = self._has_analysis_request
+        self._settings_changed()
+        self._smoothing_reapply = reapply
+        self._schedule_smoothing()
+
+    def _schedule_smoothing(self):
+        if self.loading:
+            return
+        self.smoothing_timer.stop()
+        if self._smoothing_reapply and not self.smoothing_controls.is_dragging():
+            self.smoothing_timer.start(250)
+
+    def _apply_smoothing(self):
+        self._smoothing_reapply = False
+        if self.worker is not None and self.worker.isRunning():
+            self.reanalysis_requested = True
+        else:
+            self.start_analysis()
+
     def _settings_changed(self, *_args):
         if self.loading:
             return
+        self.smoothing_timer.stop()
+        self._smoothing_reapply = False
+        self.reanalysis_requested = False
         self.revision += 1
         self._clear_result()
         self._draw_overlay()
@@ -1007,15 +1058,21 @@ class TrenchPanel(QWidget):
             # workflow when an older project is opened.
             return TrenchOptions(roi,step,smooth_px=7,wall_guides=normalize_guides(self.guide_editor.guides),
                                  boundary_mode='rim_inset' if self.rim_reference.isChecked() else self.boundary_mode,
-                                 rim_inset_px=self.rim_inset_spin.value(),strict_guides=True)
+                                 rim_inset_px=self.rim_inset_spin.value(),strict_guides=True,
+                                 contour_smoothing=self.smoothing_controls.method.currentData(),
+                                 contour_strength=self.smoothing_controls.strength)
         return TrenchOptions(roi, step, self.threshold_spin.value(),
                              self.bright_check.isChecked(), self.smooth_spin.value(), self.bow_combo.currentData(),
                              self.corner_spin.value(), self.negative_spin.value(),
                              tuple(self.corner_rois), tuple(self.corner_spans),self.field_spin.value(),
                              (self.angle_start.value(),self.angle_end.value()),normalize_guides(self.guide_editor.guides),
-                             self.boundary_mode if self.automatic_area else 'inner_rim')
+                             self.boundary_mode if self.automatic_area else 'inner_rim',
+                             contour_smoothing=self.smoothing_controls.method.currentData(),
+                             contour_strength=self.smoothing_controls.strength)
 
     def start_analysis(self):
+        self.smoothing_timer.stop()
+        self._smoothing_reapply = False
         if self.worker is not None and self.worker.isRunning():
             return
         if self.guide_editor.drawing and self.guide_editor.draft:
@@ -1032,6 +1089,7 @@ class TrenchPanel(QWidget):
             return
         self._clear_result()
         self.summary_label.setText("곡선 주변 경계를 인식하고 있습니다…")
+        self._has_analysis_request = True
         self.analyze_button.setEnabled(False)
         self.guide_analyze.setEnabled(False)
         self.worker = TrenchWorker(self.image, options, self.revision, self, self.automatic_area)
@@ -1050,6 +1108,8 @@ class TrenchPanel(QWidget):
             self.start_analysis()
 
     def wait_for_worker(self):
+        self.smoothing_timer.stop()
+        self._smoothing_reapply = False
         self.reanalysis_requested = False
         if self.worker is not None:
             self.worker.wait()
@@ -1074,6 +1134,11 @@ class TrenchPanel(QWidget):
         summary = r.summary()
         lines=[f"깊이  {fmt(r.depth_px)}",f"CD  {fmt(summary['min_cd_px'])} ~ {fmt(summary['max_cd_px'])}",
                f"Bowing 좌 / 우  {fmt(r.left_bowing_px)} / {fmt(r.right_bowing_px)}"]
+        if r.options.contour_strength:
+            shifts = [t['smoothing']['max_displacement_px'] for t in r.guide_traces if 'smoothing' in t]
+            lines.append(f'윤곽 보정 {METHODS[r.options.contour_smoothing]} {r.options.contour_strength:g}/100')
+            lines.append(f'최대 이동 {max(shifts, default=0):.2f} px · 회색 점선: 보정 전')
+            lines.append('Depth 바닥 판단은 기존 밝기 기준입니다.')
         if self.scale_spin.value()<=0:lines.append('미보정: px 표시 · 스케일바로 보정하세요.')
         if r.options.boundary_mode=='rim_inset':lines.append(f'밝기 최고점 → 빈 공간 {r.options.rim_inset_px:g} px')
         if self.step_spin.value()/max(self.scale_spin.value(),1e-9)<1:lines.append('1px 미만 간격은 윤곽 보간값입니다.')
@@ -1103,6 +1168,7 @@ class TrenchPanel(QWidget):
                 self.local_table.setItem(row, col, cell)
         self.graph.result, self.graph.factor, self.graph.unit = r, factor, unit
         self.graph.show_entrance=False
+        self.graph.show_raw=self.smoothing_controls.compare.isChecked()
         self.graph.update()
         self.export_button.setEnabled(True)
         for editor, corner in zip(self.corner_editors, r.corners):
@@ -1135,6 +1201,12 @@ class TrenchPanel(QWidget):
             return
         factor,unit=self._factor()
         for trace in r.guide_traces:
+            if self.smoothing_controls.compare.isChecked():
+                for segment in trace.get('raw_segments', []):
+                    if len(segment)<2:continue
+                    path=QPainterPath(QPointF(*segment[0]))
+                    for point in segment[1:]:path.lineTo(QPointF(*point))
+                    self.overlays.append(scene.addPath(path,_pen('#aaaaaa',1,True)))
             for segment in trace['segments']:
                 if len(segment)<2:continue
                 path=QPainterPath(QPointF(*segment[0]))
@@ -1205,11 +1277,12 @@ class TrenchPanel(QWidget):
             Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
         elif suffix == ".png":
             width=max(800,int(self.view.image_rect.width()));height=int(self.view.image_rect.height())
-            image=QImage(width,height+95,QImage.Format.Format_RGB32);image.fill(QColor('white'))
+            footer=max(95,self.summary_label.fontMetrics().lineSpacing()*(len(self.summary_label.text().splitlines())+2))
+            image=QImage(width,height+footer,QImage.Format.Format_RGB32);image.fill(QColor('white'))
             painter=QPainter(image)
             self.view.scene().render(painter,QRectF(0,0,self.view.image_rect.width(),height),self.view.image_rect)
             painter.setFont(QFont('Malgun Gothic',10));painter.setPen(QColor('#24364c'))
-            painter.drawText(QRectF(8,height+5,width-16,85),Qt.TextFlag.TextWordWrap,self.summary_label.text())
+            painter.drawText(QRectF(8,height+5,width-16,footer-10),Qt.TextFlag.TextWordWrap,self.summary_label.text())
             painter.end()
             if not image.save(path):
                 raise OSError("PNG 저장에 실패했습니다.")

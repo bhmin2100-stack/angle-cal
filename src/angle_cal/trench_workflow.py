@@ -27,7 +27,10 @@ def recognize_from_guides(image,options):
     # the specimen/void is bright. Never substitute drawn coordinates.
     for bright in (False,True):
         try:
-            result=analyze_trench(image,replace(options,roi=context,step_px=max(options.step_px,context[3]/10000),bright_trench=bright,wall_guides=guides))
+            # Smoothing must not change polarity selection or move the entrance
+            # reference plane. Establish both from the same uncorrected evidence.
+            result=analyze_trench(image,replace(options,roi=context,step_px=max(options.step_px,context[3]/10000),
+                                              bright_trench=bright,wall_guides=guides,contour_strength=0))
             support=sum(t['detected_points'] for t in result.guide_traces)
             candidates.append((result.depth_px is not None,support,len(result.y),bright,result))
         except ValueError:continue

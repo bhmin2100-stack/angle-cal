@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 
-def shape_series(result):
+def shape_series(result, show_raw=False):
     """Keep ordered trace segments intact, including the Field and curved floor.
 
     The horizontal floor reference is only a depth marker when a measured floor
@@ -15,6 +15,11 @@ def shape_series(result):
     floor = (result.options.roi[1] + result.depth_px
              if result.depth_px is not None else None)
     for trace in result.guide_traces:
+        if show_raw:
+            for segment in trace.get('raw_segments', []):
+                points = np.asarray(segment, dtype=float)
+                if len(points) >= 2:
+                    series.append((points[:, 0], points[:, 1], '#999999', True))
         for segment in trace.get('segments', []):
             points = np.asarray(segment, dtype=float)
             if len(points) < 2:
