@@ -3329,8 +3329,8 @@ def test_style_toolbar_applies_to_selected_line_objects_and_new_defaults():
 def test_top_controls_are_grouped_in_ribbon_tabs():
     window = _window_with_edge_image()
     try:
-        assert window.ribbon_tabs.count() == 5
-        assert [window.ribbon_tabs.tabText(idx) for idx in range(window.ribbon_tabs.count())] == ["파일", "경계", "가이드/측정", "이미지/표시/서식", "구조"]
+        assert window.ribbon_tabs.count() == 6
+        assert [window.ribbon_tabs.tabText(idx) for idx in range(window.ribbon_tabs.count())] == ["파일", "경계", "가이드/측정", "이미지/표시/서식", "구조", "트랜치 분석기"]
         ribbon_layout = window.menuWidget().layout()
         assert ribbon_layout.itemAt(0).widget() is window.ribbon_tabs
         assert window.tool_buttons['scale'].isVisibleTo(window.menuWidget())
@@ -3361,7 +3361,6 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         assert window.addon_button.menu() is not None
         assert [action.text() for action in window.addon_button.menu().actions()] == [
             "사진 합치기",
-            "Trench 자동분석기",
             "Cliff angle 분석기",
         ]
         assert all(action.isCheckable() for action in window.addon_button.menu().actions())
@@ -3372,6 +3371,32 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
             "즐겨찾기 Data Export",
             "업데이트 확인",
         ]
+    finally:
+        window.close()
+
+
+def test_permanent_trench_tab_click_routes_tools_and_preserves_scale():
+    from PySide6.QtTest import QTest
+    window = _window_with_edge_image()
+    window.nm_per_px = 2.5
+    window.show()
+    try:
+        app = QApplication.instance()
+        app.processEvents()
+        tabs = window.ribbon_tabs.tabBar()
+        index = window.ribbon_tabs.indexOf(window.trench_page)
+        QTest.mouseClick(tabs, Qt.MouseButton.LeftButton, pos=tabs.tabRect(index).center())
+        app.processEvents()
+        assert window.workspace_stack.currentWidget() is window.trench_panel
+        assert window.trench_quick_tools.isVisible()
+        assert not window.normal_quick_tools.isVisible()
+        assert window.trench_panel.scale_spin.value() == 2.5
+        assert 'trench_analyzer' not in window.addon_actions
+        QTest.mouseClick(tabs, Qt.MouseButton.LeftButton, pos=tabs.tabRect(0).center())
+        app.processEvents()
+        assert window.workspace_stack.currentWidget() is window.canvas
+        assert window.normal_quick_tools.isVisible()
+        assert window.ribbon_tabs.indexOf(window.trench_page) == index
     finally:
         window.close()
 

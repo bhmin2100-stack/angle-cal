@@ -42,7 +42,7 @@ def main():
         image,points=sample(curved);path=out/(name+'.png');cv2.imwrite(str(path),image)
         print('Loading '+name,flush=True)
         window._load_image_path(str(path));window.nm_per_px=.5
-        window.addon_actions['trench_analyzer'].setChecked(True)
+        window.ribbon_tabs.setCurrentWidget(window.trench_page)
         panel=window.trench_panel;panel.guide_editor.clear();panel.set_roi(QRectF(60,45,300,335))
         panel.scale_spin.setValue(.5);panel.unit_combo.setCurrentIndex(panel.unit_combo.findData('px'))
         panel.angle_start.setValue(100);panel.angle_end.setValue(160)

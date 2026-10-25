@@ -281,37 +281,37 @@ def test_multiple_addons_open_menu_tabs_and_preserve_board():
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     try:
-        assert window.ribbon_tabs.count() == 5
+        assert window.ribbon_tabs.count() == 6
         window.addon_actions["photo_merge"].setChecked(True)
-        window.addon_actions["trench_analyzer"].setChecked(True)
+        window.ribbon_tabs.setCurrentWidget(window.trench_page)
         app.processEvents()
 
         assert window.ribbon_tabs.count() == 7
         assert window.addon_actions["photo_merge"].isChecked()
-        assert window.addon_actions["trench_analyzer"].isChecked()
-        assert window.ribbon_tabs.tabText(5) == "사진 합치기"
-        assert window.ribbon_tabs.tabText(6) == "Trench 자동분석기"
+        assert "trench_analyzer" not in window.addon_actions
+        assert window.ribbon_tabs.tabText(6) == "사진 합치기"
+        assert window.ribbon_tabs.tabText(5) == "트랜치 분석기"
         board = window.photo_merge_board
         assert board.window() is window
-        window.ribbon_tabs.setCurrentIndex(5)
+        window.ribbon_tabs.setCurrentIndex(6)
         assert window.workspace_stack.currentWidget() is board
         window.ribbon_tabs.setCurrentIndex(0)
         assert window.workspace_stack.currentWidget() is window.canvas
-        window.ribbon_tabs.setCurrentIndex(5)
+        window.ribbon_tabs.setCurrentIndex(6)
         assert window.workspace_stack.currentWidget() is board
 
         window.addon_actions["photo_merge"].setChecked(False)
         app.processEvents()
         assert window.ribbon_tabs.count() == 6
         assert window.workspace_stack.currentWidget() is window.trench_panel
-        assert window.ribbon_tabs.tabText(5) == "Trench 자동분석기"
+        assert window.ribbon_tabs.tabText(5) == "트랜치 분석기"
         window.addon_actions["photo_merge"].setChecked(True)
         assert window.ribbon_tabs.count() == 7
         assert window.photo_merge_board is board
         assert window.workspace_stack.currentWidget() is board
         window.addon_actions["photo_merge"].setChecked(False)
-        window.addon_actions["trench_analyzer"].setChecked(False)
-        assert window.ribbon_tabs.count() == 5
+        window.ribbon_tabs.setCurrentIndex(0)
+        assert window.ribbon_tabs.count() == 6
     finally:
         window.close()
 

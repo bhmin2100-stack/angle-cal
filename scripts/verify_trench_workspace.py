@@ -27,7 +27,7 @@ def main():
     window.resize(1600, 1050)
     window.show()
     window._load_image_path(str(root / "samples/trench_analyzer/01_symmetric_mild_bowing_scale.png"))
-    window.addon_actions["trench_analyzer"].setChecked(True)
+    window.ribbon_tabs.setCurrentWidget(window.trench_page)
     panel = window.trench_panel
     panel.set_roi(QRectF(625, 20, 300, 920))
     panel.smooth_spin.setValue(17)

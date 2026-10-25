@@ -48,7 +48,7 @@ def main():
     for i,path in enumerate(paths):cv2.imwrite(str(path),sample(i))
     w=MainWindow();w.resize(1450,1000);w.show()
     w.browser_image_paths=list(map(str,paths));w._populate_thumbnails()
-    w.addon_actions['trench_analyzer'].setChecked(True);app.processEvents();p=w.trench_panel
+    w.ribbon_tabs.setCurrentWidget(w.trench_page);app.processEvents();p=w.trench_panel
     QTest.mouseClick(w.thumbnail_buttons[str(paths[0])],Qt.MouseButton.LeftButton);app.processEvents()
     assert p.image_path==str(paths[0]) and p.roi is None,(p.image_path,p.roi,w.image_path,int(QApplication.keyboardModifiers().value),w.size())
     p.view.fit_image();p.tool_buttons['scale'].click()

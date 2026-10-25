@@ -76,7 +76,6 @@ class AddonDefinition:
 
 ADDON_DEFINITIONS = (
     AddonDefinition("photo_merge", "사진 합치기"),
-    AddonDefinition("trench_analyzer", "Trench 자동분석기"),
     AddonDefinition("cliff_angle_analyzer", "Cliff angle 분석기"),
 )
 
@@ -3825,6 +3824,9 @@ class MainWindow(QMainWindow):
         structure_group.addWidget(structure_import_button)
         structure_group.addWidget(structure_delete_button)
         self.ribbon_tabs.addTab(structure_page, "구조")
+        self.trench_page = self._create_addon_page("trench_analyzer")
+        self.addon_pages["trench_analyzer"] = self.trench_page
+        self.ribbon_tabs.addTab(self.trench_page, "트랜치 분석기")
         self.ribbon_tabs.currentChanged.connect(self._ribbon_tab_changed)
 
     def _new_toolbar(self, title: str) -> QToolBar:
@@ -3852,7 +3854,7 @@ class MainWindow(QMainWindow):
                 page = self._create_addon_page(addon_id)
                 self.addon_pages[addon_id] = page
             ordered_index = next(i for i, item in enumerate(ADDON_DEFINITIONS) if item.addon_id == addon_id)
-            insert_at = 5 + sum(1 for item in ADDON_DEFINITIONS[:ordered_index] if item.addon_id in self.enabled_addon_ids)
+            insert_at = 6 + sum(1 for item in ADDON_DEFINITIONS[:ordered_index] if item.addon_id in self.enabled_addon_ids)
             if self.ribbon_tabs.indexOf(page) < 0:
                 self.ribbon_tabs.insertTab(insert_at, page, definition.title)
             self.ribbon_tabs.setCurrentWidget(page)

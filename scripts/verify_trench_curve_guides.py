@@ -26,7 +26,7 @@ def main():
     QFontDatabase.addApplicationFont('C:/Windows/Fonts/malgun.ttf');app.setFont(QFont('Malgun Gothic',9))
     window=MainWindow();window.resize(1600,1040);window.show()
     window._load_image_path(str(source));window.nm_per_px=10000/312
-    window.addon_actions['trench_analyzer'].setChecked(True)
+    window.ribbon_tabs.setCurrentWidget(window.trench_page)
     panel=window.trench_panel
     panel.guide_editor.clear()
     panel.set_roi(QRectF(780,76,250,860));panel.scale_spin.setValue(10000/312)

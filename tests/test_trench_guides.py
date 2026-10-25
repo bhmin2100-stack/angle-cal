@@ -245,7 +245,7 @@ def test_project_roundtrip_and_rotation_clear_curve_guides(app,tmp_path,monkeypa
     image_path=tmp_path/'sample.png'
     cv2.imencode('.png',trench_image(bulb=12))[1].tofile(str(image_path))
     w=MainWindow();monkeypatch.setattr(w,'_show_save_notification',lambda *_:None)
-    w._load_image_path(str(image_path));w.addon_actions['trench_analyzer'].setChecked(True)
+    w._load_image_path(str(image_path));w.ribbon_tabs.setCurrentWidget(w.trench_page)
     p=w.trench_panel;p.set_roi(QRectF(30,20,140,225))
     p.guide_editor.restore(bowed_guides());p._guides_changed()
     target=tmp_path/'curves.anglecal.json';w._save_project_to_path(str(target))
@@ -266,7 +266,7 @@ def test_ribbon_starts_side_independent_contour_from_other_analysis_tab(app, tmp
     image_path=tmp_path/'sample.png'
     cv2.imencode('.png',trench_image())[1].tofile(str(image_path))
     w=MainWindow();w.resize(1280,850);w.show()
-    w.addon_actions['trench_analyzer'].setChecked(True);app.processEvents()
+    w.ribbon_tabs.setCurrentWidget(w.trench_page);app.processEvents()
     panel=w.trench_panel
     button=w.findChild(QPushButton,'trench_contour_guide')
     assert button.isVisible()

@@ -39,7 +39,7 @@ def test_adjusted_pixels_display_and_analysis_survive_tab_switch(window, adjustm
     w._set_image_adjustments(*adjustments)
     expected = adjust_image_bgr(original, *adjustments)
     w.nm_per_px = .5
-    w.addon_actions['trench_analyzer'].setChecked(True)
+    w.ribbon_tabs.setCurrentWidget(w.trench_page)
     p = w.trench_panel
     assert_display(p, expected)
     p.rim_reference.setChecked(False)
@@ -58,7 +58,7 @@ def test_adjusted_pixels_display_and_analysis_survive_tab_switch(window, adjustm
 
 def test_changed_adjustments_reset_result_and_roundtrip_per_image(window, monkeypatch, tmp_path):
     w, paths, app = window
-    w.addon_actions['trench_analyzer'].setChecked(True)
+    w.ribbon_tabs.setCurrentWidget(w.trench_page)
     p = w.trench_panel
     p.rim_reference.setChecked(False)
     p.load_structure_payload(dict(wall_guides=guides()))
@@ -83,7 +83,7 @@ def test_changed_adjustments_reset_result_and_roundtrip_per_image(window, monkey
     try:
         monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *a, **k: (str(project), ''))
         reader.open_project()
-        reader.addon_actions['trench_analyzer'].setChecked(True)
+        reader.ribbon_tabs.setCurrentWidget(reader.trench_page)
         assert_display(reader.trench_panel, expected)
         assert reader.trench_panel.state()['wall_guides'] == guides()
         reader.reset_image_adjustments()

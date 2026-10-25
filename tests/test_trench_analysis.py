@@ -251,7 +251,7 @@ def test_app_image_settings_survive_project_roundtrip(qt_app, tmp_path, monkeypa
     window = MainWindow()
     monkeypatch.setattr(window, "_show_save_notification", lambda *_args: None)
     window._load_image_path(str(first))
-    window.addon_actions["trench_analyzer"].setChecked(True)
+    window.ribbon_tabs.setCurrentWidget(window.trench_page)
     panel = window.trench_panel
     assert window.workspace_stack.currentWidget() is panel
     panel.set_roi(QRectF(30, 20, 140, 225))
@@ -267,7 +267,7 @@ def test_app_image_settings_survive_project_roundtrip(qt_app, tmp_path, monkeypa
     assert payload["image_states"][str(first)]["trench"]["step"] == 17
     assert window._normalize_image_state(payload["image_states"][str(first)])["trench"]["roi"] == [30, 20, 140, 225]
     assert not window.delete_action.isEnabled()
-    window.addon_actions["trench_analyzer"].setChecked(False)
+    window.ribbon_tabs.setCurrentIndex(0)
     assert window.workspace_stack.currentWidget() is window.canvas
     assert window.delete_action.isEnabled()
     window.close()
@@ -280,7 +280,7 @@ def test_rotation_clears_stale_roi_and_docks_restore(qt_app, tmp_path):
     window = MainWindow()
     window._load_image_path(str(path))
     before = {dock: not dock.isHidden() for dock in window.findChildren(QDockWidget)}
-    window.addon_actions["trench_analyzer"].setChecked(True)
+    window.ribbon_tabs.setCurrentWidget(window.trench_page)
     panel = window.trench_panel
     panel.set_roi(QRectF(30, 20, 140, 225))
     panel._corner_changed(0, (35, 5, 80, 120), (.05, .95))

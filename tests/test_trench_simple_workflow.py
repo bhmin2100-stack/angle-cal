@@ -60,7 +60,7 @@ def test_thumbnail_curve_recognize_scale_and_project_shared(app,tmp_path,monkeyp
     w=MainWindow();w.resize(1450,950);w.show()
     w.browser_image_paths=list(map(str,paths));w._populate_thumbnails()
     w._load_image_path(str(paths[0]));w.nm_per_px=.5
-    w.addon_actions['trench_analyzer'].setChecked(True);app.processEvents();p=w.trench_panel
+    w.ribbon_tabs.setCurrentWidget(w.trench_page);app.processEvents();p=w.trench_panel
     assert w.trench_quick_tools.isVisible() and not w.normal_quick_tools.isVisible()
     assert p.scale_spin.value()==.5
     p.rim_reference.setChecked(False)  # This fixture is a step with no bright crest.
@@ -128,7 +128,7 @@ def test_existing_guide_search_settings_are_inherited(app,tmp_path):
     path=tmp_path/'settings.png';cv2.imencode('.png',trench_image())[1].tofile(str(path))
     w=MainWindow();w._load_image_path(str(path));w.search_radius_spin.setValue(9)
     w.boundary_snap_combo.setCurrentIndex(w.boundary_snap_combo.findData('brightest'))
-    w.addon_actions['trench_analyzer'].setChecked(True)
+    w.ribbon_tabs.setCurrentWidget(w.trench_page)
     p=w.trench_panel
     assert p.guide_editor.radius==9
     assert p.options().boundary_mode=='rim_inset'
@@ -156,7 +156,7 @@ def test_removed_legacy_settings_do_not_leak_into_simple_recognition(app):
 
 def test_saved_curve_structure_survives_library_and_project_reopen(app,tmp_path,monkeypatch):
     path=tmp_path/'image.png';cv2.imencode('.png',trench_image(bulb=12))[1].tofile(str(path))
-    w=MainWindow();w._load_image_path(str(path));w.addon_actions['trench_analyzer'].setChecked(True)
+    w=MainWindow();w._load_image_path(str(path));w.ribbon_tabs.setCurrentWidget(w.trench_page)
     w.trench_panel.load_structure_payload(dict(wall_guides=guides()))
     structure=tmp_path/'curve.anglecal.structure.json'
     monkeypatch.setattr(QFileDialog,'getSaveFileName',lambda *a,**k:(str(structure),''))
