@@ -3329,8 +3329,17 @@ def test_style_toolbar_applies_to_selected_line_objects_and_new_defaults():
 def test_top_controls_are_grouped_in_ribbon_tabs():
     window = _window_with_edge_image()
     try:
-        assert window.ribbon_tabs.count() == 6
-        assert [window.ribbon_tabs.tabText(idx) for idx in range(window.ribbon_tabs.count())] == ["파일", "경계", "가이드/측정", "이미지/표시/서식", "구조", "트랜치 분석기"]
+        assert window.ribbon_tabs.count() == 8
+        assert [window.ribbon_tabs.tabText(idx) for idx in range(window.ribbon_tabs.count())] == [
+            "파일",
+            "경계",
+            "가이드/측정",
+            "이미지/표시/서식",
+            "구조",
+            "사진 합치기",
+            "트랜치 분석기",
+            "Cliff angle 분석기",
+        ]
         ribbon_layout = window.menuWidget().layout()
         assert ribbon_layout.itemAt(0).widget() is window.ribbon_tabs
         assert window.tool_buttons['scale'].isVisibleTo(window.menuWidget())
@@ -3361,9 +3370,10 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         assert window.addon_button.menu() is not None
         assert [action.text() for action in window.addon_button.menu().actions()] == [
             "사진 합치기",
+            "트랜치 분석기",
             "Cliff angle 분석기",
         ]
-        assert all(action.isCheckable() for action in window.addon_button.menu().actions())
+        assert not any(action.isCheckable() for action in window.addon_button.menu().actions())
         export_group = next(group for group in file_groups if group.title() == "내보내기")
         assert [button.text() for button in export_group.findChildren(QPushButton)] == [
             "Data Export",
@@ -3375,7 +3385,7 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
         window.close()
 
 
-def test_permanent_trench_tab_click_routes_tools_and_preserves_scale():
+def test_permanent_addon_tabs_click_route_tools_and_preserve_scale():
     from PySide6.QtTest import QTest
     window = _window_with_edge_image()
     window.nm_per_px = 2.5
@@ -3384,14 +3394,29 @@ def test_permanent_trench_tab_click_routes_tools_and_preserves_scale():
         app = QApplication.instance()
         app.processEvents()
         tabs = window.ribbon_tabs.tabBar()
+        assert window.ribbon_tabs.indexOf(window.photo_merge_page) == 5
         index = window.ribbon_tabs.indexOf(window.trench_page)
+        assert index == 6
+        assert window.ribbon_tabs.indexOf(window.cliff_angle_page) == 7
+        assert set(window.addon_actions) == {
+            "photo_merge",
+            "trench_analyzer",
+            "cliff_angle_analyzer",
+        }
         QTest.mouseClick(tabs, Qt.MouseButton.LeftButton, pos=tabs.tabRect(index).center())
         app.processEvents()
         assert window.workspace_stack.currentWidget() is window.trench_panel
         assert window.trench_quick_tools.isVisible()
         assert not window.normal_quick_tools.isVisible()
         assert window.trench_panel.scale_spin.value() == 2.5
-        assert 'trench_analyzer' not in window.addon_actions
+        window.addon_actions["photo_merge"].trigger()
+        app.processEvents()
+        assert window.ribbon_tabs.currentWidget() is window.photo_merge_page
+        assert window.workspace_stack.currentWidget() is window.photo_merge_board
+        window.addon_actions["cliff_angle_analyzer"].trigger()
+        app.processEvents()
+        assert window.ribbon_tabs.currentWidget() is window.cliff_angle_page
+        assert window.workspace_stack.currentWidget() is window.canvas
         QTest.mouseClick(tabs, Qt.MouseButton.LeftButton, pos=tabs.tabRect(0).center())
         app.processEvents()
         assert window.workspace_stack.currentWidget() is window.canvas

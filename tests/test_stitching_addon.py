@@ -277,41 +277,35 @@ def test_bright_mold_layers_without_dark_footer_are_not_cropped():
     assert detect_bottom_overlay_fraction([image]) == 0.0
 
 
-def test_multiple_addons_open_menu_tabs_and_preserve_board():
+def test_permanent_addon_tabs_preserve_photo_merge_board():
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     try:
-        assert window.ribbon_tabs.count() == 6
-        window.addon_actions["photo_merge"].setChecked(True)
-        window.ribbon_tabs.setCurrentWidget(window.trench_page)
+        assert window.ribbon_tabs.count() == 8
+        assert [window.ribbon_tabs.tabText(index) for index in range(5, 8)] == [
+            "사진 합치기",
+            "트랜치 분석기",
+            "Cliff angle 분석기",
+        ]
+        window.ribbon_tabs.setCurrentWidget(window.photo_merge_page)
         app.processEvents()
-
-        assert window.ribbon_tabs.count() == 7
-        assert window.addon_actions["photo_merge"].isChecked()
-        assert "trench_analyzer" not in window.addon_actions
-        assert window.ribbon_tabs.tabText(6) == "사진 합치기"
-        assert window.ribbon_tabs.tabText(5) == "트랜치 분석기"
         board = window.photo_merge_board
         assert board.window() is window
-        window.ribbon_tabs.setCurrentIndex(6)
-        assert window.workspace_stack.currentWidget() is board
-        window.ribbon_tabs.setCurrentIndex(0)
-        assert window.workspace_stack.currentWidget() is window.canvas
-        window.ribbon_tabs.setCurrentIndex(6)
         assert window.workspace_stack.currentWidget() is board
 
-        window.addon_actions["photo_merge"].setChecked(False)
+        window.ribbon_tabs.setCurrentWidget(window.trench_page)
         app.processEvents()
-        assert window.ribbon_tabs.count() == 6
         assert window.workspace_stack.currentWidget() is window.trench_panel
-        assert window.ribbon_tabs.tabText(5) == "트랜치 분석기"
-        window.addon_actions["photo_merge"].setChecked(True)
-        assert window.ribbon_tabs.count() == 7
+        window.ribbon_tabs.setCurrentIndex(0)
+        assert window.workspace_stack.currentWidget() is window.canvas
+        window.ribbon_tabs.setCurrentWidget(window.photo_merge_page)
+        assert window.workspace_stack.currentWidget() is board
+
+        window.addon_actions["photo_merge"].trigger()
+        assert window.ribbon_tabs.count() == 8
         assert window.photo_merge_board is board
         assert window.workspace_stack.currentWidget() is board
-        window.addon_actions["photo_merge"].setChecked(False)
-        window.ribbon_tabs.setCurrentIndex(0)
-        assert window.ribbon_tabs.count() == 6
+        assert all(window.ribbon_tabs.indexOf(page) >= 0 for page in window.addon_pages.values())
     finally:
         window.close()
 
@@ -325,7 +319,7 @@ def test_delete_key_in_main_window_removes_only_board_selection(tmp_path, monkey
     canvas_calls = []
     monkeypatch.setattr(window.canvas, "selected_line_ids", lambda: canvas_calls.append(True) or [])
     try:
-        window.addon_actions["photo_merge"].setChecked(True)
+        window.ribbon_tabs.setCurrentWidget(window.photo_merge_page)
         board = window.photo_merge_board
         board.add_paths([str(path)])
         item = board.view.items_in_board()[0]
@@ -358,7 +352,7 @@ def test_blank_board_click_finishes_crop_and_keeps_keyboard_selection(tmp_path):
     _write(path, np.full((100, 150), 100, dtype=np.uint8))
     window = MainWindow()
     try:
-        window.addon_actions["photo_merge"].setChecked(True)
+        window.ribbon_tabs.setCurrentWidget(window.photo_merge_page)
         board = window.photo_merge_board
         board.add_paths([str(path)])
         item = board.view.items_in_board()[0]
@@ -401,7 +395,7 @@ def test_board_arrow_keys_move_selected_group_with_ctrl_fine_steps(tmp_path):
         _write(path, np.full((100, 150), 100, dtype=np.uint8))
     window = MainWindow()
     try:
-        window.addon_actions["photo_merge"].setChecked(True)
+        window.ribbon_tabs.setCurrentWidget(window.photo_merge_page)
         board = window.photo_merge_board
         board.add_paths([str(path) for path in paths])
         items = sorted(board.view.items_in_board(), key=lambda item: item.path)
@@ -472,7 +466,7 @@ def test_photo_merge_addon_reuses_thumbnail_dock_and_central_board(tmp_path):
         window.browser_image_paths = [str(first), str(second)]
         window.selected_thumbnail_paths = {str(first), str(second)}
         window._populate_thumbnails()
-        window.addon_actions["photo_merge"].setChecked(True)
+        window.ribbon_tabs.setCurrentWidget(window.photo_merge_page)
 
         assert window.photo_merge_board is not None
         assert window.ribbon_tabs.currentWidget() is window.addon_pages["photo_merge"]

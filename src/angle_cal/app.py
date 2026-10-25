@@ -76,6 +76,7 @@ class AddonDefinition:
 
 ADDON_DEFINITIONS = (
     AddonDefinition("photo_merge", "사진 합치기"),
+    AddonDefinition("trench_analyzer", "트랜치 분석기"),
     AddonDefinition("cliff_angle_analyzer", "Cliff angle 분석기"),
 )
 
@@ -3061,7 +3062,6 @@ class MainWindow(QMainWindow):
         self.thumbnail_folder_headers: dict[str, QPushButton] = {}
         self.collapsed_thumbnail_folders: set[str] = set()
         self.selected_thumbnail_paths: set[str] = set()
-        self.enabled_addon_ids: set[str] = set()
         self.addon_actions: dict[str, QAction] = {}
         self.addon_pages: dict[str, QWidget] = {}
         self.photo_merge_dialog: Optional[PhotoMergeDialog] = None
@@ -3577,14 +3577,13 @@ class MainWindow(QMainWindow):
         addon_group = group(file_page, "애드온")
         self.addon_button = QToolButton()
         self.addon_button.setText("애드온 ▼")
-        self.addon_button.setToolTip("애드온을 체크하면 상단에 메뉴 탭이 추가됩니다. 체크를 해제하면 탭을 닫습니다.")
+        self.addon_button.setToolTip("항상 표시되는 애드온 탭으로 바로 이동합니다.")
         self.addon_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         addon_menu = QMenu(self.addon_button)
         for definition in ADDON_DEFINITIONS:
             action = addon_menu.addAction(definition.title)
-            action.setCheckable(True)
-            action.toggled.connect(
-                lambda enabled, addon_id=definition.addon_id: self.set_addon_enabled(addon_id, enabled)
+            action.triggered.connect(
+                lambda checked=False, addon_id=definition.addon_id: self.set_addon_enabled(addon_id, True)
             )
             self.addon_actions[definition.addon_id] = action
         self.addon_button.setMenu(addon_menu)
@@ -3824,9 +3823,13 @@ class MainWindow(QMainWindow):
         structure_group.addWidget(structure_import_button)
         structure_group.addWidget(structure_delete_button)
         self.ribbon_tabs.addTab(structure_page, "구조")
-        self.trench_page = self._create_addon_page("trench_analyzer")
-        self.addon_pages["trench_analyzer"] = self.trench_page
-        self.ribbon_tabs.addTab(self.trench_page, "트랜치 분석기")
+        for definition in ADDON_DEFINITIONS:
+            addon_page = self._create_addon_page(definition.addon_id)
+            self.addon_pages[definition.addon_id] = addon_page
+            self.ribbon_tabs.addTab(addon_page, definition.title)
+        self.photo_merge_page = self.addon_pages["photo_merge"]
+        self.trench_page = self.addon_pages["trench_analyzer"]
+        self.cliff_angle_page = self.addon_pages["cliff_angle_analyzer"]
         self.ribbon_tabs.currentChanged.connect(self._ribbon_tab_changed)
 
     def _new_toolbar(self, title: str) -> QToolBar:
@@ -3844,25 +3847,10 @@ class MainWindow(QMainWindow):
         return toolbar
 
     def set_addon_enabled(self, addon_id: str, enabled: bool) -> None:
-        definition = next((item for item in ADDON_DEFINITIONS if item.addon_id == addon_id), None)
-        if definition is None:
+        page = self.addon_pages.get(addon_id)
+        if not enabled or page is None:
             return
-        if enabled:
-            self.enabled_addon_ids.add(addon_id)
-            page = self.addon_pages.get(addon_id)
-            if page is None:
-                page = self._create_addon_page(addon_id)
-                self.addon_pages[addon_id] = page
-            ordered_index = next(i for i, item in enumerate(ADDON_DEFINITIONS) if item.addon_id == addon_id)
-            insert_at = 6 + sum(1 for item in ADDON_DEFINITIONS[:ordered_index] if item.addon_id in self.enabled_addon_ids)
-            if self.ribbon_tabs.indexOf(page) < 0:
-                self.ribbon_tabs.insertTab(insert_at, page, definition.title)
-            self.ribbon_tabs.setCurrentWidget(page)
-        else:
-            self.enabled_addon_ids.discard(addon_id)
-            page = self.addon_pages.get(addon_id)
-            if page is not None and self.ribbon_tabs.indexOf(page) >= 0:
-                self.ribbon_tabs.removeTab(self.ribbon_tabs.indexOf(page))
+        self.ribbon_tabs.setCurrentWidget(page)
 
     def _create_addon_page(self, addon_id: str) -> QWidget:
         page = QWidget()
@@ -3901,9 +3889,6 @@ class MainWindow(QMainWindow):
         return page
 
     def open_photo_merge_dialog(self) -> None:
-        action = self.addon_actions.get("photo_merge")
-        if action is not None and not action.isChecked():
-            action.setChecked(True)
         page = self.addon_pages.get("photo_merge")
         if page is not None:
             self.ribbon_tabs.setCurrentWidget(page)
