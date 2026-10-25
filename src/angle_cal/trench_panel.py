@@ -20,6 +20,7 @@ from .image_ops import bgr_to_rgb8_for_display
 from .trench_analysis import TrenchOptions, TrenchResult, analyze_trench, export_trench_csv, trench_gfe_tsv, trench_profile_exchange
 from .trench_guides import normalize_guides
 from .trench_guide_view import TrenchGuideEditor
+from .trench_units import format_metric_length
 from .trench_workflow import recognize_from_guides
 from .trench_structure import structure_guides
 from .trench_plot import shape_series
@@ -572,7 +573,7 @@ class TrenchGraph(QWidget):
                 painter.drawLine(a, b)
                 for p in (a,b):painter.drawLine(p+QPointF(0,-4),p+QPointF(0,4))
                 painter.drawText(QRectF(rect.left(), max(rect.top()+20,a.y()-22),rect.width(),20),
-                                 Qt.AlignmentFlag.AlignCenter,f"TCD {metrics['tcd_px']*self.factor:.4g} {self.unit}")
+                                 Qt.AlignmentFlag.AlignCenter,'TCD '+getattr(self,'tcd_text',f"{metrics['tcd_px']*self.factor:.4g} {self.unit}"))
             for item in (r.field_angles if getattr(self,"show_entrance",True) else []):
                 if item["angle_status"] == "valid":
                     vx,vy=item["vertex"]
@@ -724,8 +725,14 @@ class TrenchPanel(QWidget):
         self.scale_spin=QDoubleSpinBox();self.scale_spin.setRange(0,1e9);self.scale_spin.setDecimals(8);self.scale_spin.setSpecialValueText('미보정')
         form.addRow('nm / px',self.scale_spin)
         self.unit_combo=QComboBox()
-        for title,data in (('px','px'),('nm','nm'),('Å','angstrom')):self.unit_combo.addItem(title,data)
+        for title,data in (('px','px'),('nm','nm'),('Å','angstrom'),('µm','um')):self.unit_combo.addItem(title,data)
         form.addRow('표시 단위',self.unit_combo)
+        self.metric_units={}
+        for key,label in (('depth','Depth 단위'),('tcd','TCD 단위')):
+            combo=QComboBox();combo.setObjectName('trench_'+key+'_unit')
+            for title,data in (('자동','auto'),('µm','um'),('nm','nm'),('Å','angstrom')):combo.addItem(title,data)
+            self.metric_units[key]=combo;form.addRow(label,combo)
+            combo.currentIndexChanged.connect(self._metric_units_changed)
         self.step_spin=QDoubleSpinBox();self.step_spin.setRange(.001,1e7);self.step_spin.setDecimals(3);self.step_spin.setValue(1)
         form.addRow('CD 깊이 간격 (nm)',self.step_spin)
         self.rim_reference=QCheckBox('밝은 테두리 기준');self.rim_reference.setChecked(True)
@@ -791,6 +798,7 @@ class TrenchPanel(QWidget):
         return {"roi": self.roi, "nm_per_px": self.scale_spin.value(),
                 "workflow_version":2,"automatic_area":self.automatic_area,"step_nm":self.step_spin.value(),
                 "contour_smoothing":self.smoothing_controls.state(),
+                "metric_units":{key:combo.currentData() for key,combo in self.metric_units.items()},
                 "boundary_mode":self.boundary_mode,"scale_bar":self.scale_bar,
                 "rim_reference":self.rim_reference.isChecked(),"rim_inset_px":self.rim_inset_spin.value(),
                 "unit": self.unit_combo.currentData(), "step": self.step_spin.value(),
@@ -966,6 +974,9 @@ class TrenchPanel(QWidget):
                                           (self.angle_start,"angle_start",40),(self.angle_end,"angle_end",100)):
             control.setValue(state.get(key_name, default))
         self.unit_combo.setCurrentIndex(max(0, self.unit_combo.findData(state.get("unit", "nm" if nm_per_px else "px"))))
+        metric_units=state.get('metric_units',{})
+        if not isinstance(metric_units,dict):metric_units={}
+        for key,combo in self.metric_units.items():combo.setCurrentIndex(max(0,combo.findData(metric_units.get(key,'auto'))))
         self.bow_combo.setCurrentIndex(max(0, self.bow_combo.findData(state.get("bow_reference", "entrance"))))
         self.bright_check.setChecked(bool(state.get("bright", False)))
         if state.get("roi") and image is not None:
@@ -1057,8 +1068,18 @@ class TrenchPanel(QWidget):
         if unit == "px":
             return 1.0, "px"
         if self.scale_spin.value() <= 0:
-            raise ValueError("nm 또는 Å 단위에는 스케일 보정값(nm/px)이 필요합니다.")
-        return self.scale_spin.value() * (10 if unit == "angstrom" else 1), "Å" if unit == "angstrom" else "nm"
+            raise ValueError("µm·nm·Å 단위에는 스케일 보정값(nm/px)이 필요합니다.")
+        factor,label={'um':(.001,'µm'),'nm':(1,'nm'),'angstrom':(10,'Å')}[unit]
+        return self.scale_spin.value()*factor,label
+
+    def _metric_length(self,value,key):
+        return format_metric_length(value,self.scale_spin.value(),self.metric_units[key].currentData())
+
+    def _metric_units_changed(self,*_args):
+        if self.loading:return
+        if self.result is not None:
+            self._render_result();self._draw_overlay()
+        self.state_changed.emit(self.state())
 
     def options(self) -> TrenchOptions:
         if self.roi is None and not self.automatic_area:
@@ -1147,8 +1168,8 @@ class TrenchPanel(QWidget):
         summary = r.summary()
         metrics = r.field_measurements
         field_found = metrics.get('field_status') == 'valid'
-        depth_text = f"Field → 최하단 깊이  {fmt(metrics.get('depth_px'))}" if field_found else f"깊이  {fmt(r.depth_px)}"
-        lines=[depth_text,f"TCD (Field 입구 폭)  {fmt(metrics.get('tcd_px'))}",
+        depth_text = f"Field → 최하단 깊이  {self._metric_length(metrics.get('depth_px'),'depth')}" if field_found else f"깊이  {self._metric_length(r.depth_px,'depth')}"
+        lines=[depth_text,f"TCD (Field 입구 폭)  {self._metric_length(metrics.get('tcd_px'),'tcd')}",
                f"CD  {fmt(summary['min_cd_px'])} ~ {fmt(summary['max_cd_px'])}",
                f"Bowing 좌 / 우  {fmt(r.left_bowing_px)} / {fmt(r.right_bowing_px)}"]
         if field_found:
@@ -1193,6 +1214,7 @@ class TrenchPanel(QWidget):
                 cell.setToolTip("국부 종료/복귀 확인" if item["return_confirmed"] else "분석 범위 끝까지 복귀 미확인")
                 self.local_table.setItem(row, col, cell)
         self.graph.result, self.graph.factor, self.graph.unit = r, factor, unit
+        self.graph.tcd_text=self._metric_length(r.field_measurements.get('tcd_px'),'tcd')
         self.graph.show_entrance=False
         self.graph.show_raw=self.smoothing_controls.compare.isChecked()
         self.graph.update()
@@ -1258,7 +1280,7 @@ class TrenchPanel(QWidget):
             a,b=metrics['anchors']['left'],metrics['anchors']['right'];ref=metrics['reference_y_px']
             self.overlays.append(scene.addLine(a[0],ref,b[0],ref,_pen('#60ed8d',1.5)))
             for p in (a,b):self.overlays.append(scene.addLine(p[0],min(ref,p[1])-4,p[0],max(ref,p[1])+4,_pen('#60ed8d')))
-            label=scene.addSimpleText(f"TCD {metrics['tcd_px']*factor:.4g} {unit}");label.setBrush(QColor('#60ed8d'))
+            label=scene.addSimpleText('TCD '+self._metric_length(metrics['tcd_px'],'tcd'));label.setBrush(QColor('#60ed8d'))
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,True)
             label.setPos((a[0]+b[0])/2-label.boundingRect().width()/2,ref-44);self.overlays.append(label)
         depth_value=metrics.get('depth_px') if metrics.get('field_status')=='valid' else r.depth_px
@@ -1268,7 +1290,7 @@ class TrenchPanel(QWidget):
             self.overlays.append(scene.addLine(depth_x, depth_top, depth_x, depth_top + depth_value, _pen("#e6edfa", 1.5, True)))
             for end_y in (depth_top, depth_top + depth_value):
                 self.overlays.append(scene.addLine(depth_x - 6, end_y, depth_x + 6, end_y, _pen("#e6edfa")))
-            label = scene.addText(f"Depth {depth_value * factor:.4g} {unit}")
+            label = scene.addText('Depth '+self._metric_length(depth_value,'depth'))
             label.setDefaultTextColor(QColor("#ffffff"))
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
             label.setPos(depth_x + 10, depth_top + depth_value * .55)

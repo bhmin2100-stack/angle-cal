@@ -207,6 +207,8 @@ only selected board items. Add-ons open as menu tabs in the main window.
 
 Field 기준과 TCD 접점은 추가 보정 전 검출 윤곽에서 정하므로 평활화 슬라이더가 기준 높이나 입구를 움직이지 않습니다. 바닥 최하단은 보정된 연속 윤곽을 사용합니다. 유효한 원호 접점 없이 평탄 구간 끝점을 쓰는 경우에는 TCD를 전이 끝점 추정으로 표시합니다.
 
+**Depth 단위**와 **TCD 단위**는 각각 `자동 / µm / nm / Å`를 선택할 수 있습니다. 자동은 1 µm 이상이면 µm, 1 nm 이상이면 nm, 그보다 작으면 Å로 표시합니다. 단위를 바꾸면 요약·이미지 계측선·그래프 TCD 표시만 즉시 갱신하며 다시 인식하지 않습니다. 선택값은 프로젝트에 저장됩니다. 스케일 미보정 시에는 px로 표시합니다. 일반 그래프·CD 표의 **표시 단위**에도 µm가 추가되었으며, CD 깊이 간격 설정은 계속 nm 기준입니다. JSON/CSV에는 Field 깊이와 TCD의 µm·nm·Å 환산값을 함께 저장합니다. GFE 좌표는 이 표시 선택과 무관하게 항상 Å입니다.
+
 **Export**를 누르면 GFE에 붙여넣을 두 열 `X<TAB>Y` 표가 클립보드에 들어갑니다. 단위는 항상 Å이며 `X=(원본X-입구중앙X)×nm/px×10`, `Y=(Field높이-원본Y)×nm/px×10`입니다. 왼쪽 Field→왼쪽 벽→바닥→오른쪽 벽→오른쪽 Field 순서의 열린 폴리라인이며 첫 점을 끝에 덧붙이지 않습니다. 전체 순서를 뒤집을 수는 있지만 중간 점을 X/Y로 정렬하거나 재샘플링하지 않으므로 보잉·오버행·둥근 바닥이 유지됩니다. 자동 분석에서는 Field와 바닥이 하나로 연결된 가이드가 필요합니다.
 
 Export 옆 메뉴의 **GFE 교환 JSON 저장**은 `trench-profile/v1` (`units: A`, `surface_closed: false`, `surface_order: left_to_right`, `points`, `initial_voids`) 형식으로 저장합니다. 일반 분석 JSON에도 `profile_exchange`로 포함됩니다. 내부의 갇힌 빈 공간은 이 분석에서 추출하지 않으므로 `initial_voids: []`, `initial_voids_source: not_analyzed`로 명시합니다. 이는 GFE 재생 파일이나 시뮬레이션 결과의 재현을 뜻하지 않습니다. 원본 좌표 변환만 수행하며 기울기·비등방 배율을 자동 보정하지 않습니다.

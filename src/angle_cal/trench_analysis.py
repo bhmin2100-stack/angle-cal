@@ -127,7 +127,7 @@ class TrenchResult:
             "profile_exchange":exchange,"profile_exchange_error":exchange_error,
             "field_measurement_units": {unit: {key.removesuffix('_px')+'_'+unit: self.field_measurements.get(key)*factor
                 if self.field_measurements.get(key) is not None else None for key in ('tcd_px','depth_px','left_depth_px','right_depth_px')}
-                for unit,factor in (("nm",nm_per_px),("angstrom",(nm_per_px or 0)*10)) if factor},
+                for unit,factor in (("um",(nm_per_px or 0)*.001),("nm",nm_per_px),("angstrom",(nm_per_px or 0)*10)) if factor},
             "guide_method": "ordered_normal_contour_then_cavity_classification" if self.guide_traces else "automatic",
             "field_length_units":{unit:[{key.replace("_px","_"+unit):item.get(key)*factor if item.get(key) is not None else None
                                         for key in ("length_px","rms_px","wall_rms_px")} for item in self.field_angles]
@@ -680,6 +680,9 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
             writer.writerow(["summary", key, "" if value is None else value, unit])
             if unit == "px" and nm_per_px is not None:
                 writer.writerow(["summary", key.removesuffix("_px") + "_nm", "" if value is None else value * nm_per_px, "nm"])
+                if key in ('tcd_px','field_depth_px'):
+                    for suffix,factor,label in (('um',.001,'µm'),('angstrom',10,'Å')):
+                        writer.writerow(['summary',key.removesuffix('_px')+'_'+suffix,'' if value is None else value*nm_per_px*factor,label])
         for warning in result.warnings:
             writer.writerow(["warning", warning, "", ""])
         for corner in result.corners:
