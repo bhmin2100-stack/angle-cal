@@ -4,12 +4,24 @@ import math
 import numpy as np
 from .trench_analysis import analyze_trench
 from .trench_guides import normalize_guides, sweep_samples
+from .trench_tem import image_contrast_mode, void_normal_sign
 
 
 def recognize_from_guides(image,options):
     options=replace(options,strict_guides=True,continuous_guides=True)
     guides=normalize_guides(options.wall_guides,image.shape)
     if not guides:raise ValueError('먼저 곡선을 그리거나 구조를 불러온 뒤 인식을 누르세요.')
+    if options.imaging_mode not in ('auto','vsem','tem'):
+        raise ValueError('지원하지 않는 영상 방식입니다.')
+    imaging=image_contrast_mode(image,guides)
+    imaging['requested']=options.imaging_mode
+    if options.imaging_mode!='auto':imaging['selected']=options.imaging_mode
+    use_tem=imaging['selected']=='tem'
+    if use_tem:
+        if any(void_normal_sign(sweep_samples(g)) is None for g in guides):
+            raise ValueError('TEM은 양쪽 측벽과 바닥을 하나로 잇는 곡선으로 그려주세요. Field도 함께 포함할 수 있습니다.')
+        options=replace(options,boundary_mode='tem_interface')
+    imaging['boundary_method']='tem_gray_material_interface' if use_tem else options.boundary_mode
     h,w=image.shape[:2];candidates=[]
     # SEM footers and dimension labels outside the requested contour must not
     # set its intensity range. This context box is automatic; final candidates
@@ -26,7 +38,7 @@ def recognize_from_guides(image,options):
     # Try both contrast directions internally. The user need not know whether
     # the specimen/void is bright. Observations require image evidence;
     # explicitly labeled interior joins may follow the selected guide path.
-    for bright in (False,True):
+    for bright in ((imaging['void_minus_material']>=0,) if use_tem else (False,True)):
         try:
             # Smoothing must not change polarity selection or move the entrance
             # reference plane. Establish both from the same uncorrected evidence.
@@ -48,5 +60,7 @@ def recognize_from_guides(image,options):
         levels=[float(np.polyval(item['line'],edge[0])) for item,edge in zip(fields,(preliminary.left,preliminary.right))]
         if max(levels)-min(levels)<=options.field_search_px and abs(np.mean(levels)-top)<=options.field_search_px:
             top=max(0,int(math.floor(np.mean(levels))))
-    return analyze_trench(image,replace(options,roi=(context[0],top,context[2],int(y1-top)),bright_trench=bright,wall_guides=guides),
+    result=analyze_trench(image,replace(options,roi=(context[0],top,context[2],int(y1-top)),bright_trench=bright,wall_guides=guides),
                           field_reference=(preliminary.field_angles,preliminary.corners))
+    result.imaging=imaging
+    return result

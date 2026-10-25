@@ -46,6 +46,7 @@ class TrenchOptions:
     contour_smoothing: str = 'robust'
     contour_strength: float = 0.0
     continuous_guides: bool = False
+    imaging_mode: str = 'vsem'
 
 
 @dataclass
@@ -75,6 +76,7 @@ class TrenchResult:
     guide_diagnostics: list[dict] = field(default_factory=list)
     guide_traces: list[dict] = field(default_factory=list)
     field_measurements: dict = field(default_factory=dict)
+    imaging: dict = field(default_factory=dict)
 
     @property
     def depth_origin_px(self):
@@ -112,7 +114,8 @@ class TrenchResult:
             except ValueError as exc:exchange_error=str(exc)
         return {
             "format": "anglecal.trench.v1", "options": asdict(self.options),
-            "wall_boundary": "bright_crest_plus_inward_normal_offset" if self.options.boundary_mode=='rim_inset' else "connected_inner_rim_peak_or_gradient",
+            "imaging": self.imaging,
+            "wall_boundary": "tem_gray_material_interface" if self.options.boundary_mode=='tem_interface' else "bright_crest_plus_inward_normal_offset" if self.options.boundary_mode=='rim_inset' else "connected_inner_rim_peak_or_gradient",
             "nm_per_px": nm_per_px, "summary": self.summary(),
             "warnings": self.warnings, "corners": self.corners,
             "corner_length_units": {unit: [
@@ -655,6 +658,9 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         writer.writerow(["metadata", "nm_per_px", nm_per_px or "", "nm/px"])
         writer.writerow(["metadata", "bow_reference", result.options.bow_reference, ""])
         writer.writerow(["metadata", "boundary_mode", result.options.boundary_mode, ""])
+        writer.writerow(["metadata", "imaging_mode_requested", result.options.imaging_mode, ""])
+        for key,value in result.imaging.items():
+            writer.writerow(['imaging',key,value,''])
         writer.writerow(["metadata", "contour_smoothing", result.options.contour_smoothing, ""])
         writer.writerow(["metadata", "contour_strength", result.options.contour_strength, "0..100"])
         if result.options.boundary_mode=='rim_inset':

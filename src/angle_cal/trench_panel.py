@@ -735,13 +735,18 @@ class TrenchPanel(QWidget):
             combo.currentIndexChanged.connect(self._metric_units_changed)
         self.step_spin=QDoubleSpinBox();self.step_spin.setRange(.001,1e7);self.step_spin.setDecimals(3);self.step_spin.setValue(1)
         form.addRow('CD 깊이 간격 (nm)',self.step_spin)
-        self.rim_reference=QCheckBox('밝은 테두리 기준');self.rim_reference.setChecked(True)
+        self.imaging_mode=QComboBox();self.imaging_mode.setObjectName('trench_imaging_mode')
+        for title,data in (('자동 (VSEM / TEM)','auto'),('VSEM','vsem'),('TEM','tem')):self.imaging_mode.addItem(title,data)
+        self.imaging_mode.setToolTip('자동은 곡선 양쪽 명암으로 방식을 선택합니다. TEM은 검은 띠를 제외하고 회색 재료가 끝나는 쪽을 찾습니다. 실제 촬영 장비를 판별하는 기능은 아닙니다.')
+        form.addRow('영상 방식',self.imaging_mode)
+        self.imaging_mode.currentIndexChanged.connect(self._imaging_mode_changed)
+        self.rim_reference=QCheckBox('VSEM 밝은 테두리 기준');self.rim_reference.setChecked(True)
         self.rim_reference.setToolTip('밝기 최고점을 찾고 빈 공간 쪽으로 이동합니다. 끄면 기존 가이드 인식 기준을 사용합니다.')
         form.addRow(self.rim_reference)
         self.rim_inset_spin=QDoubleSpinBox();self.rim_inset_spin.setRange(0,10);self.rim_inset_spin.setDecimals(2);self.rim_inset_spin.setSingleStep(.25);self.rim_inset_spin.setValue(1)
         self.rim_inset_spin.setToolTip('원본 픽셀 기준. 0은 밝기 최고점, 양수는 빈 공간 쪽 이동입니다. 실제 치수 보정값으로 검증된 값은 아닙니다.')
         form.addRow('빈 공간 쪽 이동 (px)',self.rim_inset_spin)
-        self.rim_reference.toggled.connect(self.rim_inset_spin.setEnabled)
+        self.rim_reference.toggled.connect(self._imaging_controls)
         self.rim_reference.toggled.connect(self._settings_changed)
         self.rim_inset_spin.valueChanged.connect(self._settings_changed)
         self.smoothing_controls = SmoothingControls()
@@ -801,6 +806,7 @@ class TrenchPanel(QWidget):
                 "metric_units":{key:combo.currentData() for key,combo in self.metric_units.items()},
                 "boundary_mode":self.boundary_mode,"scale_bar":self.scale_bar,
                 "rim_reference":self.rim_reference.isChecked(),"rim_inset_px":self.rim_inset_spin.value(),
+                "imaging_mode":self.imaging_mode.currentData(),
                 "unit": self.unit_combo.currentData(), "step": self.step_spin.value(),
                 "threshold": self.threshold_spin.value(), "bright": self.bright_check.isChecked(),
                 "smooth": self.smooth_spin.value(), "bow_reference": self.bow_combo.currentData(),
@@ -966,6 +972,8 @@ class TrenchPanel(QWidget):
         self.boundary_mode=state.get('boundary_mode',self.boundary_mode)
         self.rim_reference.setChecked(bool(state.get('rim_reference',True)))
         self.rim_inset_spin.setValue(state.get('rim_inset_px',1.))
+        self.imaging_mode.setCurrentIndex(max(0,self.imaging_mode.findData(state.get('imaging_mode','auto'))))
+        self._imaging_controls()
         self.scale_bar=state.get('scale_bar')
         self.scale_spin.setValue(float(nm_per_px if nm_per_px is not None else state.get('nm_per_px',0)))
         for control, key_name, default in ((self.step_spin, "step_nm", 1), (self.threshold_spin, "threshold", 0),
@@ -1075,6 +1083,15 @@ class TrenchPanel(QWidget):
     def _metric_length(self,value,key):
         return format_metric_length(value,self.scale_spin.value(),self.metric_units[key].currentData())
 
+    def _imaging_controls(self,*_args):
+        tem=self.imaging_mode.currentData()=='tem'
+        self.rim_reference.setEnabled(not tem)
+        self.rim_inset_spin.setEnabled(not tem and self.rim_reference.isChecked())
+
+    def _imaging_mode_changed(self,*_args):
+        self._imaging_controls()
+        self._settings_changed()
+
     def _metric_units_changed(self,*_args):
         if self.loading:return
         if self.result is not None:
@@ -1093,6 +1110,7 @@ class TrenchPanel(QWidget):
             return TrenchOptions(roi,step,smooth_px=7,wall_guides=normalize_guides(self.guide_editor.guides),
                                  boundary_mode='rim_inset' if self.rim_reference.isChecked() else self.boundary_mode,
                                  rim_inset_px=self.rim_inset_spin.value(),strict_guides=True,
+                                 imaging_mode=self.imaging_mode.currentData(),
                                  contour_smoothing=self.smoothing_controls.method.currentData(),
                                  contour_strength=self.smoothing_controls.strength)
         return TrenchOptions(roi, step, self.threshold_spin.value(),
@@ -1175,7 +1193,7 @@ class TrenchPanel(QWidget):
         if field_found:
             lines.append('Field 자동 인식 · '+metrics['reason'])
         if metrics.get('tcd_basis')=='segmented_transition_estimate':lines.append('TCD: 둥근 접점 미확정 · 평탄 구간 끝점으로 추정')
-        elif r.options.strict_guides:
+        elif r.options.strict_guides and not field_found:
             lines.append('위쪽 평평한 Field까지 곡선을 그리면 깊이·TCD를 자동 계측합니다.')
         if field_found and metrics.get('tcd_status') != 'valid':lines.append(metrics['tcd_reason'])
         if metrics.get('bottom_source') == 'interpolated':lines.append('최하단에 보간 구간이 포함됩니다.')
@@ -1185,7 +1203,11 @@ class TrenchPanel(QWidget):
             lines.append(f'최대 이동 {max(shifts, default=0):.2f} px · 회색 점선: 보정 전')
             lines.append('바닥 폐쇄 확인 후 최하단 윤곽으로 깊이를 계산합니다.')
         if self.scale_spin.value()<=0:lines.append('미보정: px 표시 · 스케일바로 보정하세요.')
-        if r.options.boundary_mode=='rim_inset':lines.append(f'밝기 최고점 → 빈 공간 {r.options.rim_inset_px:g} px')
+        if r.imaging:
+            mode=r.imaging['selected'].upper();prefix='자동 선택' if r.imaging['requested']=='auto' else '직접 선택'
+            lines.append(f'영상 방식: {mode} ({prefix})')
+        if r.options.boundary_mode=='tem_interface':lines.append('TEM: 회색 재료 끝 · 검은 띠 제외\nVSEM 빈 공간 이동값은 적용하지 않습니다.')
+        elif r.options.boundary_mode=='rim_inset':lines.append(f'밝기 최고점 → 빈 공간 {r.options.rim_inset_px:g} px')
         if self.step_spin.value()/max(self.scale_spin.value(),1e-9)<1:lines.append('1px 미만 간격은 윤곽 보간값입니다.')
         if r.depth_px is None:lines.append('바닥이 보이지 않아 전체 깊이는 미확정입니다.')
         joined=sum(len(t.get('joins',[])) for t in r.guide_traces)

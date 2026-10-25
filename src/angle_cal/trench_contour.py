@@ -12,6 +12,7 @@ import numpy as np
 from .trench_guides import sweep_samples, in_bands, points_in_guides
 from .image_ops import _boundary_profile_index
 from .trench_rim import inset_rim
+from .trench_tem import interface_candidates, void_normal_sign
 
 
 def _consensus_path(indices,candidates,distance,centers,normals,radius):
@@ -98,7 +99,7 @@ def _connect_short_gaps(chosen, distance, guide, image_shape):
     return connected,joins
 
 
-def _connect_region_gaps(chosen, distance, centers, guide, image_shape):
+def _connect_region_gaps(chosen, distance, centers, guide, image_shape, corner_turns=False):
     """Complete interior holes of ONE guide, with explicitly inferred geometry.
 
     Prefer observed endpoint tangents. For curved missing intervals, transport
@@ -117,7 +118,14 @@ def _connect_region_gaps(chosen, distance, centers, guide, image_shape):
         residual = np.array([p-centers[a], q-centers[b]])
         # An abrupt transverse switch is a competing branch, not a blank rim.
         if np.linalg.norm(residual[1]-residual[0]) > max(6., .75*span):
-            continue
+            # At a sharp TEM field corner the normal can rotate across a few
+            # samples. A short join is allowed only at that actual guide turn;
+            # a transverse jump along a straight wall is still rejected.
+            u=centers[a]-centers[max(0,a-4)]
+            v=centers[min(len(centers)-1,b+4)]-centers[b]
+            turning=np.dot(u,v)<.85*np.linalg.norm(u)*np.linalg.norm(v)
+            if not (corner_turns and turning and span<=12 and np.linalg.norm(q-p)<=12):
+                continue
         ds = np.linspace(distance[a], distance[b], max(8, int(np.ceil(span*4))+1))
         base = np.column_stack([np.interp(ds, distance[a:b+1], centers[a:b+1, axis]) for axis in (0, 1)])
         t = ((ds-distance[a])/span)[:, None]
@@ -151,7 +159,7 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
     radius=float(guide['half_width_px'])
     # Context may extend outside the corridor for contrast/connectivity tests;
     # every candidate position itself must stay within the configured radius.
-    context=64 if boundary_mode=='rim_inset' else 24
+    context=64 if boundary_mode=='rim_inset' else 48 if boundary_mode=='tem_interface' else 24
     offsets=np.arange(-math.ceil(radius)-context,math.ceil(radius)+context+1,dtype=float)
     xy=centers[:,None,:]+normals[:,None,:]*offsets[None,:,None]
     valid=(xy[:,:,0]>=0)&(xy[:,:,0]<image.shape[1]-1)&(xy[:,:,1]>=0)&(xy[:,:,1]<image.shape[0]-1)
@@ -176,9 +184,13 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         material=image[image>threshold+20]
         material_level=float(np.percentile(material,75)) if len(material) else threshold+20
     candidates=[]
+    tem_sign=void_normal_sign(centers) if boundary_mode=='tem_interface' else None
     ks=np.arange(6,len(offsets)-6)
     far=(ks>=15)&(ks+15<len(offsets))
     for i,profile in enumerate(profiles):
+        if boundary_mode=='tem_interface':
+            candidates.append(interface_candidates(profile,offsets,valid[i],radius,tem_sign))
+            continue
         found=[];ridge_indices=[]
         if lengths[i]>1e-10:
             prefix=np.r_[0.,np.cumsum(profile,dtype=float)]
@@ -367,7 +379,7 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         measured=dict(chosen)
     joins=[]
     if continuous:
-        chosen,joins=_connect_region_gaps(chosen,distance,centers,guide,image.shape)
+        chosen,joins=_connect_region_gaps(chosen,distance,centers,guide,image.shape,corner_turns=boundary_mode=='tem_interface')
     elif local_contrast:chosen,joins=_connect_short_gaps(chosen,distance,guide,image.shape)
     spreads=[spread_by_index.get(i) if i in measured else None for i in sorted(chosen)]
     for i,point in sorted(chosen.items()):
@@ -375,7 +387,8 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         segments[-1].append((i,point))
     coverage=len(measured)/len(centers)
     return dict(side='contour',requested_points=len(centers),detected_points=len(measured),
-                method='bright_crest_inward_offset' if boundary_mode=='rim_inset' else
+                method='tem_gray_material_interface' if boundary_mode=='tem_interface' else
+                       'bright_crest_inward_offset' if boundary_mode=='rim_inset' else
                        'tangent_consensus_contour' if local_contrast else 'ordered_normal_contour',
                 rim_inset_px=rim_inset_px if boundary_mode=='rim_inset' else None,
                 rim_peak_points=[peak_points.get(i) for i in sorted(chosen)] if boundary_mode=='rim_inset' else [],
