@@ -150,18 +150,16 @@ def _legacy_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
     """
     if not math.isfinite(nm_per_px) or nm_per_px <= 0:
         raise ValueError("GFE는 Å 좌표를 사용합니다. 먼저 nm/px 스케일을 보정하세요.")
-    if result.depth_px is None:
-        raise ValueError("바닥이 검출되지 않아 GFE 형상을 복사할 수 없습니다. 바닥까지 포함해 다시 분석하세요.")
     y, left, right = result.y, result.left, result.right
     if (len(y) < 2 or len(left) != len(y) or len(right) != len(y)
-            or not np.isfinite(np.r_[y, left, right, result.depth_px]).all()
+            or not np.isfinite(np.r_[y, left, right]).all()
             or np.any(left >= right) or np.any(np.diff(y) <= 0)):
         raise ValueError("좌우 윤곽 좌표가 유효하지 않습니다. 다시 분석하세요.")
     if np.any(np.diff(y)>1.5):
         raise ValueError("윤곽에 미검출 구간이 있어 GFE 형상을 연결할 수 없습니다. 가이드 위치·폭과 끊긴 경계를 확인하세요.")
     x0, top, width, _ = result.options.roi
-    floor = top + result.depth_px
-    if y[0] < top or y[-1] > floor or floor <= top:
+    floor = float(y[-1]) if result.depth_px is None else top + result.depth_px
+    if not math.isfinite(floor) or y[0] < top or y[-1] > floor or floor <= top:
         raise ValueError("입구·바닥 기준과 윤곽 좌표가 일치하지 않습니다.")
     if x0 >= float(np.min(left)) or x0 + width <= float(np.max(right)):
         raise ValueError("Field가 양쪽 측벽 바깥에 오도록 분석 영역을 넓히세요.")
@@ -204,6 +202,37 @@ def _legacy_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _join_export_bottom(result, lf, rf):
+    """Join only the terminal bottom gap; never repair an interior wall gap.
+
+    The two supported paths retain their exact point order and coordinates.
+    The user-authorized export segment may cross outside the search corridors.
+    It is not image evidence and must not alter measured depth/CD or traces.
+    """
+    segments=[np.asarray(s,float) for t in result.guide_traces for s in t.get('segments',[]) if len(s)]
+    if len(segments)!=2:return None
+    if any(p.ndim!=2 or p.shape[1]!=2 or len(p)<2 or not np.isfinite(p).all() for p in segments):return None
+    if any(not points_in_guides(p,result.options.wall_guides).all() for p in segments):return None
+
+    def from_field(p, field, side):
+        fp=np.asarray(field['points'],float)
+        for path in (p,p[::-1]):
+            start,end=path[0],path[-1]
+            outer=start[0]<np.max(fp[:,0]) if side=='left' else start[0]>np.min(fp[:,0])
+            if (outer and np.min(np.linalg.norm(fp-start,axis=1))<=8
+                    and end[1]>start[1]+2 and end[1]>=np.max(path[:,1])-2):
+                return path
+        return None
+
+    matches=[]
+    for a,b in ((segments[0],segments[1]),(segments[1],segments[0])):
+        left=from_field(a,lf,'left');right=from_field(b,rf,'right')
+        if left is None or right is None:continue
+        if left[-1,0]>right[-1,0]+1e-9:continue
+        matches.append((np.vstack((left,right[::-1])),np.array([left[-1],right[-1]])))
+    return matches[0] if len(matches)==1 else None
+
+
 def trench_profile_exchange(result: TrenchResult, nm_per_px: float) -> dict:
     """Gapseam open surface: ordered original contour, Å, positive Y upward.
 
@@ -212,8 +241,6 @@ def trench_profile_exchange(result: TrenchResult, nm_per_px: float) -> dict:
     """
     if not math.isfinite(nm_per_px) or nm_per_px<=0:
         raise ValueError('GFE는 Å 좌표를 사용합니다. 먼저 nm/px 스케일을 보정하세요.')
-    if result.depth_px is None:
-        raise ValueError('바닥이 검출되지 않아 GFE 형상을 복사할 수 없습니다. 바닥까지 포함해 다시 분석하세요.')
     if len(result.field_angles)!=2 or any(item.get('status')!='valid' for item in result.field_angles):
         raise ValueError('좌우 Field가 미확정입니다. 양쪽 상단 Field까지 곡선에 포함해 다시 인식하세요.')
     lf,rf=result.field_angles
@@ -222,6 +249,7 @@ def trench_profile_exchange(result: TrenchResult, nm_per_px: float) -> dict:
     center=(anchors['left'][0]+anchors['right'][0])/2 if len(anchors)==2 else (float(result.left[0])+float(result.right[0]))/2
     reference=metrics.get('reference_y_px')
     if reference is None:reference=float((np.polyval(lf['line'],result.left[0])+np.polyval(rf['line'],result.right[0]))/2)
+    bottom_join=None
     if result.options.strict_guides:
         candidates=[]
         for trace in result.guide_traces:
@@ -237,9 +265,12 @@ def trench_profile_exchange(result: TrenchResult, nm_per_px: float) -> dict:
                     or np.max(p[:,1])<result.y[-1]-2):continue
             if not points_in_guides(p,result.options.wall_guides).all():continue
             candidates.append(p)
-        if len(candidates)!=1:
-            raise ValueError('GFE 좌표는 양쪽 Field·벽·바닥이 하나로 연결된 곡선이 필요합니다. 한 트랜치를 하나의 가이드로 포함하세요.')
-        p=candidates[0]
+        if len(candidates)==1:
+            p=candidates[0]
+        elif not candidates and (joined := _join_export_bottom(result,lf,rf)) is not None:
+            p,bottom_join=joined
+        else:
+            raise ValueError('GFE 윤곽을 연결할 수 없습니다. 양쪽 Field와 벽을 확인하세요. 자동 연결은 맨 아래 두 끝점에만 적용됩니다.')
         converted=np.column_stack(((p[:,0]-center)*nm_per_px*10,(reference-p[:,1])*nm_per_px*10))
         kept=[converted[0].tolist()]
         for point in converted[1:]:
@@ -249,17 +280,30 @@ def trench_profile_exchange(result: TrenchResult, nm_per_px: float) -> dict:
     else:
         points=np.loadtxt(_legacy_gfe_tsv(result,nm_per_px).splitlines()[1:]).tolist()
         source='legacy_wall_field_reconstruction'
+        center=(float(result.left[0])+float(result.right[0]))/2
+        reference=float((np.polyval(lf['line'],result.left[0])+np.polyval(rf['line'],result.right[0]))/2)
+        if result.depth_px is None:
+            bottom_join=np.array([[result.left[-1],result.y[-1]],[result.right[-1],result.y[-1]]])
     if len(points)<2 or points[-1][0]-points[0][0]<=1e-12:
         raise ValueError('열린 표면의 양쪽 Field 끝점을 확인하세요.')
+    connection=None
+    if bottom_join is not None:
+        connection=dict(method='straight_terminal_join',measured=False,points_pixel=bottom_join.tolist(),
+                        points=np.column_stack(((bottom_join[:,0]-center)*nm_per_px*10,
+                                                (reference-bottom_join[:,1])*nm_per_px*10)).tolist())
     return dict(schema='trench-profile/v1',units='A',coordinate_system=dict(x_positive='right',y_positive='up'),
                 surface_order='left_to_right',surface_closed=False,field_y=0.,points=points,initial_voids=[],
                 origin_pixel=[float(center),float(reference)],nm_per_px=float(nm_per_px),source=source,
                 interpolation_included=any(t.get('interpolated_points',0)>0 for t in result.guide_traces),
-                initial_voids_source='not_analyzed')
+                initial_voids_source='not_analyzed',bottom_detected=result.depth_px is not None,
+                bottom_connection=connection)
 
 
 def trench_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
-    payload=trench_profile_exchange(result,nm_per_px)
+    return trench_profile_tsv(trench_profile_exchange(result,nm_per_px))
+
+
+def trench_profile_tsv(payload: dict) -> str:
     return 'X\tY\n'+''.join(f'{x:.9f}\t{y:.9f}\n' for x,y in payload['points'])
 
 
@@ -672,6 +716,12 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         writer.writerow(["metadata","continuous_guides",result.options.continuous_guides,""])
         writer.writerow(["metadata","depth_reference_y_px",result.depth_origin_px,"px"])
         writer.writerow(["field_measurements","result",json.dumps(result.field_measurements,ensure_ascii=False,allow_nan=False),"px"])
+        if nm_per_px:
+            try:
+                exchange=trench_profile_exchange(result,nm_per_px)
+                writer.writerow(['profile_exchange','bottom_connection',json.dumps(exchange['bottom_connection'],allow_nan=False),'A / px'])
+            except ValueError as exc:
+                writer.writerow(['profile_exchange','error',str(exc),''])
         for index,trace in enumerate(result.guide_traces):
             writer.writerow(["contour_trace",index+1,json.dumps(trace,ensure_ascii=False,allow_nan=False),"px"])
         for item in result.guide_diagnostics:

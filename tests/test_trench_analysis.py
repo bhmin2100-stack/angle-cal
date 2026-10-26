@@ -353,8 +353,9 @@ def test_gfe_clipboard_export_and_failure_preserves_clipboard(qt_app):
     panel.scale_spin.setValue(.5)
     panel.result = analyze_trench(trench_image(open_bottom=True), TrenchOptions((30, 20, 140, 240)))
     panel.copy_gfe_coordinates()
-    assert qt_app.clipboard().text() == copied
-    assert '바닥' in panel.hint.text()
+    assert qt_app.clipboard().text() == trench_gfe_tsv(panel.result,.5)
+    assert '복사 완료' in panel.hint.text() and '자동 연결' in panel.hint.text()
+    assert panel.result.depth_px is None
     panel.close()
 
 

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from .image_ops import bgr_to_rgb8_for_display
-from .trench_analysis import TrenchOptions, TrenchResult, analyze_trench, export_trench_csv, trench_gfe_tsv, trench_profile_exchange
+from .trench_analysis import TrenchOptions, TrenchResult, analyze_trench, export_trench_csv, trench_gfe_tsv, trench_profile_exchange, trench_profile_tsv
 from .trench_guides import normalize_guides
 from .trench_guide_view import TrenchGuideEditor
 from .trench_units import format_metric_length
@@ -514,6 +514,10 @@ class TrenchGraph(QWidget):
         self.plot_rect = rect
         if self.mode == "shape":
             series = shape_series(r, getattr(self, 'show_raw', False))
+            connection=getattr(self,'export_bottom_connection',None)
+            if connection:
+                points=np.asarray(connection['points_pixel'])
+                series.append((points[:,0],points[:,1],'#b74fa5',True))
             title = "Field·측벽·바닥 X"
         elif self.mode == "bow":
             series = [(r.left_reference - r.left, r.y, "#007d92", False), (r.right - r.right_reference, r.y, "#bb4b1e", False)]
@@ -829,7 +833,8 @@ class TrenchPanel(QWidget):
                 "corner_rois": list(self.corner_rois), "corner_spans": list(self.corner_spans),
                 "corner_results": self.result.corners if self.result is not None else None,
                 "wall_guides":list(normalize_guides(self.guide_editor.guides)),
-                "guide_traces":self.result.guide_traces if self.result is not None else []}
+                "guide_traces":self.result.guide_traces if self.result is not None else [],
+                "export_bottom_connection":getattr(self.graph,'export_bottom_connection',None) if self.result is not None else None}
 
     def _roi_mode(self, enabled):
         if enabled:self.guide_editor.set_drawing(False)
@@ -1285,6 +1290,14 @@ class TrenchPanel(QWidget):
         if r is None:
             return
         factor,unit=self._factor()
+        connection=getattr(self.graph,'export_bottom_connection',None)
+        if connection:
+            a,b=connection['points_pixel']
+            self.overlays.append(scene.addLine(*a,*b,_pen('#ed80d5',2,True)))
+            label=scene.addSimpleText('GFE 하단 자동 연결')
+            label.setBrush(QColor('#ed80d5'));label.setPos((a[0]+b[0])/2,max(a[1],b[1])+6)
+            label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,True)
+            self.overlays.append(label)
         for trace in r.guide_traces:
             if self.smoothing_controls.compare.isChecked():
                 for segment in trace.get('raw_segments', []):
@@ -1397,20 +1410,26 @@ class TrenchPanel(QWidget):
             self.hint.setText("먼저 Trench를 분석하세요.")
             return
         try:
-            table = trench_gfe_tsv(self.result, self.scale_spin.value())
+            payload = trench_profile_exchange(self.result, self.scale_spin.value())
+            table = trench_profile_tsv(payload)
         except ValueError as exc:
             self.hint.setText(f"GFE 복사 실패: {exc}")
             return
         QApplication.clipboard().setText(table)
-        self.hint.setText(f"GFE 좌표 {len(table.splitlines()) - 1}개 복사 완료 (Å · 왼쪽 Field→바닥→오른쪽 Field). GFE 표에서 Ctrl+V로 붙여넣으세요.")
+        note = ' · 바닥 미확정, 전체 깊이 미확정' if self.result.depth_px is None else ''
+        if payload['bottom_connection']:note+=' · 하단 끝점 자동 연결'
+        self.hint.setText(f"GFE 좌표 {len(table.splitlines()) - 1}개 복사 완료 (Å{note}). GFE 표에서 Ctrl+V로 붙여넣으세요.")
 
     def _render_profile_coordinates(self):
         self.profile_table.setRowCount(0)
+        self.graph.export_bottom_connection=None
         try:
-            rows=trench_gfe_tsv(self.result,self.scale_spin.value()).splitlines()[1:]
+            payload=trench_profile_exchange(self.result,self.scale_spin.value())
+            rows=trench_profile_tsv(payload).splitlines()[1:]
         except ValueError as exc:
             self.profile_status.setText(f'Gapseam 좌표 미확정: {exc}')
             return
+        self.graph.export_bottom_connection=payload['bottom_connection']
         self.profile_table.setUpdatesEnabled(False)
         try:
             self.profile_table.setRowCount(len(rows))
@@ -1421,14 +1440,17 @@ class TrenchPanel(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
                     self.profile_table.setItem(row,col,item)
         finally:self.profile_table.setUpdatesEnabled(True)
-        self.profile_status.setText(f'{len(rows):,}점 · Å · 입구 중앙 X=0 / Field 기준 Y=0 · 깊이 음수\n왼쪽 Field → 왼쪽 벽 → 바닥 → 오른쪽 벽 → 오른쪽 Field · 열린 윤곽')
+        note = ' · 바닥/전체 깊이 미확정' if self.result.depth_px is None else ''
+        if payload['bottom_connection']:note+=' · 하단 끝점 자동 연결 (점선)'
+        self.profile_status.setText(f'{len(rows):,}점 · Å · 입구 중앙 X=0 / Field 기준 Y=0 · 깊이 음수\n왼쪽 Field → 윤곽 순서 → 오른쪽 Field · 열린 윤곽{note}')
 
     def _copy_profile_rows(self):
         rows=sorted({index.row() for index in self.profile_table.selectedIndexes()})
         if not rows:return
         text='\n'.join('\t'.join(self.profile_table.item(row,col).text() for col in (0,1)) for row in rows)+'\n'
         QApplication.clipboard().setText(text)
-        self.hint.setText(f'Gapseam 좌표 {len(rows):,}점 복사 완료 (Å · X/Y). 전체 윤곽은 Ctrl+A 후 Ctrl+C 또는 Export를 사용하세요.')
+        note=' · 하단 끝점 자동 연결 포함' if getattr(self.graph,'export_bottom_connection',None) else ''
+        self.hint.setText(f'Gapseam 좌표 {len(rows):,}점 복사 완료 (Å · X/Y{note}). 전체 윤곽은 Ctrl+A 후 Ctrl+C 또는 Export를 사용하세요.')
 
     def export_profile_dialog(self):
         if self.result is None:return
