@@ -77,17 +77,19 @@ def test_smoothing_does_not_move_the_field_reference_or_top_opening():
 
 
 @pytest.mark.parametrize('method', ['mean','gaussian','savgol','robust'])
-def test_short_confirmed_fields_remain_exportable_after_strong_smoothing(method):
+@pytest.mark.parametrize('strength', [100,300])
+def test_short_confirmed_fields_remain_exportable_after_strong_smoothing(method,strength):
     guide=surface_guide(15,30)
     guide['points']=guide['points'][2:-2]
     guide['points'][0][0]-=18
     guide['points'][-1][0]+=18
     baseline=analyze(guide=guide)
-    result=analyze(guide=guide,contour_smoothing=method,contour_strength=100)
+    result=analyze(guide=guide,contour_smoothing=method,contour_strength=strength)
     assert all(f['status']=='valid' for f in baseline.field_angles)
     assert all(f['status']=='valid' for f in result.field_angles)
     assert result.field_measurements['anchors']==baseline.field_measurements['anchors']
     assert result.field_measurements['tcd_status']=='valid'
+    assert result.depth_px is not None and result.field_measurements['depth_status']=='valid'
     for before,after in zip(baseline.field_angles,result.field_angles):
         assert before['points']==after['points']
     payload=trench_profile_exchange(result,.5)

@@ -19,13 +19,13 @@ def short_guide():
     return guide
 
 
-@pytest.mark.parametrize('variant',['plain','reverse','inverted','16bit','smooth'])
+@pytest.mark.parametrize('variant',['plain','reverse','inverted','16bit','smooth','strong'])
 def test_short_horizontal_ends_create_fields_and_export_ordered_extensions(variant):
     image=rounded_trench(15,30);guide=short_guide()
     if variant=='reverse':guide['points']=guide['points'][::-1]
     if variant=='inverted':image=255-image
     if variant=='16bit':image=image.astype(np.uint16)*200
-    result=analyze(image,guide,contour_strength=100 if variant=='smooth' else 0,contour_smoothing='mean')
+    result=analyze(image,guide,contour_strength={'smooth':100,'strong':300}.get(variant,0),contour_smoothing='mean')
     assert all(f['status']=='valid' and f['automatic_field'] for f in result.field_angles)
     assert result.field_measurements['automatic_fields']==['left','right']
     assert result.field_measurements['tcd_status']=='valid'

@@ -25,7 +25,7 @@ from .trench_workflow import recognize_from_guides
 from .trench_structure import structure_guides
 from .trench_plot import shape_series
 from .trench_smoothing_controls import SmoothingControls
-from .trench_smoothing import METHODS
+from .trench_smoothing import METHODS, MAX_STRENGTH
 
 
 def _pen(color: str, width: float = 1.5, dashed: bool = False) -> QPen:
@@ -1222,7 +1222,7 @@ class TrenchPanel(QWidget):
         if metrics.get('bottom_source') == 'interpolated':lines.append('최하단에 보간 구간이 포함됩니다.')
         if r.options.contour_strength:
             shifts = [t['smoothing']['max_displacement_px'] for t in r.guide_traces if 'smoothing' in t]
-            lines.append(f'윤곽 보정 {METHODS[r.options.contour_smoothing]} {r.options.contour_strength:g}/100')
+            lines.append(f'윤곽 보정 {METHODS[r.options.contour_smoothing]} {r.options.contour_strength:g}/{MAX_STRENGTH}')
             lines.append(f'최대 이동 {max(shifts, default=0):.2f} px · 회색 점선: 보정 전')
             lines.append('바닥 폐쇄 확인 후 최하단 윤곽으로 깊이를 계산합니다.')
         if self.scale_spin.value()<=0:lines.append('미보정: px 표시 · 스케일바로 보정하세요.')

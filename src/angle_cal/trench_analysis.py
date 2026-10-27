@@ -22,7 +22,7 @@ from .trench_surface import measure_field_angles, connect_entrance
 from .trench_guides import normalize_guides, prepare_guide_bands, in_bands, sweep_samples, points_in_guides
 from .trench_contour import trace_guide, guided_cavity_profile
 from .trench_guided_surface import measure_guided_surfaces
-from .trench_smoothing import smooth_traces, smoothing_parameters, METHODS
+from .trench_smoothing import smooth_traces, smoothing_parameters, METHODS, MAX_STRENGTH
 from .trench_field_metrics import measure_field_metrics
 from .trench_auto_field import recover_fields, extend_export_surface
 
@@ -444,7 +444,8 @@ def find_local_bowing(y: np.ndarray, left: np.ndarray, right: np.ndarray,
     return sorted(features, key=lambda item: (item["start_y"], item["side"]))
 
 
-def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference=None) -> TrenchResult:
+def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference=None,
+                   floor_reference: TrenchResult | None = None) -> TrenchResult:
     if image is None or image.size == 0:
         raise ValueError("먼저 이미지를 불러오세요.")
     x, top, width, height = (int(v) for v in options.roi)
@@ -593,7 +594,7 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
         raise ValueError('좌우 가이드 또는 경계가 교차합니다. 가이드의 좌우와 인식 폭을 확인하세요.')
     warnings: list[str] = []
     if options.contour_strength:
-        warnings.append(f'윤곽 보정: {METHODS[options.contour_smoothing]} {options.contour_strength:g}/100. '
+        warnings.append(f'윤곽 보정: {METHODS[options.contour_smoothing]} {options.contour_strength:g}/{MAX_STRENGTH}. '
                         '보정 전 윤곽을 함께 저장합니다. Depth의 바닥 폐쇄 판단은 기존 밝기 기준입니다.')
     joined=sum(len(t.get('joins',[])) for t in traces)
     if joined:
@@ -640,6 +641,12 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
         depth = float(floor_row - 1 + np.clip((threshold - before) / max(1e-9, after - before), 0, 1))
         if options.strict_guides and not points_in_guides([[(left[-1]+right[-1])/2,top+depth]],guides)[0]:
             depth=None;closed=False
+    if floor_reference is not None:
+        # Extended smoothing can move the contour beyond the 5px image-floor
+        # proximity test. Closure remains an image observation, not a smoothing
+        # decision. Field depth below is still measured to the corrected curve.
+        depth = floor_reference.depth_px
+        closed = depth is not None
     if not closed:
         warnings.append("바닥 폐쇄를 확인하지 못했습니다. 전체 Depth는 미확정이며 관찰 깊이만 표시합니다.")
     # Exclude the final 10% from sidewall/bowing fits to avoid fitting the floor.
@@ -741,7 +748,7 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         for key,value in result.imaging.items():
             writer.writerow(['imaging',key,value,''])
         writer.writerow(["metadata", "contour_smoothing", result.options.contour_smoothing, ""])
-        writer.writerow(["metadata", "contour_strength", result.options.contour_strength, "0..100"])
+        writer.writerow(["metadata", "contour_strength", result.options.contour_strength, f"0..{MAX_STRENGTH}"])
         if result.options.boundary_mode=='rim_inset':
             writer.writerow(["metadata", "rim_inset_px", result.options.rim_inset_px, "px"])
         writer.writerow(["metadata", "entrance_y_px", result.options.roi[1], "px"])

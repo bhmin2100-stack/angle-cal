@@ -120,7 +120,8 @@ def test_only_terminal_bottom_gap_is_joined_without_moving_points(result,separat
     assert r.to_dict(1)['profile_exchange']==payload
 
 
-def test_actual_open_bottom_image_exports_both_walls_and_marks_connection(result,tmp_path):
+@pytest.mark.parametrize('strength',[0,300])
+def test_actual_open_bottom_image_exports_both_walls_and_marks_connection(result,tmp_path,strength):
     import csv
     from angle_cal.trench_analysis import TrenchOptions,export_trench_csv
     from angle_cal.trench_workflow import recognize_from_guides
@@ -129,7 +130,7 @@ def test_actual_open_bottom_image_exports_both_walls_and_marks_connection(result
     image=rounded_trench(15,30);image[345:,161:260]=35
     g=surface_guide(15,30)
     guides=(dict(g,points=g['points'][:6]),dict(g,points=g['points'][10:]))
-    r=recognize_from_guides(image,TrenchOptions((0,0,420,400),wall_guides=guides,boundary_mode='max_gradient'))
+    r=recognize_from_guides(image,TrenchOptions((0,0,420,400),wall_guides=guides,boundary_mode='max_gradient',contour_strength=strength))
     payload=trench_profile_exchange(r,.5)
     assert payload['bottom_connection'] and not payload['bottom_connection']['measured']
     assert r.depth_px is None and r.field_measurements['depth_px'] is None

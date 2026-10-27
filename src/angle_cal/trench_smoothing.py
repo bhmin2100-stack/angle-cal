@@ -8,12 +8,14 @@ from .trench_guides import points_in_guides
 
 METHODS = {'mean': '이동평균', 'gaussian': '가우시안',
            'savgol': 'Savitzky–Golay', 'robust': '강건 스플라인'}
+MAX_STRENGTH = 300
 
 
 def smoothing_parameters(strength):
     value = float(strength)
-    if not np.isfinite(value) or not 0 <= value <= 100:
-        raise ValueError('윤곽 보정 강도는 0~100이어야 합니다.')
+    if not np.isfinite(value) or not 0 <= value <= MAX_STRENGTH:
+        raise ValueError(f'윤곽 보정 강도는 0~{MAX_STRENGTH}이어야 합니다.')
+    # Preserve the existing 0..100 mapping, extending its scale above 100.
     return 3 + 2 * int(round(value * .19)), 4 * value / 100
 
 

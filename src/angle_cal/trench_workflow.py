@@ -65,7 +65,8 @@ def recognize_from_guides(image,options):
     # context pass may start more than field_search_px above the surface when
     # the guide corridor is wide, so its missing Fields are not authoritative.
     reference=analyze_trench(image,replace(final_options,contour_strength=0))
-    result=(analyze_trench(image,final_options,field_reference=(reference.field_angles,reference.corners))
+    result=(analyze_trench(image,final_options,field_reference=(reference.field_angles,reference.corners),
+                          floor_reference=reference if options.contour_strength>100 else None)
             if options.contour_strength else reference)
     result.imaging=imaging
     return result

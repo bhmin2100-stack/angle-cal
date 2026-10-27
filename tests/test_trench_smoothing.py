@@ -48,11 +48,12 @@ def test_smoothing_reduces_noise_preserves_bow_endpoints_and_corridor(method):
 
 
 @pytest.mark.parametrize('method', METHODS)
-def test_straight_field_and_cliff_are_not_shifted(method):
+@pytest.mark.parametrize('strength', [90, 300])
+def test_straight_field_and_cliff_are_not_shifted(method, strength):
     for p in (np.column_stack((np.arange(20., 180.), np.full(160, 50.))),
               np.column_stack((np.full(160, 50.), np.arange(20., 180.)))):
         guide = dict(points=p[::20].tolist()+[p[-1].tolist()], half_width_px=8)
-        fit = smooth_segment(p, method, 90, guide, (220, 220))
+        fit = smooth_segment(p, method, strength, guide, (220, 220))
         fixed_axis = 1 if np.ptp(p[:, 1]) == 0 else 0
         np.testing.assert_allclose(fit[:, fixed_axis], p[:, fixed_axis], atol=1e-8)
 
@@ -73,12 +74,34 @@ def test_robust_spline_limits_spikes_and_does_not_bridge_missing_segments():
 
 
 @pytest.mark.parametrize('method', METHODS)
-def test_sharp_corner_correction_stays_bounded(method):
+@pytest.mark.parametrize('strength', [100, 300])
+def test_sharp_corner_correction_stays_bounded(method, strength):
     p = np.vstack((np.column_stack((np.arange(20., 81.), np.full(61, 50.))),
                    np.column_stack((np.full(80, 80.), np.arange(51., 131.)))))
     guide = dict(points=[[20, 50], [80, 50], [80, 130]], half_width_px=12)
-    fit = smooth_segment(p, method, 100, guide, (200, 200))
-    assert np.linalg.norm(fit[60]-p[60]) < .25
+    fit = smooth_segment(p, method, strength, guide, (200, 200))
+    assert np.linalg.norm(fit[60]-p[60]) < (.25 if strength<=100 else .5)
+
+
+@pytest.mark.parametrize('method', METHODS)
+def test_extended_strength_removes_broader_ripple_without_leaving_guide(method):
+    y = np.arange(20., 601.)
+    p = np.column_stack((100+6*np.sin(2*np.pi*y/60), y))
+    guide = dict(points=[[100, 20], [100, 600]], half_width_px=20)
+    old = smooth_segment(p, method, 100, guide, (650, 220))
+    strong = smooth_segment(p, method, 300, guide, (650, 220))
+    assert np.std(strong[120:-120, 0]-100) < np.std(old[120:-120, 0]-100)*.4
+    movement = np.linalg.norm(strong-p, axis=1)
+    assert 4 < movement.max() <= 12+1e-8
+    np.testing.assert_array_equal(strong[[0, -1]], p[[0, -1]])
+    assert points_in_guides(strong, (guide,)).all()
+    np.testing.assert_allclose(smooth_segment(p[::-1], method, 300, guide, (650, 220))[::-1], strong, atol=1e-7)
+
+
+@pytest.mark.parametrize('strength', [-1, 301, float('nan'), float('inf')])
+def test_invalid_extended_strength_rejected(strength):
+    with pytest.raises(ValueError, match='0~300'):
+        smoothing_parameters(strength)
 
 
 @pytest.fixture
@@ -102,28 +125,29 @@ def settle(p, app):
     assert p.result is not None, p.summary_label.text()
 
 
-def test_controls_reanalyze_keep_amounts_export_and_reset(panel, tmp_path):
+@pytest.mark.parametrize('amounts', [(40, 50, 60, 70), (120, 180, 240, 300)])
+def test_controls_reanalyze_keep_amounts_export_and_reset(panel, tmp_path, amounts):
     p, app = panel
     p.start_analysis(); finish(p, app)
     baseline = p.result.to_dict(.5)
     controls = p.smoothing_controls
     for index, method in enumerate(METHODS):
         controls.method.setCurrentIndex(controls.method.findData(method))
-        controls.sliders[method].setValue(40+index*10)
+        controls.sliders[method].setValue(amounts[index])
         settle(p, app)
         assert p.result.options.contour_smoothing == method
-        assert p.result.options.contour_strength == 40+index*10
+        assert p.result.options.contour_strength == amounts[index]
         assert p.result.options.roi[1] == baseline['options']['roi'][1]
         assert p.result.guide_traces[0]['raw_points'] == baseline['guide_traces'][0]['points']
         assert len(shape_series(p.result, True)) > len(shape_series(p.result))
-    assert [s.value() for s in controls.sliders.values()] == [40, 50, 60, 70]
+    assert [s.value() for s in controls.sliders.values()] == list(amounts)
     state = p.state()
     for suffix in ('json', 'csv', 'png'):
         path = tmp_path/f'corrected.{suffix}'; p.save_result(str(path)); assert path.stat().st_size > 100
     payload = json.loads((tmp_path/'corrected.json').read_text(encoding='utf-8'))
     assert payload['settings']['contour_smoothing'] == state['contour_smoothing']
-    assert payload['options']['contour_strength'] == 70
-    assert 'contour_strength,70' in (tmp_path/'corrected.csv').read_text(encoding='utf-8-sig')
+    assert payload['options']['contour_strength'] == amounts[-1]
+    assert f'contour_strength,{amounts[-1]},0..300' in (tmp_path/'corrected.csv').read_text(encoding='utf-8-sig')
     p.set_image(trench_image(bulb=12), 'reload', .5, state)
     assert p.state()['contour_smoothing'] == state['contour_smoothing']
     assert p.state()['wall_guides'] == guides() and p.scale_spin.value() == .5
