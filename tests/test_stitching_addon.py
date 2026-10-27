@@ -1,4 +1,5 @@
 from pathlib import Path
+import threading
 import time
 import cv2
 import numpy as np
@@ -8,6 +9,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
+import angle_cal.app as app_module
 from angle_cal.app import MainWindow
 from angle_cal.band_registration import band_profiles, full_overlap_score, translation_candidates
 import angle_cal.band_registration as band_registration_module
@@ -717,3 +719,77 @@ def test_thumbnail_width_fills_viewport_for_each_column_count(tmp_path):
         assert not window.thumbnail_hover_popup.isVisible()
     finally:
         window.close()
+
+
+def test_thumbnail_loading_runs_off_ui_thread_and_reuses_cache(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    paths = []
+    for index in range(40):
+        path = tmp_path / f"large-{index:02d}.png"
+        path.write_bytes(b"thumbnail-fixture")
+        paths.append(str(path))
+
+    window = MainWindow()
+    try:
+        window._thumbnail_thread_pool.waitForDone(5000)
+        window.thumbnail_load_timer.stop()
+        window.thumbnail_resize_timer.stop()
+        window._thumbnail_pending_requests.clear()
+        window._thumbnail_current_keys.clear()
+        window._thumbnail_cache.clear()
+        window.browser_root = tmp_path
+        window.browser_image_paths = paths
+        window.resize(900, 520)
+        window.show()
+        app.processEvents()
+        calls: list[tuple[str, int]] = []
+        main_thread_id = threading.get_ident()
+
+        def delayed_read_image(image_path):
+            calls.append((str(image_path), threading.get_ident()))
+            time.sleep(0.02)
+            return np.full((900, 1200, 3), 127, dtype=np.uint8)
+
+        monkeypatch.setattr(app_module, "read_image", delayed_read_image)
+        started = time.perf_counter()
+        window._populate_thumbnails()
+        populate_elapsed = time.perf_counter() - started
+
+        assert calls == []
+        assert populate_elapsed < 0.2
+        assert all(not button.icon().isNull() for button in window.thumbnail_buttons.values())
+
+        deadline = time.monotonic() + 5.0
+        while (not calls or window._thumbnail_active_loads or window.thumbnail_load_timer.isActive()) and time.monotonic() < deadline:
+            app.processEvents()
+            QTest.qWait(10)
+        app.processEvents()
+
+        assert 0 < len(calls) < len(paths)
+        assert all(thread_id != main_thread_id for _, thread_id in calls)
+        assert len(window._thumbnail_cache) == len(calls)
+
+        call_count = len(calls)
+        window._populate_thumbnails()
+        app.processEvents()
+        QTest.qWait(50)
+        app.processEvents()
+        assert len(calls) == call_count
+
+        scroll_bar = window.thumbnail_scroll.verticalScrollBar()
+        assert scroll_bar.maximum() > 0
+        scroll_bar.setValue(scroll_bar.maximum())
+        deadline = time.monotonic() + 5.0
+        while len(calls) == call_count and time.monotonic() < deadline:
+            app.processEvents()
+            QTest.qWait(10)
+        assert len(calls) > call_count
+    finally:
+        window.thumbnail_load_timer.stop()
+        window.thumbnail_resize_timer.stop()
+        window._thumbnail_pending_requests.clear()
+        window._thumbnail_thread_pool.clear()
+        window._thumbnail_thread_pool.waitForDone(5000)
+        app.processEvents()
+        window.close()
+        app.processEvents()

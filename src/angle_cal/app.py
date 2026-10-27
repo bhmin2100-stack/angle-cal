@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 import csv
 from html import escape as xml_escape
@@ -13,7 +14,7 @@ from typing import Callable, Optional
 import zipfile
 
 import numpy as np
-from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QRunnable, QSettings, QSize, Qt, QThread, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QDrag, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -97,6 +98,53 @@ from .image_ops import (
     snap_polyline_to_gradient,
     to_gray,
 )
+
+
+@dataclass(frozen=True)
+class ThumbnailLoadRequest:
+    path: str
+    cache_key: tuple[object, ...]
+    icon_width: int
+    icon_height: int
+    rotation_steps: tuple[float, ...]
+    fallback_rotation: float
+
+
+def _load_thumbnail_qimage(request: ThumbnailLoadRequest) -> Optional[QImage]:
+    image = read_image(request.path)
+    if image is None:
+        return None
+    rotations = request.rotation_steps or (request.fallback_rotation,)
+    for angle in rotations:
+        if abs(float(angle)) % 360.0 > 1e-9:
+            image, _ = rotate_image_and_points(image, [], float(angle))
+    rgb = bgr_to_rgb8_for_display(image)
+    height, width = rgb.shape[:2]
+    qimage = QImage(rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888).copy()
+    return qimage.scaled(
+        request.icon_width,
+        request.icon_height,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+class ThumbnailLoadSignals(QObject):
+    finished = Signal(object, object)
+
+
+class ThumbnailLoadWorker(QRunnable):
+    def __init__(self, request: ThumbnailLoadRequest) -> None:
+        super().__init__()
+        self.request = request
+        self.signals = ThumbnailLoadSignals()
+
+    def run(self) -> None:
+        try:
+            image = _load_thumbnail_qimage(self.request)
+        except Exception:
+            image = None
+        self.signals.finished.emit(self.request, image)
 
 
 @dataclass
@@ -3075,6 +3123,15 @@ class MainWindow(QMainWindow):
         self._thumbnail_drag_active = False
         self._thumbnail_drag_base_selection: set[str] = set()
         self.thumbnail_columns = 2
+        self._thumbnail_cache: OrderedDict[tuple[object, ...], QIcon] = OrderedDict()
+        self._thumbnail_cache_max_entries = 512
+        self._thumbnail_placeholder_icons: dict[tuple[int, int], QIcon] = {}
+        self._thumbnail_pending_requests: list[ThumbnailLoadRequest] = []
+        self._thumbnail_inflight_keys: set[tuple[object, ...]] = set()
+        self._thumbnail_current_keys: dict[str, tuple[object, ...]] = {}
+        self._thumbnail_active_loads = 0
+        self._thumbnail_thread_pool = QThreadPool(self)
+        self._thumbnail_thread_pool.setMaxThreadCount(2)
         self._updating_favorite_tabs = False
         self.current_tool = "select"
         self.scale_presets: list[ScalePreset] = []
@@ -3970,6 +4027,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self.trench_panel is not None:
             self.trench_panel.wait_for_worker()
+        self.thumbnail_load_timer.stop()
+        self.thumbnail_resize_timer.stop()
+        self._thumbnail_pending_requests.clear()
+        self._thumbnail_thread_pool.clear()
         if self._browser_session_auto_enabled():
             self._save_browser_session()
         super().closeEvent(event)
@@ -4402,6 +4463,10 @@ class MainWindow(QMainWindow):
         self.thumbnail_resize_timer.setSingleShot(True)
         self.thumbnail_resize_timer.setInterval(80)
         self.thumbnail_resize_timer.timeout.connect(self._resize_thumbnail_buttons_to_viewport)
+        self.thumbnail_load_timer = QTimer(self)
+        self.thumbnail_load_timer.setSingleShot(True)
+        self.thumbnail_load_timer.setInterval(100)
+        self.thumbnail_load_timer.timeout.connect(self._start_thumbnail_loading)
         self.thumbnail_hover_path: Optional[str] = None
         self.thumbnail_hover_button: Optional[QPushButton] = None
         self.thumbnail_hover_timer = QTimer(self)
@@ -4412,6 +4477,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_hover_popup.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumbnail_hover_popup.setStyleSheet("background:#111827;border:2px solid #4cc9f0;padding:6px;")
         scroll.setWidget(self.thumbnail_container)
+        scroll.verticalScrollBar().valueChanged.connect(self._thumbnail_viewport_changed)
         container_layout.addWidget(scroll)
         dock.setWidget(container)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
@@ -4903,6 +4969,8 @@ class MainWindow(QMainWindow):
 
     def _populate_thumbnails(self) -> None:
         self.thumbnail_container.setFixedWidth(max(1, self.thumbnail_scroll.viewport().width()))
+        self._thumbnail_pending_requests.clear()
+        self._thumbnail_current_keys.clear()
         self._clear_thumbnail_layout()
         self.thumbnail_buttons.clear()
         self.thumbnail_folder_headers.clear()
@@ -4962,7 +5030,14 @@ class MainWindow(QMainWindow):
             button = QPushButton()
             button.setCheckable(True)
             button.setAcceptDrops(True)
-            button.setIcon(self._thumbnail_icon(path))
+            request = self._thumbnail_load_request(path, icon_width, icon_height)
+            self._thumbnail_current_keys[str(path)] = request.cache_key
+            cached_icon = self._thumbnail_cached_icon(request.cache_key)
+            if cached_icon is None:
+                button.setIcon(self._thumbnail_placeholder_icon(icon_width, icon_height))
+                self._thumbnail_pending_requests.append(request)
+            else:
+                button.setIcon(cached_icon)
             button.setIconSize(QSize(icon_width, icon_height))
             button.setFixedSize(thumb_width, thumb_height)
             button.setToolTip(str(path))
@@ -4980,6 +5055,7 @@ class MainWindow(QMainWindow):
                 col = 0
         self.thumbnail_layout.setRowStretch(row + 1, 1)
         self._select_thumbnail(self.image_path)
+        self.thumbnail_load_timer.start()
 
     def _refresh_favorite_tabs(self) -> None:
         valid_paths: list[str] = []
@@ -5230,10 +5306,147 @@ class MainWindow(QMainWindow):
             return
         self.thumbnail_container.setFixedWidth(max(1, self.thumbnail_scroll.viewport().width()))
         thumb_width, thumb_height, icon_width, icon_height = self._thumbnail_dimensions()
+        self._thumbnail_pending_requests.clear()
+        self._thumbnail_current_keys.clear()
         for path, button in self.thumbnail_buttons.items():
             button.setFixedSize(thumb_width, thumb_height)
             button.setIconSize(QSize(icon_width, icon_height))
-            button.setIcon(self._thumbnail_icon(Path(path)))
+            request = self._thumbnail_load_request(Path(path), icon_width, icon_height)
+            self._thumbnail_current_keys[path] = request.cache_key
+            cached_icon = self._thumbnail_cached_icon(request.cache_key)
+            if cached_icon is not None:
+                button.setIcon(cached_icon)
+            else:
+                if button.icon().isNull():
+                    button.setIcon(self._thumbnail_placeholder_icon(icon_width, icon_height))
+                self._thumbnail_pending_requests.append(request)
+        self.thumbnail_load_timer.start()
+
+    def _thumbnail_load_request(
+        self,
+        path: Path,
+        icon_width: Optional[int] = None,
+        icon_height: Optional[int] = None,
+    ) -> ThumbnailLoadRequest:
+        if icon_width is None or icon_height is None:
+            _, _, icon_width, icon_height = self._thumbnail_dimensions()
+        path_text = str(path)
+        state = self.image_states.get(path_text)
+        if state is None:
+            state = self._load_image_format_state(path_text)
+        rotation_steps = tuple(float(value) for value in (state or {}).get("image_rotation_steps", []))
+        fallback_rotation = float((state or {}).get("image_rotation_degrees", 0.0) or 0.0)
+        try:
+            stat = path.stat()
+            file_signature = (int(stat.st_mtime_ns), int(stat.st_size))
+        except OSError:
+            file_signature = (0, 0)
+        cache_key: tuple[object, ...] = (
+            path_text,
+            *file_signature,
+            int(icon_width),
+            int(icon_height),
+            rotation_steps,
+            fallback_rotation,
+        )
+        return ThumbnailLoadRequest(
+            path=path_text,
+            cache_key=cache_key,
+            icon_width=int(icon_width),
+            icon_height=int(icon_height),
+            rotation_steps=rotation_steps,
+            fallback_rotation=fallback_rotation,
+        )
+
+    def _thumbnail_cached_icon(self, cache_key: tuple[object, ...]) -> Optional[QIcon]:
+        icon = self._thumbnail_cache.get(cache_key)
+        if icon is not None:
+            self._thumbnail_cache.move_to_end(cache_key)
+        return icon
+
+    def _store_thumbnail_icon(self, cache_key: tuple[object, ...], icon: QIcon) -> None:
+        self._thumbnail_cache[cache_key] = icon
+        self._thumbnail_cache.move_to_end(cache_key)
+        while len(self._thumbnail_cache) > self._thumbnail_cache_max_entries:
+            self._thumbnail_cache.popitem(last=False)
+
+    def _thumbnail_placeholder_icon(self, icon_width: int, icon_height: int) -> QIcon:
+        key = (int(icon_width), int(icon_height))
+        icon = self._thumbnail_placeholder_icons.get(key)
+        if icon is None:
+            pixmap = QPixmap(*key)
+            pixmap.fill(QColor("#333333"))
+            icon = QIcon(pixmap)
+            self._thumbnail_placeholder_icons[key] = icon
+        return icon
+
+    def _prioritize_thumbnail_requests(self) -> None:
+        if not self._thumbnail_pending_requests:
+            return
+
+        def priority(request: ThumbnailLoadRequest) -> int:
+            if request.path == self.image_path:
+                return 0
+            if self._thumbnail_request_is_visible(request):
+                return 1
+            return 2
+
+        self._thumbnail_pending_requests.sort(key=priority)
+
+    def _thumbnail_viewport_changed(self, _value: int) -> None:
+        self._prioritize_thumbnail_requests()
+        self.thumbnail_load_timer.start()
+
+    def _thumbnail_request_is_visible(
+        self,
+        request: ThumbnailLoadRequest,
+    ) -> bool:
+        if request.path == self.image_path:
+            return True
+        button = self.thumbnail_buttons.get(request.path)
+        if button is None:
+            return False
+        viewport = self.thumbnail_scroll.viewport()
+        top_left = button.mapTo(viewport, QPoint(0, 0))
+        return viewport.rect().intersects(QRect(top_left, button.size()))
+
+    def _start_thumbnail_loading(self) -> None:
+        self._prioritize_thumbnail_requests()
+        while self._thumbnail_active_loads < self._thumbnail_thread_pool.maxThreadCount():
+            if not self._thumbnail_pending_requests:
+                return
+            request = self._thumbnail_pending_requests[0]
+            if not self._thumbnail_request_is_visible(request):
+                return
+            self._thumbnail_pending_requests.pop(0)
+            if self._thumbnail_current_keys.get(request.path) != request.cache_key:
+                continue
+            cached_icon = self._thumbnail_cached_icon(request.cache_key)
+            if cached_icon is not None:
+                button = self.thumbnail_buttons.get(request.path)
+                if button is not None:
+                    button.setIcon(cached_icon)
+                continue
+            if request.cache_key in self._thumbnail_inflight_keys:
+                continue
+            worker = ThumbnailLoadWorker(request)
+            worker.signals.finished.connect(self._thumbnail_loaded)
+            self._thumbnail_inflight_keys.add(request.cache_key)
+            self._thumbnail_active_loads += 1
+            self._thumbnail_thread_pool.start(worker)
+
+    def _thumbnail_loaded(self, request: ThumbnailLoadRequest, image: Optional[QImage]) -> None:
+        self._thumbnail_active_loads = max(0, self._thumbnail_active_loads - 1)
+        self._thumbnail_inflight_keys.discard(request.cache_key)
+        if image is not None and not image.isNull():
+            icon = QIcon(QPixmap.fromImage(image))
+            self._store_thumbnail_icon(request.cache_key, icon)
+            if self._thumbnail_current_keys.get(request.path) == request.cache_key:
+                button = self.thumbnail_buttons.get(request.path)
+                if button is not None:
+                    button.setIcon(icon)
+                    button.setIconSize(QSize(request.icon_width, request.icon_height))
+        self._start_thumbnail_loading()
 
     def _clear_thumbnail_layout(self) -> None:
         while self.thumbnail_layout.count():
@@ -5269,30 +5482,16 @@ class MainWindow(QMainWindow):
         self._set_status(f"썸네일 폴더 {state}: {self._thumbnail_folder_label(folder)}")
 
     def _thumbnail_icon(self, path: Path) -> QIcon:
-        image = read_image(path)
-        if image is None:
-            _, _, icon_width, icon_height = self._thumbnail_dimensions()
-            pixmap = QPixmap(icon_width, icon_height)
-            pixmap.fill(QColor("#333333"))
-            return QIcon(pixmap)
-        state = self.image_states.get(str(path))
-        if state is None:
-            state = self._load_image_format_state(str(path))
-        if state is not None:
-            rotation = float(state.get("image_rotation_degrees", 0.0) or 0.0)
-            steps = [float(value) for value in state.get("image_rotation_steps", [])]
-            image = self._image_with_rotation_steps(image, steps, rotation)
-        rgb = bgr_to_rgb8_for_display(image)
-        h, w = rgb.shape[:2]
-        qimage = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
-        _, _, icon_width, icon_height = self._thumbnail_dimensions()
-        pixmap = QPixmap.fromImage(qimage).scaled(
-            icon_width,
-            icon_height,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        return QIcon(pixmap)
+        request = self._thumbnail_load_request(path)
+        cached_icon = self._thumbnail_cached_icon(request.cache_key)
+        if cached_icon is not None:
+            return cached_icon
+        image = _load_thumbnail_qimage(request)
+        if image is None or image.isNull():
+            return self._thumbnail_placeholder_icon(request.icon_width, request.icon_height)
+        icon = QIcon(QPixmap.fromImage(image))
+        self._store_thumbnail_icon(request.cache_key, icon)
+        return icon
 
     def _select_thumbnail(self, path: Optional[str]) -> None:
         if path and path in self.thumbnail_buttons and path not in self.selected_thumbnail_paths:
@@ -5300,6 +5499,8 @@ class MainWindow(QMainWindow):
             self._thumbnail_anchor_path = path
         self._refresh_thumbnail_selection_styles(path)
         self._refresh_favorite_tabs()
+        if self._thumbnail_pending_requests:
+            self.thumbnail_load_timer.start()
 
     def _refresh_thumbnail_selection_styles(self, current_path: Optional[str] = None) -> None:
         current_path = current_path or self.image_path
