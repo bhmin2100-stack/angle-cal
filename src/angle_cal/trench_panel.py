@@ -740,7 +740,7 @@ class TrenchPanel(QWidget):
         controls.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.controls_layout=controls
         controls.addWidget(QLabel('스케일'))
-        form=QFormLayout();controls.addLayout(form)
+        form=QFormLayout();form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows);controls.addLayout(form)
         self.scale_spin=QDoubleSpinBox();self.scale_spin.setRange(0,1e9);self.scale_spin.setDecimals(8);self.scale_spin.setSpecialValueText('미보정')
         form.addRow('nm / px',self.scale_spin)
         self.unit_combo=QComboBox()

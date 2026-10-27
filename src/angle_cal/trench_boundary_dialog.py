@@ -197,7 +197,13 @@ class BoundarySampleDialog(QDialog):
                 self._resample(anchor=old['anchor_px'])
             except ValueError as exc:self.status.setText(str(exc))
         QTimer.singleShot(0, self.view.fit_image)
-        if self.sample is None:QTimer.singleShot(0, self.detail.fit_image)
+        # Fit after the dialog/splitter has its visible size, including when a
+        # saved sample is restored before the dialog is first shown.
+        QTimer.singleShot(0, self._fit_detail)
+
+    def _fit_detail(self):
+        if self.sample is None:self.detail.fit_image()
+        else:self.detail.zoom_sample(self.sample)
 
     def _new_line(self, a, b):
         self.line = ([a.x(), a.y()], [b.x(), b.y()]); self._resample()
