@@ -104,6 +104,19 @@ def test_invalid_extended_strength_rejected(strength):
         smoothing_parameters(strength)
 
 
+@pytest.mark.parametrize('method', METHODS)
+def test_strong_smoothing_does_not_create_humps_on_flat_floor_beside_corners(method):
+    p = np.vstack((np.column_stack((np.full(150,80.),np.arange(50.,200.))),
+                   np.column_stack((np.arange(80.,181.),np.full(101,200.))),
+                   np.column_stack((np.full(150,180.),np.arange(199.,49.,-1)))))
+    guide = dict(points=[[80,50],[80,200],[180,200],[180,50]],half_width_px=20)
+    fit = smooth_segment(p,method,300,guide,(250,250))
+    # A wider filter must not manufacture a wavy bottom from a flat floor.
+    assert np.max(np.abs(fit[150:251,1]-200)) < .25
+    assert np.max(np.abs(fit[:150,0]-80)) < .25
+    assert np.max(np.abs(fit[251:,0]-180)) < .25
+
+
 @pytest.fixture
 def panel():
     app = QApplication.instance() or QApplication([])

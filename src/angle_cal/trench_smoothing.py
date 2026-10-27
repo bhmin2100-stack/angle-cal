@@ -67,6 +67,23 @@ def _robust_spline(points, window):
     return fit
 
 
+def _filter_uniform(points, method, radius):
+    radius = min(radius, (len(points)-1)//2)
+    if radius < 1:
+        return points.copy()
+    window = 2*radius+1
+    offsets = np.arange(-radius, radius+1, dtype=float)
+    if method == 'mean':
+        return _convolve(points, np.ones(window)/window)
+    if method == 'gaussian':
+        kernel = np.exp(-.5*(offsets/max(.5, radius/2))**2)
+        return _convolve(points, kernel/kernel.sum())
+    if method == 'savgol':
+        design = np.column_stack((np.ones(window), offsets, offsets**2))
+        return _convolve(points, np.linalg.pinv(design)[0])
+    return _robust_spline(points, window)
+
+
 def smooth_segment(points, method, strength, guide, image_shape):
     if method not in METHODS:
         raise ValueError('지원하지 않는 윤곽 보정 방식입니다.')
@@ -83,18 +100,7 @@ def smooth_segment(points, method, strength, guide, image_shape):
     p = np.column_stack([np.interp(distance, arc, original[:, i]) for i in range(2)])
     radius = min((len(p)-1)//2, max(1, int(round((window//2)/spacing))))
     window = 2*radius+1
-    offsets = np.arange(-radius, radius+1, dtype=float)
-    if method == 'mean':
-        fit = _convolve(p, np.ones(window)/window)
-    elif method == 'gaussian':
-        kernel = np.exp(-.5*(offsets/max(.5, radius/2))**2)
-        fit = _convolve(p, kernel/kernel.sum())
-    elif method == 'savgol':
-        design = np.column_stack((np.ones(window), offsets, offsets**2))
-        fit = _convolve(p, np.linalg.pinv(design)[0])
-    else:
-        fit = _robust_spline(p, window)
-    fit = np.column_stack([np.interp(arc, distance, fit[:, i]) for i in range(2)])
+    fit = _filter_uniform(p, method, radius)
     # Ease out corrections at open ends and strong geometric turns. This is a
     # conservative protection, not a claim that noise and roughness are separable.
     local_window = min(7, 2*((len(p)-1)//2)+1)
@@ -104,6 +110,17 @@ def smooth_segment(points, method, strength, guide, image_shape):
     after = np.roll(baseline, -span, axis=0) - baseline
     cosine = np.sum(before*after, axis=1) / np.maximum(1e-9, np.linalg.norm(before, axis=1)*np.linalg.norm(after, axis=1))
     turn = np.arccos(np.clip(cosine, -1, 1))
+    if strength > 100:
+        # Do not average across a sharp Field/cliff/floor junction: the wider
+        # window otherwise creates a hump beside the locally protected corner.
+        sharp = np.flatnonzero((turn > .65) & (distance > span*spacing)
+                               & (distance < distance[-1]-span*spacing))
+        groups = np.split(sharp, np.flatnonzero(np.diff(sharp)>1)+1)
+        cuts = [int(group[np.argmax(turn[group])]) for group in groups if len(group)]
+        for start, stop in zip([0]+cuts, cuts+[len(p)-1]):
+            fit[start:stop+1] = _filter_uniform(p[start:stop+1], method, radius)
+        fit[cuts] = p[cuts]
+    fit = np.column_stack([np.interp(arc, distance, fit[:, i]) for i in range(2)])
     protection = np.interp(arc, distance, 1/(1+(turn/.35)**4))
     taper = np.minimum(1, np.minimum(arc, arc[-1]-arc)/max(2, radius*spacing))
     delta = (fit-original)*protection[:, None]*taper[:, None]
