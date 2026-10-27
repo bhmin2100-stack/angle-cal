@@ -184,6 +184,7 @@ class BoundarySampleDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Cancel)
         self.apply_button = buttons.button(QDialogButtonBox.StandardButton.Apply); self.apply_button.setText('이 지점을 기준으로 적용')
         self.apply_button.setEnabled(False); self.apply_button.clicked.connect(self.accept); buttons.rejected.connect(self.reject); root.addWidget(buttons)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('취소')
         self.view.line_drawn.connect(self._new_line); self.view.point_picked.connect(self._pick_image)
         self.detail.point_picked.connect(self._pick_image); self.graph.position_picked.connect(self.position.setValue)
         self.position.valueChanged.connect(self._select); self.band.valueChanged.connect(self._resample)
@@ -196,6 +197,7 @@ class BoundarySampleDialog(QDialog):
                 self._resample(anchor=old['anchor_px'])
             except ValueError as exc:self.status.setText(str(exc))
         QTimer.singleShot(0, self.view.fit_image)
+        if self.sample is None:QTimer.singleShot(0, self.detail.fit_image)
 
     def _new_line(self, a, b):
         self.line = ([a.x(), a.y()], [b.x(), b.y()]); self._resample()
