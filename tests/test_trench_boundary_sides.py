@@ -174,6 +174,10 @@ def test_legacy_common_sample_survives_tab_switch_and_cancel(app):
     image = asymmetric_image(); samples = wall_samples(image); original = copy.deepcopy(samples)
     common = make_boundary_sample(image, [145,200], [175,200], anchor=14.25)
     d = BoundarySamplesDialog(image, common, samples); d.show(); app.processEvents()
+    app.processEvents()
+    assert d.height() <= 820
+    assert d.apply_button.mapTo(d, QPoint(0,d.apply_button.height())).y() <= d.height()
+    assert d.editors['left'].graph.mapTo(d, QPoint(0,d.editors['left'].graph.height())).y() < d.height()
     d.tabs.setCurrentIndex(1); d.editors['right'].position.setValue(17)
     QTest.keyClick(d.editors['right'].view, Qt.Key.Key_Escape)
     assert not d.isVisible() and d.result()==d.DialogCode.Rejected

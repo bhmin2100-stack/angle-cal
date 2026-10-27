@@ -5,7 +5,7 @@ import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QGraphicsScene,
-    QGraphicsView, QHBoxLayout, QLabel, QPushButton, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget)
+    QGraphicsView, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget)
 
 from .image_ops import bgr_to_rgb8_for_display
 from .trench_boundary_sample import make_boundary_sample, sample_point, sample_polygon, validate_boundary_sample, validate_boundary_samples
@@ -23,6 +23,8 @@ class SampleImageView(QGraphicsView):
 
     def __init__(self, image, guides=(), parent=None):
         super().__init__(parent)
+        # A zoomed scene must not inflate the surrounding tab/dialog size hint.
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.setScene(QGraphicsScene(self)); self.setBackgroundBrush(QColor('#20262e'))
         rgb = np.ascontiguousarray(bgr_to_rgb8_for_display(image))
         pixmap = QPixmap.fromImage(QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format.Format_RGB888).copy())
@@ -297,6 +299,12 @@ class BoundarySamplesDialog(QDialog):
         root.addWidget(buttons)
         self.tabs.currentChanged.connect(self._fit_tab)
         self._refresh()
+        QTimer.singleShot(0, self, self._fit_tab)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        available = self.screen().availableGeometry()
+        self.resize(min(1180, available.width()-30), min(820, available.height()-45))
         QTimer.singleShot(0, self, self._fit_tab)
 
     def _refresh(self):
