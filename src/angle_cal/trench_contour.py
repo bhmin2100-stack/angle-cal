@@ -100,7 +100,7 @@ def _connect_short_gaps(chosen, distance, guide, image_shape):
     return connected,joins
 
 
-def _connect_region_gaps(chosen, distance, centers, guide, image_shape, corner_turns=False):
+def _connect_region_gaps(chosen, distance, centers, guide, image_shape, corner_turns=False, sample_scopes=None):
     """Complete interior holes of ONE guide, with explicitly inferred geometry.
 
     Prefer observed endpoint tangents. For curved missing intervals, transport
@@ -125,7 +125,13 @@ def _connect_region_gaps(chosen, distance, centers, guide, image_shape, corner_t
             u=centers[a]-centers[max(0,a-4)]
             v=centers[min(len(centers)-1,b+4)]-centers[b]
             turning=np.dot(u,v)<.85*np.linalg.norm(u)*np.linalg.norm(v)
-            if not (corner_turns and turning and span<=12 and np.linalg.norm(q-p)<=12):
+            limit=12.
+            if sample_scopes is not None and sample_scopes[a]!=sample_scopes[b]:
+                # A wall sample ends where the Field/floor criterion begins.
+                # At that actual corner only, the guide may run around an
+                # offset band farther than the short measured endpoint chord.
+                limit=max(limit,min(32.,float(guide['half_width_px'])))
+            if not (corner_turns and turning and span<=limit and np.linalg.norm(q-p)<=12):
                 continue
         ds = np.linspace(distance[a], distance[b], max(8, int(np.ceil(span*4))+1))
         base = np.column_stack([np.interp(ds, distance[a:b+1], centers[a:b+1, axis]) for axis in (0, 1)])
@@ -169,7 +175,17 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
     side_templates={s:prepare_templates(v,sample_inverted) for s,v in side_samples.items()}
     roles=wall_sample_scopes(centers,normals,guide,guides,side_samples) if side_samples else ['surface']*len(centers)
     sample_scopes=[side if side in side_templates else 'common' if templates is not None else 'automatic' for side in roles]
-    active_templates=[side_templates.get(side,templates) for side in roles]
+    active_templates=[]
+    for side,normal in zip(roles,normals):
+        if side not in side_templates:
+            active_templates.append(templates); continue
+        # A wall-specific sample has a known image direction. Do not mirror it
+        # onto the other flank of a bright/dark band just because correlation
+        # is high there. Reversing either the sample or guide still works.
+        sample=side_samples[side]
+        direction=np.subtract(sample['end'],sample['start'])
+        orientation=0 if np.dot(direction,normal)>=0 else 1
+        active_templates.append((side_templates[side][orientation],))
     has_samples=templates is not None or bool(side_templates)
     for template in ([templates] if templates is not None else [])+list(side_templates.values()):
         context=max(context,len(template[0][0])+2)
@@ -404,7 +420,9 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         measured=dict(chosen)
     joins=[]
     if continuous:
-        chosen,joins=_connect_region_gaps(chosen,distance,centers,guide,image.shape,corner_turns=boundary_mode=='tem_interface' or has_samples)
+        chosen,joins=_connect_region_gaps(chosen,distance,centers,guide,image.shape,
+            corner_turns=boundary_mode=='tem_interface' or has_samples,
+            sample_scopes=sample_scopes if side_templates else None)
     elif local_contrast:chosen,joins=_connect_short_gaps(chosen,distance,guide,image.shape)
     spreads=[spread_by_index.get(i) if i in measured else None for i in sorted(chosen)]
     for i,point in sorted(chosen.items()):

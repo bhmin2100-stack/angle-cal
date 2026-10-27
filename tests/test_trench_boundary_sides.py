@@ -3,7 +3,9 @@ import copy
 import json
 import time
 from dataclasses import replace
+from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, Qt
@@ -14,7 +16,7 @@ from angle_cal.trench_analysis import TrenchOptions
 from angle_cal.trench_boundary_dialog import BoundarySamplesDialog
 from angle_cal.trench_boundary_sample import make_boundary_sample, validate_boundary_samples, wall_sample_scopes
 from angle_cal.trench_contour import trace_guide
-from angle_cal.trench_guides import sweep_samples
+from angle_cal.trench_guides import sweep_samples, points_in_guides
 from angle_cal.trench_panel import TrenchPanel
 from angle_cal.trench_workflow import recognize_from_guides
 from test_trench_boundary_sample import normalized
@@ -117,6 +119,34 @@ def test_sample_marker_has_priority_over_rim_inset_on_its_wall_only():
             assert mid.sum()>50
             positions.append(np.median(points[mid,0]))
         assert positions[1]-positions[0] == pytest.approx(delta, abs=.1)
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_short_tem_sample_does_not_flip_to_opposite_flank(reverse):
+    image = tem_image()
+    a,b=[212,180],[228,180]
+    sample = make_boundary_sample(image, b if reverse else a, a if reverse else b,
+                                  anchor=9.5 if reverse else 6.5)
+    r = recognize_from_guides(image, TrenchOptions((0,0,320,360),wall_guides=(tem_guide(reverse),),
+        imaging_mode='tem',boundary_samples={'right':sample}))
+    assert np.interp(180,r.y,r.right) == pytest.approx(218.5,abs=.8)
+
+
+def test_tem_reference_selected_flanks_join_the_field_with_explicit_interpolation():
+    root = Path(__file__).resolve().parents[1]
+    image = cv2.imdecode(np.fromfile(root/'samples/trench-tem-reference.png',np.uint8),-1)
+    guide = json.loads((root/'samples/trench-tem-reference-right.anglecal.structure.json').read_text())['wall_guides'][0]
+    # Material-facing positions chosen in this fixture, not the opposite film flank.
+    samples = {side:make_boundary_sample(image,[x-12,400],[x+12,400],anchor=12)
+               for side,x in [('left',830.14),('right',988.65)]}
+    r = recognize_from_guides(image, TrenchOptions((0,0,1536,1024),wall_guides=(guide,),
+        imaging_mode='tem',boundary_samples=samples,contour_strength=45))
+    assert np.interp(400,r.y,r.left) == pytest.approx(830.14,abs=2)
+    assert np.interp(400,r.y,r.right) == pytest.approx(988.65,abs=2)
+    trace=r.guide_traces[0]
+    assert trace['continuity_complete'] and trace['interpolated_points']>0
+    assert points_in_guides(trace['points'],(guide,)).all()
+    assert r.field_measurements['depth_status']=='valid'
 
 
 def test_path_order_handles_bowing_across_midline_and_reversed_guides():
