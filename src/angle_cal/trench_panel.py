@@ -573,13 +573,26 @@ class TrenchGraph(QWidget):
         if self.mode == "shape":
             metrics = getattr(r,'field_measurements',{})
             if metrics.get('tcd_status') == 'valid':
-                anchors = metrics['anchors']; ref = metrics['reference_y_px']
+                anchors = metrics.get('tcd_anchors') or metrics['anchors']; ref = metrics['reference_y_px']
                 a, b = point(anchors['left'][0], ref), point(anchors['right'][0], ref)
                 painter.setPen(_pen('#268b48', 1.5))
                 painter.drawLine(a, b)
                 for p in (a,b):painter.drawLine(p+QPointF(0,-4),p+QPointF(0,4))
                 painter.drawText(QRectF(rect.left(), max(rect.top()+20,a.y()-22),rect.width(),20),
                                  Qt.AlignmentFlag.AlignCenter,'TCD '+getattr(self,'tcd_text',f"{metrics['tcd_px']*self.factor:.4g} {self.unit}"))
+            for fit in metrics.get('wall_fits',{}).values():
+                if fit.get('status') != 'valid':continue
+                vx,vy=fit['intersection'];end_y=fit['points'][-1][1];m,c=fit['line']
+                painter.setPen(_pen('#ca8d12',1.5,True))
+                painter.drawLine(point(vx,vy),point(m*end_y+c,end_y))
+            depth=metrics.get('depth_px')
+            if depth is not None:
+                x=float(np.max(r.right))+max(3.,(xmax-xmin)*.025)
+                a,b=point(x,r.depth_origin_px),point(x,r.depth_origin_px+depth)
+                painter.setPen(_pen('#555555',1.5,True));painter.drawLine(a,b)
+                for p in (a,b):painter.drawLine(p+QPointF(-4,0),p+QPointF(4,0))
+                painter.drawText(QRectF(rect.left(),rect.bottom()-25,rect.width(),20),Qt.AlignmentFlag.AlignCenter,
+                                 'Depth '+getattr(self,'depth_text',''))
             for item in (r.field_angles if getattr(self,"show_entrance",True) else []):
                 if item["angle_status"] == "valid":
                     vx,vy=item["vertex"]
@@ -679,6 +692,11 @@ class TrenchPanel(QWidget):
         root=QVBoxLayout(self);root.setContentsMargins(6,4,6,4)
         self.hint=QLabel('① 썸네일 선택 → ② 곡선 그리기 또는 구조 불러오기 → ③ 인식')
         self.hint.setWordWrap(True);root.addWidget(self.hint)
+        self.metric_label=QLabel('Depth · TCD: 인식 후 표시')
+        self.metric_label.setObjectName('trench_primary_metrics')
+        self.metric_label.setWordWrap(True)
+        self.metric_label.setStyleSheet('font-weight: 600; padding: 4px;')
+        root.addWidget(self.metric_label)
         self.view=TrenchView();self.guide_editor=TrenchGuideEditor(self.view)
         self.guide_bar=QWidget();tools=QHBoxLayout(self.guide_bar);tools.setContentsMargins(0,0,0,0);tools.setSpacing(5)
         self.tool_buttons={}
@@ -913,7 +931,7 @@ class TrenchPanel(QWidget):
         if self.scale_bar:
             length=np.linalg.norm(np.subtract(self.scale_bar['end'],self.scale_bar['start']))
             self.scale_bar['length_nm']=float(value*length)
-        self._settings_changed();self.calibration_changed.emit(value)
+        self._smoothing_changed();self.calibration_changed.emit(value)
         if self.scale_bar:self.scale_bar_changed.emit(self.scale_bar)
         self.calibration_note.setText('기존 스케일 또는 스케일바 보정값을 사용합니다.' if value>0 else '미보정: px로 표시합니다. 스케일바를 그리면 1nm 간격으로 측정합니다.')
 
@@ -1070,6 +1088,7 @@ class TrenchPanel(QWidget):
         self.local_table.setRowCount(0)
         self.export_button.setEnabled(False)
         self.summary_label.setText("곡선을 그리거나 불러온 뒤 인식을 누르세요.")
+        self.metric_label.setText('Depth · TCD: 인식 후 표시')
         for editor in self.corner_editors:
             editor.show_result(None)
         for editor in self.surface_editors:
@@ -1187,7 +1206,8 @@ class TrenchPanel(QWidget):
                                  rim_inset_px=self.rim_inset_spin.value(),strict_guides=True,
                                  imaging_mode=self.imaging_mode.currentData(),
                                  contour_smoothing=self.smoothing_controls.method.currentData(),
-                                 contour_strength=self.smoothing_controls.strength,boundary_sample=sample)
+                                 contour_strength=self.smoothing_controls.strength,boundary_sample=sample,
+                                 nm_per_px=self.scale_spin.value() or None)
         return TrenchOptions(roi, step, self.threshold_spin.value(),
                              self.bright_check.isChecked(), self.smooth_spin.value(), self.bow_combo.currentData(),
                              self.corner_spin.value(), self.negative_spin.value(),
@@ -1195,7 +1215,8 @@ class TrenchPanel(QWidget):
                              (self.angle_start.value(),self.angle_end.value()),normalize_guides(self.guide_editor.guides),
                              self.boundary_mode if self.automatic_area else 'inner_rim',
                              contour_smoothing=self.smoothing_controls.method.currentData(),
-                             contour_strength=self.smoothing_controls.strength,boundary_sample=sample)
+                             contour_strength=self.smoothing_controls.strength,boundary_sample=sample,
+                             nm_per_px=self.scale_spin.value() or None)
 
     def start_analysis(self):
         self.smoothing_timer.stop()
@@ -1216,6 +1237,7 @@ class TrenchPanel(QWidget):
             return
         self._clear_result()
         self.summary_label.setText("곡선 주변 경계를 인식하고 있습니다…")
+        self.metric_label.setText('Depth · TCD: 계측 중…')
         self._has_analysis_request = True
         self.analyze_button.setEnabled(False)
         self.guide_analyze.setEnabled(False)
@@ -1246,6 +1268,7 @@ class TrenchPanel(QWidget):
             return
         if error:
             self.summary_label.setText(error)
+            self.metric_label.setText('Depth · TCD: 인식 실패 · 아래 원인을 확인하세요.')
             return
         self.result = result
         self.guide_editor.select(-1)
@@ -1262,17 +1285,26 @@ class TrenchPanel(QWidget):
         metrics = r.field_measurements
         field_found = metrics.get('field_status') == 'valid'
         depth_text = f"Field → 최하단 깊이  {self._metric_length(metrics.get('depth_px'),'depth')}" if field_found else f"깊이  {self._metric_length(r.depth_px,'depth')}"
-        lines=[depth_text,f"TCD (Field 입구 폭)  {self._metric_length(metrics.get('tcd_px'),'tcd')}",
+        if metrics.get('depth_status') == 'estimated':depth_text += ' (연결 윤곽 추정)'
+        lines=[depth_text,f"TCD (측벽 직선 × Field)  {self._metric_length(metrics.get('tcd_px'),'tcd')}",
                f"CD  {fmt(summary['min_cd_px'])} ~ {fmt(summary['max_cd_px'])}",
                f"Bowing 좌 / 우  {fmt(r.left_bowing_px)} / {fmt(r.right_bowing_px)}"]
+        self.metric_label.setText('   |   '.join(lines[:2]))
+        self.metric_label.setToolTip('\n'.join([metrics.get('depth_reason',''),metrics.get('tcd_reason','')]))
         if field_found:
             lines.append('Field 자동 인식 · '+metrics['reason'])
         lines.extend(field_status_lines(r.field_angles))
         lines.append('그래프: 보라색 전체 윤곽 · 초록색 확인된 Field')
         if any(f.get('extension',{}).get('points_pixel') for f in r.field_angles):
-            lines.append('초록 점선: Field 자동 연장 (추정 형상) · 깊이/TCD는 검출된 가로 구간 기준')
-        if metrics.get('tcd_basis')=='segmented_transition_estimate':lines.append('TCD: 둥근 접점 미확정 · 평탄 구간 끝점으로 추정')
-        elif r.options.strict_guides and not field_found:
+            lines.append('초록 점선: Field 자동 연장 (추정 형상) · TCD는 측벽 직선 교점 기준')
+        if metrics.get('tcd_status')=='valid':
+            lines.append('TCD: 입구 직전 약 100 Å 측벽 직선 → Field 교점')
+            fits=metrics.get('wall_fits',{})
+            if any(f.get('resolution_limited') for f in fits.values()):
+                spans=' / '.join(f"{'좌' if s=='left' else '우'} {f['actual_span_angstrom']:.4g} Å" for s,f in fits.items() if f.get('status')=='valid')
+                lines.append('100 Å가 너무 짧아 최소 6 px 사용 · '+spans)
+            elif any(f.get('scale_missing') for f in fits.values()):lines.append('스케일 미보정: 측벽 10 px로 임시 맞춤')
+        if r.options.strict_guides and not field_found:
             lines.append('위쪽 평평한 Field까지 곡선을 그리면 깊이·TCD를 자동 계측합니다.')
         if field_found and metrics.get('tcd_status') != 'valid':lines.append(metrics['tcd_reason'])
         if metrics.get('bottom_source') == 'interpolated':lines.append('최하단에 보간 구간이 포함됩니다.')
@@ -1280,7 +1312,7 @@ class TrenchPanel(QWidget):
             shifts = [t['smoothing']['max_displacement_px'] for t in r.guide_traces if 'smoothing' in t]
             lines.append(f'윤곽 보정 {METHODS[r.options.contour_smoothing]} {r.options.contour_strength:g}/{MAX_STRENGTH}')
             lines.append(f'최대 이동 {max(shifts, default=0):.2f} px · 회색 점선: 보정 전')
-            lines.append('바닥 폐쇄 확인 후 최하단 윤곽으로 깊이를 계산합니다.')
+            lines.append('깊이: 연결된 최하단 윤곽 기준 · TCD: 보정 전 측벽의 강건 직선 맞춤')
         if self.scale_spin.value()<=0:lines.append('미보정: px 표시 · 스케일바로 보정하세요.')
         if r.imaging:
             mode=r.imaging['selected'].upper();prefix='자동 선택' if r.imaging['requested']=='auto' else '직접 선택'
@@ -1291,7 +1323,11 @@ class TrenchPanel(QWidget):
         elif r.options.boundary_mode=='tem_interface':lines.append('TEM: 회색 재료 끝 · 검은 띠 제외\nVSEM 빈 공간 이동값은 적용하지 않습니다.')
         elif r.options.boundary_mode=='rim_inset':lines.append(f'밝기 최고점 → 빈 공간 {r.options.rim_inset_px:g} px')
         if self.step_spin.value()/max(self.scale_spin.value(),1e-9)<1:lines.append('1px 미만 간격은 윤곽 보간값입니다.')
-        if r.depth_px is None:lines.append('바닥이 보이지 않아 전체 깊이는 미확정입니다.')
+        if field_found and metrics.get('depth_px') is None:
+            lines.append(metrics.get('depth_reason','Field 기준 깊이를 확인하지 못했습니다.'))
+            observed=metrics.get('observed_depth_px',max(0.,float(r.y[-1]-r.depth_origin_px)))
+            lines.append('관찰 깊이  '+self._metric_length(observed,'depth')+' · 전체 깊이는 미확정')
+        elif not field_found and r.depth_px is None:lines.append('관찰 깊이  '+self._metric_length(r.observed_depth_px,'depth')+' · 전체 깊이는 미확정')
         joined=sum(len(t.get('joins',[])) for t in r.guide_traces)
         if joined:lines.append(f'경계 누락 {joined}곳 연결 · 보간 구간 포함')
         if np.any(np.diff(r.y)>1.5):lines.append('일부 깊이의 양쪽 교차점 미확정 · 해당 CD 제외')
@@ -1320,6 +1356,7 @@ class TrenchPanel(QWidget):
                 self.local_table.setItem(row, col, cell)
         self.graph.result, self.graph.factor, self.graph.unit = r, factor, unit
         self.graph.tcd_text=self._metric_length(r.field_measurements.get('tcd_px'),'tcd')
+        self.graph.depth_text=self._metric_length(r.field_measurements.get('depth_px'),'depth')+(' (추정)' if r.field_measurements.get('depth_status')=='estimated' else '')
         self.graph.show_entrance=False
         self.graph.show_raw=self.smoothing_controls.compare.isChecked()
         self.graph.update()
@@ -1403,12 +1440,18 @@ class TrenchPanel(QWidget):
                 for point in extension[1:]:path.lineTo(QPointF(*point))
                 self.overlays.append(scene.addPath(path,_pen('#60ed8d',2,True)))
         if metrics.get('tcd_status')=='valid':
-            a,b=metrics['anchors']['left'],metrics['anchors']['right'];ref=metrics['reference_y_px']
+            anchors=metrics.get('tcd_anchors') or metrics['anchors']
+            a,b=anchors['left'],anchors['right'];ref=metrics['reference_y_px']
             self.overlays.append(scene.addLine(a[0],ref,b[0],ref,_pen('#60ed8d',1.5)))
             for p in (a,b):self.overlays.append(scene.addLine(p[0],min(ref,p[1])-4,p[0],max(ref,p[1])+4,_pen('#60ed8d')))
             label=scene.addSimpleText('TCD '+self._metric_length(metrics['tcd_px'],'tcd'));label.setBrush(QColor('#60ed8d'))
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,True)
             label.setPos((a[0]+b[0])/2-label.boundingRect().width()/2,ref-44);self.overlays.append(label)
+        for fit in metrics.get('wall_fits',{}).values():
+            if fit.get('status')!='valid':continue
+            vx,vy=fit['intersection'];m,c=fit['line'];end_y=fit['points'][-1][1]
+            self.overlays.append(scene.addLine(vx,vy,m*end_y+c,end_y,_pen('#ffca64',2,True)))
+            self.overlays.append(scene.addEllipse(vx-2,vy-2,4,4,_pen('#ffca64'),QColor('#ffca64')))
         depth_value=metrics.get('depth_px') if metrics.get('field_status')=='valid' else r.depth_px
         depth_top=r.depth_origin_px
         if depth_value is not None:
@@ -1416,7 +1459,7 @@ class TrenchPanel(QWidget):
             self.overlays.append(scene.addLine(depth_x, depth_top, depth_x, depth_top + depth_value, _pen("#e6edfa", 1.5, True)))
             for end_y in (depth_top, depth_top + depth_value):
                 self.overlays.append(scene.addLine(depth_x - 6, end_y, depth_x + 6, end_y, _pen("#e6edfa")))
-            label = scene.addText('Depth '+self._metric_length(depth_value,'depth'))
+            label = scene.addText('Depth '+self._metric_length(depth_value,'depth')+(' (추정)' if metrics.get('depth_status')=='estimated' else ''))
             label.setDefaultTextColor(QColor("#ffffff"))
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
             label.setPos(depth_x + 10, depth_top + depth_value * .55)

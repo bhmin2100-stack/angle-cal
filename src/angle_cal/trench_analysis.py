@@ -23,7 +23,7 @@ from .trench_guides import normalize_guides, prepare_guide_bands, in_bands, swee
 from .trench_contour import trace_guide, guided_cavity_profile
 from .trench_guided_surface import measure_guided_surfaces
 from .trench_smoothing import smooth_traces, smoothing_parameters, METHODS, MAX_STRENGTH
-from .trench_field_metrics import measure_field_metrics
+from .trench_field_metrics import measure_field_metrics, contour_floor
 from .trench_auto_field import recover_fields, extend_export_surface
 from .trench_boundary_sample import validate_boundary_sample
 
@@ -51,6 +51,7 @@ class TrenchOptions:
     continuous_guides: bool = False
     imaging_mode: str = 'vsem'
     boundary_sample: dict | None = None
+    nm_per_px: float | None = None  # physical 100 A upper-wall fit span
 
 
 @dataclass
@@ -447,7 +448,8 @@ def find_local_bowing(y: np.ndarray, left: np.ndarray, right: np.ndarray,
 
 
 def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference=None,
-                   floor_reference: TrenchResult | None = None) -> TrenchResult:
+                   floor_reference: TrenchResult | None = None,
+                   wall_reference: TrenchResult | None = None) -> TrenchResult:
     if image is None or image.size == 0:
         raise ValueError("먼저 이미지를 불러오세요.")
     if options.boundary_sample is not None:
@@ -460,6 +462,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
         raise ValueError("입구와 양쪽 벽을 포함하는 분석 영역을 이미지 안에 지정하세요 (최소 12×16 px).")
     if not math.isfinite(options.step_px) or options.step_px <= 0:
         raise ValueError("CD 깊이 간격은 양수여야 합니다.")
+    if options.nm_per_px is not None and (not math.isfinite(options.nm_per_px) or options.nm_per_px <= 0):
+        raise ValueError('nm/px 보정값은 양수여야 합니다.')
     if not math.isfinite(options.rim_inset_px) or not 0<=options.rim_inset_px<=10:
         raise ValueError('빈 공간 쪽 이동은 0~10 px여야 합니다.')
     smoothing_parameters(options.contour_strength)
@@ -655,6 +659,11 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
         # decision. Field depth below is still measured to the corrected curve.
         depth = floor_reference.depth_px
         closed = depth is not None
+    if options.strict_guides:
+        floor = contour_floor(traces, y, left, right)
+        if floor and floor['measured']:
+            depth = float(floor['point'][1]-top)
+            closed = True
     if not closed:
         warnings.append("바닥 폐쇄를 확인하지 못했습니다. 전체 Depth는 미확정이며 관찰 깊이만 표시합니다.")
     # Exclude the final 10% from sidewall/bowing fits to avoid fitting the floor.
@@ -712,7 +721,10 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
     if any(corner["status"] != "valid" for corner in corners):
         warnings.append("일부 입구 R은 미확정입니다. 입구 곡률 탭에서 윤곽과 판정 이유를 확인하세요.")
     reference_fields,reference_corners = field_reference if field_reference is not None else (field_angles,corners)
-    field_metrics = measure_field_metrics(reference_fields,traces,guides,y,left,right,closed,reference_corners) if options.strict_guides else {}
+    wall_support = ((wall_reference.y, wall_reference.left, wall_reference.right, wall_reference.guide_traces)
+                    if wall_reference is not None else None)
+    field_metrics = measure_field_metrics(reference_fields,traces,guides,y,left,right,closed,reference_corners,
+                                         nm_per_px=options.nm_per_px,wall_reference=wall_support) if options.strict_guides else {}
     if field_metrics:field_metrics['field_reference_scope']='unsmoothed_image_contour' if field_reference is not None else 'current_contour'
     reference_y = field_metrics.get('reference_y_px')
     if reference_y is None: reference_y = top

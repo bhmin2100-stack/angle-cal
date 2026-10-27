@@ -22,11 +22,11 @@ def test_known_top_opening_and_depth_are_measured_from_flat_fields(left_radius,r
     m=r.field_measurements
     assert m['field_status']==m['tcd_status']==m['depth_status']=='valid',m
     assert m['reference_y_px']==pytest.approx(45,abs=1)
-    assert m['tcd_px']==pytest.approx(100+left_radius+right_radius,abs=3)
+    assert m['tcd_px']==pytest.approx(100,abs=3)
     assert m['depth_px']==pytest.approx(305,abs=1.5)
     assert m['bottom_point'][1]==pytest.approx(350,abs=1)
-    # TCD is the top opening, not the 100 px straight-cliff separation.
-    assert m['tcd_px'] > 110
+    # Entrance fillets do not enlarge the extrapolated straight-wall TCD.
+    assert m['tcd_basis']=='upper_wall_field_intersections'
     samples=(r.sample_y-r.depth_origin_px)/2
     np.testing.assert_allclose(samples,np.round(samples),atol=1e-8)
 
@@ -39,7 +39,7 @@ def test_field_metrics_survive_direction_polarity_bitdepth_and_wall_gap(variant)
     if variant=='16bit':im=im.astype(np.uint16)*200
     if variant=='gap':im[150:180]=205
     m=analyze(im,g).field_measurements
-    assert m['tcd_px']==pytest.approx(145,abs=3)
+    assert m['tcd_px']==pytest.approx(100,abs=3)
     assert m['depth_px']==pytest.approx(305,abs=1.5)
 
 
@@ -60,9 +60,10 @@ def test_different_field_heights_have_explicit_mean_and_individual_depths():
     fields=[dict(source='guide',status='valid',side='left',points=[[10,20],[30,20]],line=[0,20]),
             dict(source='guide',status='valid',side='right',points=[[70,24],[90,24]],line=[0,24])]
     g=dict(points=[[10,20],[30,20],[30,100],[70,100],[70,24],[90,24]],half_width_px=10)
-    traces=[dict(points=[[30,80],[50,100],[70,80]],point_sources=['measured']*3)]
+    p=[[30,float(y)] for y in range(25,100)]+[[50,100]]+[[70,float(y)] for y in range(99,24,-1)]
+    traces=[dict(points=p,segments=[p],point_sources=['measured']*len(p))]
     m=measure_field_metrics(fields,traces,(g,),np.arange(25,100),np.full(75,30),np.full(75,70),True)
-    assert m['tcd_px']==40 and m['reference_y_px']==22
+    assert m['tcd_px']==pytest.approx(40) and m['reference_y_px']==22
     assert m['depth_px']==78 and m['left_depth_px']==80 and m['right_depth_px']==76
 
 
@@ -104,7 +105,7 @@ def test_wide_search_corridor_uses_fields_at_actual_entrance(width):
     result=analyze(guide=guide)
     assert all(f['status']=='valid' for f in result.field_angles)
     assert result.field_measurements['tcd_status']=='valid'
-    assert result.field_measurements['tcd_px']==pytest.approx(145,abs=3)
+    assert result.field_measurements['tcd_px']==pytest.approx(100,abs=3)
     assert result.field_measurements['depth_px']==pytest.approx(305,abs=1.5)
 
 
@@ -137,7 +138,7 @@ def test_ui_field_tcd_depth_labels_units_saved_results_and_gfe(tmp_path,short_sm
         p.load_structure_payload(dict(wall_guides=[guide]))
         p.start_analysis();finish(p,app)
         assert 'Field → 최하단 깊이' in p.summary_label.text()
-        assert 'TCD (Field 입구 폭)' in p.summary_label.text()
+        assert 'TCD (측벽 직선 × Field)' in p.summary_label.text()
         assert 'Field 자동 인식' in p.summary_label.text()
         assert '좌측 Field 확인' in p.summary_label.text() and '우측 Field 확인' in p.summary_label.text()
         assert p.profile_table.rowCount()>0

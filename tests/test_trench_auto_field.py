@@ -29,8 +29,8 @@ def test_short_horizontal_ends_create_fields_and_export_ordered_extensions(varia
     assert all(f['status']=='valid' and f['automatic_field'] for f in result.field_angles)
     assert result.field_measurements['automatic_fields']==['left','right']
     assert result.field_measurements['tcd_status']=='valid'
-    assert result.field_measurements['tcd_basis']=='segmented_transition_estimate'
-    assert result.field_measurements['tcd_px']==pytest.approx(145,abs=6)
+    assert result.field_measurements['tcd_basis']=='upper_wall_field_intersections'
+    assert result.field_measurements['tcd_px']==pytest.approx(100,abs=3)
     assert result.field_measurements['reference_y_px']==pytest.approx(45,abs=1)
     assert result.field_measurements['depth_px']==pytest.approx(305,abs=3)
     payload=trench_profile_exchange(result,.5)
