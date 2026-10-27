@@ -26,6 +26,8 @@ from .trench_structure import structure_guides
 from .trench_plot import shape_series
 from .trench_smoothing_controls import SmoothingControls
 from .trench_smoothing import METHODS, MAX_STRENGTH
+from .trench_boundary_dialog import BoundarySampleDialog
+from .trench_boundary_sample import validate_boundary_sample, sample_point, sample_polygon
 
 
 def _pen(color: str, width: float = 1.5, dashed: bool = False) -> QPen:
@@ -672,6 +674,7 @@ class TrenchPanel(QWidget):
         self.selected_band = None
         self.automatic_area=True
         self.boundary_mode='max_gradient'
+        self.boundary_sample=None
         self.scale_bar=None
         root=QVBoxLayout(self);root.setContentsMargins(6,4,6,4)
         self.hint=QLabel('① 썸네일 선택 → ② 곡선 그리기 또는 구조 불러오기 → ③ 인식')
@@ -765,6 +768,14 @@ class TrenchPanel(QWidget):
         self.rim_reference.toggled.connect(self._imaging_controls)
         self.rim_reference.toggled.connect(self._settings_changed)
         self.rim_inset_spin.valueChanged.connect(self._settings_changed)
+        sample_row=QWidget();sample_layout=QHBoxLayout(sample_row);sample_layout.setContentsMargins(0,0,0,0)
+        self.sample_button=QPushButton('인식지점 지정…');self.sample_button.setObjectName('trench_boundary_sample')
+        self.sample_button.setEnabled(False);self.sample_button.clicked.connect(self.open_boundary_sample)
+        self.sample_reset=QPushButton('초기화');self.sample_reset.setEnabled(False);self.sample_reset.clicked.connect(self.reset_boundary_sample)
+        sample_layout.addWidget(self.sample_button,1);sample_layout.addWidget(self.sample_reset);form.addRow(sample_row)
+        self.sample_enabled=QCheckBox('지정한 인식지점 사용');self.sample_enabled.setEnabled(False)
+        self.sample_enabled.toggled.connect(self._sample_changed);form.addRow(self.sample_enabled)
+        self.sample_note=QLabel('샘플 미지정 · 기존 인식 기준 사용');self.sample_note.setWordWrap(True);form.addRow(self.sample_note)
         self.smoothing_controls = SmoothingControls()
         controls.addWidget(self.smoothing_controls)
         self.smoothing_controls.changed.connect(self._smoothing_changed)
@@ -823,6 +834,8 @@ class TrenchPanel(QWidget):
                 "boundary_mode":self.boundary_mode,"scale_bar":self.scale_bar,
                 "rim_reference":self.rim_reference.isChecked(),"rim_inset_px":self.rim_inset_spin.value(),
                 "imaging_mode":self.imaging_mode.currentData(),
+                "boundary_sample":validate_boundary_sample(self.boundary_sample) if self.boundary_sample is not None else None,
+                "boundary_sample_enabled":self.sample_enabled.isChecked(),
                 "unit": self.unit_combo.currentData(), "step": self.step_spin.value(),
                 "threshold": self.threshold_spin.value(), "bright": self.bright_check.isChecked(),
                 "smooth": self.smooth_spin.value(), "bow_reference": self.bow_combo.currentData(),
@@ -987,6 +1000,15 @@ class TrenchPanel(QWidget):
             editor.restore(self.corner_rois[i], self.corner_spans[i])
         self.automatic_area=bool(state.get('automatic_area',True))
         self.boundary_mode=state.get('boundary_mode',self.boundary_mode)
+        self.boundary_sample=None
+        sample_error=None
+        if state.get('boundary_sample') is not None and image is not None:
+            try:self.boundary_sample=validate_boundary_sample(state['boundary_sample'],image.shape)
+            except ValueError as exc:sample_error=str(exc)
+        self.sample_button.setEnabled(image is not None)
+        self.sample_enabled.setChecked(self.boundary_sample is not None and bool(state.get('boundary_sample_enabled',True)))
+        self._sample_controls()
+        if sample_error:self.sample_note.setText('저장된 샘플을 사용하지 못했습니다: '+sample_error)
         self.rim_reference.setChecked(bool(state.get('rim_reference',True)))
         self.rim_inset_spin.setValue(state.get('rim_inset_px',1.))
         self.imaging_mode.setCurrentIndex(max(0,self.imaging_mode.findData(state.get('imaging_mode','auto'))))
@@ -1104,8 +1126,38 @@ class TrenchPanel(QWidget):
 
     def _imaging_controls(self,*_args):
         tem=self.imaging_mode.currentData()=='tem'
-        self.rim_reference.setEnabled(not tem)
-        self.rim_inset_spin.setEnabled(not tem and self.rim_reference.isChecked())
+        sampled=hasattr(self,'sample_enabled') and self.sample_enabled.isChecked()
+        self.rim_reference.setEnabled(not tem and not sampled)
+        self.rim_inset_spin.setEnabled(not tem and not sampled and self.rim_reference.isChecked())
+
+    def _sample_controls(self):
+        exists=self.boundary_sample is not None
+        self.sample_enabled.setEnabled(exists);self.sample_reset.setEnabled(exists)
+        self._imaging_controls()
+        if exists:
+            point=sample_point(self.boundary_sample)
+            status='적용 중' if self.sample_enabled.isChecked() else '사용 안 함'
+            self.sample_note.setText(f'샘플 {status} · X {point[0]:.2f}, Y {point[1]:.2f} px\n밝기 변화 모양과 선택 위치를 사용합니다.')
+        else:self.sample_note.setText('샘플 미지정 · 기존 인식 기준 사용')
+
+    def _sample_changed(self,*_args):
+        self._sample_controls()
+        # Same stale-worker and debounced reanalysis handling as smoothing.
+        self._smoothing_changed()
+
+    def open_boundary_sample(self):
+        if self.image is None:return
+        dialog=BoundarySampleDialog(self.image,self.boundary_sample,self.guide_editor.guides,self)
+        if dialog.exec()==dialog.DialogCode.Accepted:
+            self.boundary_sample=dialog.selected_sample()
+            self.sample_enabled.blockSignals(True);self.sample_enabled.setChecked(True);self.sample_enabled.blockSignals(False)
+            self._sample_changed()
+        dialog.deleteLater()
+
+    def reset_boundary_sample(self):
+        self.boundary_sample=None
+        self.sample_enabled.blockSignals(True);self.sample_enabled.setChecked(False);self.sample_enabled.blockSignals(False)
+        self._sample_changed()
 
     def _imaging_mode_changed(self,*_args):
         self._imaging_controls()
@@ -1123,15 +1175,16 @@ class TrenchPanel(QWidget):
         factor, _ = self._factor()
         roi=self.roi if not self.automatic_area else (0,0,self.image.shape[1],self.image.shape[0])
         step=self.step_spin.value()/self.scale_spin.value() if self.scale_spin.value()>0 else self.step_spin.value()
+        sample=validate_boundary_sample(self.boundary_sample,self.image.shape) if self.sample_enabled.isChecked() else None
         if self.automatic_area:
             # Removed legacy controls must not silently influence the simple
             # workflow when an older project is opened.
             return TrenchOptions(roi,step,smooth_px=7,wall_guides=normalize_guides(self.guide_editor.guides),
-                                 boundary_mode='rim_inset' if self.rim_reference.isChecked() else self.boundary_mode,
+                                 boundary_mode='sample_profile' if sample is not None else 'rim_inset' if self.rim_reference.isChecked() else self.boundary_mode,
                                  rim_inset_px=self.rim_inset_spin.value(),strict_guides=True,
                                  imaging_mode=self.imaging_mode.currentData(),
                                  contour_smoothing=self.smoothing_controls.method.currentData(),
-                                 contour_strength=self.smoothing_controls.strength)
+                                 contour_strength=self.smoothing_controls.strength,boundary_sample=sample)
         return TrenchOptions(roi, step, self.threshold_spin.value(),
                              self.bright_check.isChecked(), self.smooth_spin.value(), self.bow_combo.currentData(),
                              self.corner_spin.value(), self.negative_spin.value(),
@@ -1139,7 +1192,7 @@ class TrenchPanel(QWidget):
                              (self.angle_start.value(),self.angle_end.value()),normalize_guides(self.guide_editor.guides),
                              self.boundary_mode if self.automatic_area else 'inner_rim',
                              contour_smoothing=self.smoothing_controls.method.currentData(),
-                             contour_strength=self.smoothing_controls.strength)
+                             contour_strength=self.smoothing_controls.strength,boundary_sample=sample)
 
     def start_analysis(self):
         self.smoothing_timer.stop()
@@ -1229,7 +1282,10 @@ class TrenchPanel(QWidget):
         if r.imaging:
             mode=r.imaging['selected'].upper();prefix='자동 선택' if r.imaging['requested']=='auto' else '직접 선택'
             lines.append(f'영상 방식: {mode} ({prefix})')
-        if r.options.boundary_mode=='tem_interface':lines.append('TEM: 회색 재료 끝 · 검은 띠 제외\nVSEM 빈 공간 이동값은 적용하지 않습니다.')
+        if r.options.boundary_sample is not None:
+            p=sample_point(r.options.boundary_sample)
+            lines.append(f'지정 인식지점 · 샘플 X {p[0]:.2f}, Y {p[1]:.2f} px\n밝기 변화 모양 기준 · 선택점 적용')
+        elif r.options.boundary_mode=='tem_interface':lines.append('TEM: 회색 재료 끝 · 검은 띠 제외\nVSEM 빈 공간 이동값은 적용하지 않습니다.')
         elif r.options.boundary_mode=='rim_inset':lines.append(f'밝기 최고점 → 빈 공간 {r.options.rim_inset_px:g} px')
         if self.step_spin.value()/max(self.scale_spin.value(),1e-9)<1:lines.append('1px 미만 간격은 윤곽 보간값입니다.')
         if r.depth_px is None:lines.append('바닥이 보이지 않아 전체 깊이는 미확정입니다.')
@@ -1278,6 +1334,14 @@ class TrenchPanel(QWidget):
             scene.removeItem(item)
         self.overlays = []
         self.selected_line = self.selected_band = None
+        if self.boundary_sample is not None and self.sample_enabled.isChecked():
+            sample=self.boundary_sample;points=sample_polygon(sample)
+            path=QPainterPath(QPointF(*points[0]))
+            for point in points[1:]:path.lineTo(QPointF(*point))
+            path.closeSubpath();self.overlays.append(scene.addPath(path,_pen('#00d6df',1,True)))
+            p=sample_point(sample)
+            self.overlays.append(scene.addLine(p[0]-3,p[1],p[0]+3,p[1],_pen('#ffb04f',2)))
+            self.overlays.append(scene.addLine(p[0],p[1]-3,p[0],p[1]+3,_pen('#ffb04f',2)))
         if self.scale_bar:
             a,b=self.scale_bar['start'],self.scale_bar['end']
             self.overlays.append(scene.addLine(*a,*b,_pen('#ffffff',2)))

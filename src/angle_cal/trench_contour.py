@@ -13,6 +13,7 @@ from .trench_guides import sweep_samples, in_bands, points_in_guides
 from .image_ops import _boundary_profile_index
 from .trench_rim import inset_rim
 from .trench_tem import interface_candidates, void_normal_sign
+from .trench_boundary_sample import prepare_templates, profile_candidates
 
 
 def _consensus_path(indices,candidates,distance,centers,normals,radius):
@@ -147,7 +148,8 @@ def _connect_region_gaps(chosen, distance, centers, guide, image_shape, corner_t
     return connected, sorted(joins, key=lambda join: join['start_index'])
 
 
-def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contrast=False, material_level=None, rim_inset_px=1., continuous=False):
+def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contrast=False, material_level=None, rim_inset_px=1., continuous=False, boundary_sample=None, sample_inverted=False):
+    if boundary_sample is not None:boundary_mode='sample_profile'
     samples=sweep_samples(guide)
     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(samples,axis=0),axis=1))]
     step=max(1.,arc[-1]/20000)
@@ -160,6 +162,8 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
     # Context may extend outside the corridor for contrast/connectivity tests;
     # every candidate position itself must stay within the configured radius.
     context=64 if boundary_mode=='rim_inset' else 48 if boundary_mode=='tem_interface' else 24
+    templates=prepare_templates(boundary_sample,sample_inverted) if boundary_sample is not None else None
+    if templates is not None:context=max(context,len(templates[0][0])+2)
     offsets=np.arange(-math.ceil(radius)-context,math.ceil(radius)+context+1,dtype=float)
     xy=centers[:,None,:]+normals[:,None,:]*offsets[None,:,None]
     valid=(xy[:,:,0]>=0)&(xy[:,:,0]<image.shape[1]-1)&(xy[:,:,1]>=0)&(xy[:,:,1]<image.shape[0]-1)
@@ -188,6 +192,13 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
     ks=np.arange(6,len(offsets)-6)
     far=(ks>=15)&(ks+15<len(offsets))
     for i,profile in enumerate(profiles):
+        if templates is not None:
+            matches=profile_candidates(profile,offsets,valid[i],radius,templates)
+            # Tangential pooling cannot turn a blank cross-section into a
+            # measured boundary. Such holes use the explicit join provenance.
+            evidence=profile_candidates(raw_profiles[i],offsets,valid[i],radius,templates)
+            candidates.append([c for c in matches if any(abs(c[0]-p[0])<=3 for p in evidence)])
+            continue
         if boundary_mode=='tem_interface':
             candidates.append(interface_candidates(profile,offsets,valid[i],radius,tem_sign))
             continue
@@ -374,12 +385,12 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
     measured=dict(chosen)
     peak_points={};inward_normals={}
     spread_by_index=dict(zip(sorted(measured),spreads))
-    if boundary_mode=='rim_inset':
+    if boundary_mode=='rim_inset' and templates is None:
         chosen,peak_points,inward_normals=inset_rim(chosen,centers,normals,profiles,offsets,guide,image.shape,rim_inset_px)
         measured=dict(chosen)
     joins=[]
     if continuous:
-        chosen,joins=_connect_region_gaps(chosen,distance,centers,guide,image.shape,corner_turns=boundary_mode=='tem_interface')
+        chosen,joins=_connect_region_gaps(chosen,distance,centers,guide,image.shape,corner_turns=boundary_mode=='tem_interface' or templates is not None)
     elif local_contrast:chosen,joins=_connect_short_gaps(chosen,distance,guide,image.shape)
     spreads=[spread_by_index.get(i) if i in measured else None for i in sorted(chosen)]
     for i,point in sorted(chosen.items()):
@@ -387,7 +398,8 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         segments[-1].append((i,point))
     coverage=len(measured)/len(centers)
     return dict(side='contour',requested_points=len(centers),detected_points=len(measured),
-                method='tem_gray_material_interface' if boundary_mode=='tem_interface' else
+                method='sampled_profile_landmark' if templates is not None else
+                       'tem_gray_material_interface' if boundary_mode=='tem_interface' else
                        'bright_crest_inward_offset' if boundary_mode=='rim_inset' else
                        'tangent_consensus_contour' if local_contrast else 'ordered_normal_contour',
                 rim_inset_px=rim_inset_px if boundary_mode=='rim_inset' else None,

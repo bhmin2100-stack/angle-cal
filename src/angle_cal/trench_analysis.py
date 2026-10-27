@@ -6,7 +6,7 @@ relative to the ROI's 1st--99th intensity percentiles, including for 16-bit inpu
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from copy import deepcopy
 import csv
 import json
@@ -25,6 +25,7 @@ from .trench_guided_surface import measure_guided_surfaces
 from .trench_smoothing import smooth_traces, smoothing_parameters, METHODS, MAX_STRENGTH
 from .trench_field_metrics import measure_field_metrics
 from .trench_auto_field import recover_fields, extend_export_surface
+from .trench_boundary_sample import validate_boundary_sample
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class TrenchOptions:
     contour_strength: float = 0.0
     continuous_guides: bool = False
     imaging_mode: str = 'vsem'
+    boundary_sample: dict | None = None
 
 
 @dataclass
@@ -448,6 +450,11 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
                    floor_reference: TrenchResult | None = None) -> TrenchResult:
     if image is None or image.size == 0:
         raise ValueError("먼저 이미지를 불러오세요.")
+    if options.boundary_sample is not None:
+        options=replace(options,boundary_mode='sample_profile',
+                        boundary_sample=validate_boundary_sample(options.boundary_sample,image.shape))
+        if not options.wall_guides:
+            raise ValueError('인식지점 샘플은 곡선 가이드와 함께 사용하세요.')
     x, top, width, height = (int(v) for v in options.roi)
     if x < 0 or top < 0 or width < 12 or height < 16 or x + width > image.shape[1] or top + height > image.shape[0]:
         raise ValueError("입구와 양쪽 벽을 포함하는 분석 영역을 이미지 안에 지정하세요 (최소 12×16 px).")
@@ -500,14 +507,15 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
         full_ridge=(full_gray-low)*(255.0/(high-low))
         if options.bright_trench:full_ridge=255-full_ridge
         full_ridge=cv2.GaussianBlur(full_ridge.astype(np.float32),(3,3),0)
-        mode=options.boundary_mode
+        mode='sample_profile' if options.boundary_sample is not None else options.boundary_mode
         if options.bright_trench and mode in ('brightest','darkest'):
             mode='darkest' if mode=='brightest' else 'brightest'
         material=ridge_image[ridge_image>threshold+20]
         local_material=float(np.percentile(material,75)) if len(material) else threshold+20
         traces=[trace_guide(full_ridge,g,threshold,mode,local_contrast=options.strict_guides,
                             material_level=local_material if options.strict_guides else None,
-                            rim_inset_px=options.rim_inset_px,continuous=options.continuous_guides) for g in guides]
+                            rim_inset_px=options.rim_inset_px,continuous=options.continuous_guides,
+                            boundary_sample=options.boundary_sample,sample_inverted=options.bright_trench) for g in guides]
         if options.continuous_guides and any(len(t['segments'])>1 for t in traces):
             raise ValueError('같은 구간의 경계를 인식 범위 안에서 연결할 수 없습니다. 끊긴 부분의 곡선 위치·폭을 보정하세요.')
         traces = smooth_traces(traces, guides, options.contour_smoothing,
@@ -744,6 +752,8 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         writer.writerow(["metadata", "nm_per_px", nm_per_px or "", "nm/px"])
         writer.writerow(["metadata", "bow_reference", result.options.bow_reference, ""])
         writer.writerow(["metadata", "boundary_mode", result.options.boundary_mode, ""])
+        if result.options.boundary_sample is not None:
+            writer.writerow(['metadata','boundary_sample',json.dumps(result.options.boundary_sample,ensure_ascii=False,allow_nan=False),'px / image intensity'])
         writer.writerow(["metadata", "imaging_mode_requested", result.options.imaging_mode, ""])
         for key,value in result.imaging.items():
             writer.writerow(['imaging',key,value,''])
