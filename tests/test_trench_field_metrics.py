@@ -7,6 +7,7 @@ from angle_cal.trench_workflow import recognize_from_guides
 from angle_cal.trench_field_metrics import measure_field_metrics
 from test_trench_corner import rounded_trench
 from test_trench_guided_surface import surface_guide
+from angle_cal.trench_analysis import trench_profile_exchange
 
 
 def analyze(image=None, guide=None, **kwargs):
@@ -75,7 +76,48 @@ def test_smoothing_does_not_move_the_field_reference_or_top_opening():
         assert abs(m['depth_px']-baseline['depth_px'])<=3
 
 
-def test_ui_field_tcd_depth_labels_units_saved_results_and_gfe(tmp_path):
+@pytest.mark.parametrize('method', ['mean','gaussian','savgol','robust'])
+def test_short_confirmed_fields_remain_exportable_after_strong_smoothing(method):
+    guide=surface_guide(15,30)
+    guide['points']=guide['points'][2:-2]
+    guide['points'][0][0]-=18
+    guide['points'][-1][0]+=18
+    baseline=analyze(guide=guide)
+    result=analyze(guide=guide,contour_smoothing=method,contour_strength=100)
+    assert all(f['status']=='valid' for f in baseline.field_angles)
+    assert all(f['status']=='valid' for f in result.field_angles)
+    assert result.field_measurements['anchors']==baseline.field_measurements['anchors']
+    assert result.field_measurements['tcd_status']=='valid'
+    for before,after in zip(baseline.field_angles,result.field_angles):
+        assert before['points']==after['points']
+    payload=trench_profile_exchange(result,.5)
+    points=np.asarray(result.guide_traces[0]['points'])
+    np.testing.assert_allclose(payload['points'],np.column_stack((
+        (points[:,0]-payload['origin_pixel'][0])*5,(payload['origin_pixel'][1]-points[:,1])*5)))
+
+
+@pytest.mark.parametrize('width', [32,48])
+def test_wide_search_corridor_uses_fields_at_actual_entrance(width):
+    guide=surface_guide(15,30);guide['half_width_px']=width
+    result=analyze(guide=guide)
+    assert all(f['status']=='valid' for f in result.field_angles)
+    assert result.field_measurements['tcd_status']=='valid'
+    assert result.field_measurements['tcd_px']==pytest.approx(145,abs=3)
+    assert result.field_measurements['depth_px']==pytest.approx(305,abs=1.5)
+
+
+def test_smoothing_does_not_manufacture_missing_short_fields():
+    guide=surface_guide(15,30);guide['points']=guide['points'][2:-2]
+    guide['points'][0][0]-=12;guide['points'][-1][0]+=12
+    result=analyze(guide=guide,contour_smoothing='mean',contour_strength=100)
+    assert all(f['status']=='unconfirmed' for f in result.field_angles)
+    assert result.field_measurements['tcd_px'] is None
+    with pytest.raises(ValueError,match='Field 미확정'):
+        trench_profile_exchange(result,.5)
+
+
+@pytest.mark.parametrize('short_smoothed',[False,True])
+def test_ui_field_tcd_depth_labels_units_saved_results_and_gfe(tmp_path,short_smoothed):
     from PySide6.QtWidgets import QApplication
     from angle_cal.trench_panel import TrenchPanel
     from test_trench_simple_workflow import finish
@@ -84,11 +126,19 @@ def test_ui_field_tcd_depth_labels_units_saved_results_and_gfe(tmp_path):
     try:
         p.set_image(rounded_trench(15,30),'field-test',.5)
         p.rim_reference.setChecked(False)
-        p.load_structure_payload(dict(wall_guides=[surface_guide(15,30)]))
+        guide=surface_guide(15,30)
+        if short_smoothed:
+            guide['points']=guide['points'][2:-2]
+            guide['points'][0][0]-=18;guide['points'][-1][0]+=18
+            p.smoothing_controls.method.setCurrentIndex(p.smoothing_controls.method.findData('mean'))
+            p.smoothing_controls.sliders['mean'].setValue(100)
+        p.load_structure_payload(dict(wall_guides=[guide]))
         p.start_analysis();finish(p,app)
         assert 'Field → 최하단 깊이' in p.summary_label.text()
         assert 'TCD (Field 입구 폭)' in p.summary_label.text()
         assert 'Field 자동 인식' in p.summary_label.text()
+        assert '좌측 Field 확인' in p.summary_label.text() and '우측 Field 확인' in p.summary_label.text()
+        assert p.profile_table.rowCount()>0
         p.graph.grab();p.grab().save(str(tmp_path/'workspace.png'))
         texts=[item.text() for item in p.overlays if hasattr(item,'text')]
         assert sum(text=='Field' for text in texts)==2

@@ -127,7 +127,8 @@ def measure_guided_surfaces(guides,traces,options,y,left,right,fields,corners,im
         branch=max(candidates,key=rank)
         canonical=np.column_stack((branch[:,0]*sign,branch[:,1]))
         trace=_resample(canonical)
-        if len(trace)<20:continue
+        if len(trace)<20:
+            item['reason']='Field와 입구를 분류할 연속 윤곽이 짧습니다 (20 px 이상 필요).';continue
         smooth=np.column_stack([cv2.GaussianBlur(trace[:,i:i+1],(1,11),2).ravel() for i in (0,1)])
         delta=np.gradient(smooth,axis=0)
         turns=_monotone(np.clip(np.degrees(np.arctan2(delta[:,1],delta[:,0])),-40,120))
@@ -157,7 +158,8 @@ def measure_guided_surfaces(guides,traces,options,y,left,right,fields,corners,im
         else:
             a=len(trace)-1;b=a
         field=trace[:a+1].copy();field[:,0]*=sign
-        if len(field)<16 or np.ptp(field[:,0])<15:continue
+        if len(field)<16 or np.ptp(field[:,0])<15:
+            item['reason']='입구의 둥근 구간을 제외한 Field 지지 폭이 15 px 미만입니다. 바깥쪽 평탄 표면까지 곡선을 늘려주세요.';continue
         # Quadratic residual validates a gently curved Field without flattening
         # its measured contour. A local derivative defines its entrance angle.
         x_origin=float(field[-1,0]);xx=field[:,0]-x_origin

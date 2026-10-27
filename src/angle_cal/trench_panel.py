@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from .image_ops import bgr_to_rgb8_for_display
-from .trench_analysis import TrenchOptions, TrenchResult, analyze_trench, export_trench_csv, trench_gfe_tsv, trench_profile_exchange, trench_profile_tsv
+from .trench_analysis import TrenchOptions, TrenchResult, analyze_trench, export_trench_csv, trench_gfe_tsv, trench_profile_exchange, trench_profile_tsv, field_status_lines
 from .trench_guides import normalize_guides
 from .trench_guide_view import TrenchGuideEditor
 from .trench_units import format_metric_length
@@ -1211,6 +1211,8 @@ class TrenchPanel(QWidget):
                f"Bowing 좌 / 우  {fmt(r.left_bowing_px)} / {fmt(r.right_bowing_px)}"]
         if field_found:
             lines.append('Field 자동 인식 · '+metrics['reason'])
+        lines.extend(field_status_lines(r.field_angles))
+        lines.append('그래프: 보라색 전체 윤곽 · 초록색 확인된 Field')
         if metrics.get('tcd_basis')=='segmented_transition_estimate':lines.append('TCD: 둥근 접점 미확정 · 평탄 구간 끝점으로 추정')
         elif r.options.strict_guides and not field_found:
             lines.append('위쪽 평평한 Field까지 곡선을 그리면 깊이·TCD를 자동 계측합니다.')

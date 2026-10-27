@@ -81,6 +81,17 @@ def test_missing_field_unscaled_or_broken_surface_cannot_export_fake_connections
         trench_profile_exchange(replace(result,guide_traces=[t]),.5)
 
 
+def test_export_reports_which_field_failed_and_its_reason(result):
+    fields=[result.field_angles[0],dict(result.field_angles[1],status='unconfirmed',
+            reason='Field 지지 구간이 짧습니다.',points=[])]
+    with pytest.raises(ValueError) as error:
+        trench_profile_exchange(replace(result,field_angles=fields),.5)
+    message=str(error.value)
+    assert '좌측 Field 확인' in message
+    assert '우측 Field 미확정: Field 지지 구간이 짧습니다.' in message
+    assert '보라색은 전체 윤곽' in message
+
+
 def split_bottom_result(result, separate=False, reverse=False, unequal=False):
     expected=[[-1500,0],[-250,0],[-100,-900],[-300,-1600],[-125,-4000],
               [125,-4100 if unequal else -4000],[300,-1600],[250,0],[1500,0]]

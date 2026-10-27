@@ -7,6 +7,7 @@ relative to the ROI's 1st--99th intensity percentiles, including for 16-bit inpu
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from copy import deepcopy
 import csv
 import json
 import math
@@ -141,6 +142,25 @@ class TrenchResult:
         }
 
 
+def field_status_lines(fields) -> list[str]:
+    """Use the same per-side classification in the workspace and export errors."""
+    by_side={item.get('side'):item for item in fields}
+    lines=[]
+    for side,label in (('left','좌측'),('right','우측')):
+        item=by_side.get(side,{})
+        if item.get('status')=='valid':
+            lines.append(f'{label} Field 확인')
+        else:
+            lines.append(f"{label} Field 미확정: {item.get('reason') or '상단 표면의 인식 구간이 없습니다.'}")
+    return lines
+
+
+def _require_export_fields(fields):
+    if len(fields)!=2 or {f.get('side') for f in fields}!={'left','right'} or any(f.get('status')!='valid' for f in fields):
+        raise ValueError('\n'.join(field_status_lines(fields))+
+                         '\n보라색은 전체 윤곽이며 Field 확정 표시가 아닙니다. 미확정 쪽의 상단 표면과 곡선 인식 범위를 확인하세요.')
+
+
 def _legacy_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
     """GFE surface path: right Field, right wall, floor, left wall, left Field.
 
@@ -163,10 +183,7 @@ def _legacy_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
         raise ValueError("입구·바닥 기준과 윤곽 좌표가 일치하지 않습니다.")
     if x0 >= float(np.min(left)) or x0 + width <= float(np.max(right)):
         raise ValueError("Field가 양쪽 측벽 바깥에 오도록 분석 영역을 넓히세요.")
-    if len(result.field_angles)!=2 or any(item["status"]!="valid" for item in result.field_angles):
-        if result.options.strict_guides:
-            raise ValueError('좌우 Field가 미확정입니다. 상단 Field까지 곡선 인식 범위에 포함해 다시 인식하세요.')
-        raise ValueError("좌우 Field가 미확정입니다. 표면 위쪽과 양쪽 바깥 재료를 포함하거나 Field 검색 범위를 조정하세요.")
+    _require_export_fields(result.field_angles)
     lf,rf=result.field_angles
     center = (float(left[0]) + float(right[0])) / 2
     reference = (np.polyval(lf["line"],left[0])+np.polyval(rf["line"],right[0]))/2
@@ -241,8 +258,7 @@ def trench_profile_exchange(result: TrenchResult, nm_per_px: float) -> dict:
     """
     if not math.isfinite(nm_per_px) or nm_per_px<=0:
         raise ValueError('GFE는 Å 좌표를 사용합니다. 먼저 nm/px 스케일을 보정하세요.')
-    if len(result.field_angles)!=2 or any(item.get('status')!='valid' for item in result.field_angles):
-        raise ValueError('좌우 Field가 미확정입니다. 양쪽 상단 Field까지 곡선에 포함해 다시 인식하세요.')
+    _require_export_fields(result.field_angles)
     lf,rf=result.field_angles
     metrics=result.field_measurements
     anchors=metrics.get('anchors',{})
@@ -654,6 +670,17 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
                 if item['points'] and not points_in_guides(item['points'],guides).all():
                     item.update(status='unconfirmed',angle_status='unconfirmed',angle_deg=None,points=[],
                                 reason='Field 맞춤 윤곽이 곡선 인식 범위를 벗어나 미확정입니다.')
+        angles=[item['angle_deg'] for item in field_angles]
+    if options.strict_guides and field_reference is not None:
+        # Field/entrance evidence is independent of contour smoothing. Keep the
+        # same validated original support for overlays, metrics and exports;
+        # otherwise smoothing can erase a short Field while its TCD stays valid.
+        for i, (reference, corner) in enumerate(zip(*field_reference)):
+            if (reference.get('source')=='guide' and (reference.get('status')!='valid'
+                    or reference.get('points') and points_in_guides(reference['points'],guides).all())):
+                field_angles[i]=deepcopy(reference)
+                field_angles[i]['reference_scope']='unsmoothed_image_contour'
+                corners[i]=deepcopy(corner)
         angles=[item['angle_deg'] for item in field_angles]
     if any(item['angle_status']!='valid' for item in field_angles):
         warnings.append("일부 Field 또는 각도가 미확정입니다. Field / 각도 탭에서 측정 구간과 이유를 확인하세요.")

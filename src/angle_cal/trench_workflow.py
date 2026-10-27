@@ -60,7 +60,12 @@ def recognize_from_guides(image,options):
         levels=[float(np.polyval(item['line'],edge[0])) for item,edge in zip(fields,(preliminary.left,preliminary.right))]
         if max(levels)-min(levels)<=options.field_search_px and abs(np.mean(levels)-top)<=options.field_search_px:
             top=max(0,int(math.floor(np.mean(levels))))
-    result=analyze_trench(image,replace(options,roi=(context[0],top,context[2],int(y1-top)),bright_trench=bright,wall_guides=guides),
-                          field_reference=(preliminary.field_angles,preliminary.corners))
+    final_options=replace(options,roi=(context[0],top,context[2],int(y1-top)),bright_trench=bright,wall_guides=guides)
+    # Establish Field support at the actual entrance before smoothing. The
+    # context pass may start more than field_search_px above the surface when
+    # the guide corridor is wide, so its missing Fields are not authoritative.
+    reference=analyze_trench(image,replace(final_options,contour_strength=0))
+    result=(analyze_trench(image,final_options,field_reference=(reference.field_angles,reference.corners))
+            if options.contour_strength else reference)
     result.imaging=imaging
     return result
