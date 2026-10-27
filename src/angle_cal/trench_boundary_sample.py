@@ -52,6 +52,66 @@ def sample_point(sample):
     return a + (b-a) * (sample['anchor_px'] / sample['distances_px'][-1])
 
 
+def validate_boundary_samples(value, image_shape=None):
+    """Optional per-wall overrides; v1 common samples stay independent."""
+    if value is None:return {}
+    if not isinstance(value, dict) or set(value)-{'left', 'right'}:
+        raise ValueError('좌우 인식지점 샘플 형식이 올바르지 않습니다.')
+    result = {}
+    for side in ('left', 'right'):
+        if value.get(side) is None:continue
+        try:result[side] = validate_boundary_sample(value[side], image_shape)
+        except ValueError as exc:
+            raise ValueError(f"{'왼쪽' if side=='left' else '오른쪽'} 측벽: {exc}") from exc
+    return result
+
+
+def wall_sample_scopes(centers, normals, guide, guides=(), samples=None):
+    """Assign wall branches without splitting the connected contour tracker.
+
+    The two branches of a U are separated at its floor in path order, not at
+    an image X midpoint. Thus asymmetric bowing and reverse drawing are safe.
+    Horizontal Field/floor sections retain the common/default image criterion.
+    """
+    roles = np.full(len(centers), 'surface', dtype=object)
+    vertical = abs(normals[:, 0]) >= .7
+    high = float(centers[:, 1].max()); depth = float(np.ptp(centers[:, 1]))
+    if (depth >= 16 and max(centers[0, 1], centers[-1, 1]) < high-max(12., depth*.3)
+            and abs(centers[-1, 0]-centers[0, 0]) >= 8):
+        bottom = np.flatnonzero(centers[:, 1] >= high-1.)
+        split = int(np.median(bottom))
+        first, second = ('left', 'right') if centers[0, 0] < centers[-1, 0] else ('right', 'left')
+        roles[vertical & (np.arange(len(centers)) <= split)] = first
+        roles[vertical & (np.arange(len(centers)) > split)] = second
+        return roles
+    # Legacy separate wall guides: use the cavity's row intersections, ignoring
+    # old manual side labels. No image pixels are searched outside the guide.
+    from .trench_guides import sweep_samples
+    rows = {}
+    for other in guides:
+        p = sweep_samples(other)
+        for a, b in zip(p[:-1], p[1:]):
+            if abs(b[1]-a[1]) < .1:continue
+            lo, hi = int(np.ceil(min(a[1], b[1]))), int(np.floor(max(a[1], b[1])))
+            for y in range(lo, hi+1):
+                x = float(a[0]+(y-a[1])*(b[0]-a[0])/(b[1]-a[1]))
+                row = rows.setdefault(y, [x, x]); row[0] = min(row[0], x); row[1] = max(row[1], x)
+    for i in np.flatnonzero(vertical):
+        bounds = rows.get(round(centers[i, 1]))
+        if bounds and bounds[1]-bounds[0] > 8:
+            roles[i] = 'left' if centers[i, 0] < sum(bounds)/2 else 'right'
+    # A standalone wall may only have one nearby sample. Use proximity to that
+    # guide (not the whole image midpoint); ambiguous assignment stays default.
+    if not np.any(roles != 'surface'):
+        near = []
+        for side, sample in (samples or {}).items():
+            distance = float(np.min(np.linalg.norm(centers-sample_point(sample), axis=1)))
+            if distance <= guide['half_width_px']+2:near.append((distance, side))
+        near.sort()
+        if near and (len(near)==1 or near[1][0]-near[0][0] > 4):roles[vertical] = near[0][1]
+    return roles
+
+
 def sample_polygon(sample):
     a, b = np.asarray(sample['start']), np.asarray(sample['end'])
     d = b-a

@@ -13,7 +13,7 @@ from .trench_guides import sweep_samples, in_bands, points_in_guides
 from .image_ops import _boundary_profile_index
 from .trench_rim import inset_rim
 from .trench_tem import interface_candidates, void_normal_sign
-from .trench_boundary_sample import prepare_templates, profile_candidates
+from .trench_boundary_sample import prepare_templates, profile_candidates, validate_boundary_samples, wall_sample_scopes
 
 
 def _consensus_path(indices,candidates,distance,centers,normals,radius):
@@ -148,7 +148,8 @@ def _connect_region_gaps(chosen, distance, centers, guide, image_shape, corner_t
     return connected, sorted(joins, key=lambda join: join['start_index'])
 
 
-def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contrast=False, material_level=None, rim_inset_px=1., continuous=False, boundary_sample=None, sample_inverted=False):
+def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contrast=False, material_level=None, rim_inset_px=1., continuous=False, boundary_sample=None, sample_inverted=False,
+                boundary_samples=None, guides=()):
     if boundary_sample is not None:boundary_mode='sample_profile'
     samples=sweep_samples(guide)
     arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(samples,axis=0),axis=1))]
@@ -161,9 +162,17 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
     radius=float(guide['half_width_px'])
     # Context may extend outside the corridor for contrast/connectivity tests;
     # every candidate position itself must stay within the configured radius.
-    context=64 if boundary_mode=='rim_inset' else 48 if boundary_mode=='tem_interface' else 24
+    base_context=64 if boundary_mode=='rim_inset' else 48 if boundary_mode=='tem_interface' else 24
+    context=base_context
     templates=prepare_templates(boundary_sample,sample_inverted) if boundary_sample is not None else None
-    if templates is not None:context=max(context,len(templates[0][0])+2)
+    side_samples=validate_boundary_samples(boundary_samples,image.shape)
+    side_templates={s:prepare_templates(v,sample_inverted) for s,v in side_samples.items()}
+    roles=wall_sample_scopes(centers,normals,guide,guides,side_samples) if side_samples else ['surface']*len(centers)
+    sample_scopes=[side if side in side_templates else 'common' if templates is not None else 'automatic' for side in roles]
+    active_templates=[side_templates.get(side,templates) for side in roles]
+    has_samples=templates is not None or bool(side_templates)
+    for template in ([templates] if templates is not None else [])+list(side_templates.values()):
+        context=max(context,len(template[0][0])+2)
     offsets=np.arange(-math.ceil(radius)-context,math.ceil(radius)+context+1,dtype=float)
     xy=centers[:,None,:]+normals[:,None,:]*offsets[None,:,None]
     valid=(xy[:,:,0]>=0)&(xy[:,:,0]<image.shape[1]-1)&(xy[:,:,1]>=0)&(xy[:,:,1]<image.shape[0]-1)
@@ -191,12 +200,14 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
     tem_sign=void_normal_sign(centers) if boundary_mode=='tem_interface' else None
     ks=np.arange(6,len(offsets)-6)
     far=(ks>=15)&(ks+15<len(offsets))
+    base_band=abs(offsets)<=math.ceil(radius)+base_context
     for i,profile in enumerate(profiles):
-        if templates is not None:
-            matches=profile_candidates(profile,offsets,valid[i],radius,templates)
+        selected_templates=active_templates[i]
+        if selected_templates is not None:
+            matches=profile_candidates(profile,offsets,valid[i],radius,selected_templates)
             # Tangential pooling cannot turn a blank cross-section into a
             # measured boundary. Such holes use the explicit join provenance.
-            evidence=profile_candidates(raw_profiles[i],offsets,valid[i],radius,templates)
+            evidence=profile_candidates(raw_profiles[i],offsets,valid[i],radius,selected_templates)
             candidates.append([c for c in matches if any(abs(c[0]-p[0])<=3 for p in evidence)])
             continue
         if boundary_mode=='tem_interface':
@@ -247,7 +258,7 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
             # First differences contain the real broad edge slope. Estimate
             # residual grain from second differences instead, so a smooth but
             # low-gradient flank does not disappear in favor of its crest.
-            gradient_floor=max(1.,min(4.,2*float(np.median(np.abs(np.diff(profile,n=2)))))) if local_contrast else 8
+            gradient_floor=max(1.,min(4.,2*float(np.median(np.abs(np.diff(profile[base_band],n=2)))))) if local_contrast else 8
             steep=supported&(np.abs(offsets[ks])<=radius)&(gradient>=gradient_floor)
             steep&=(gradient>=np.abs(b-profile[ks-2])/2)&(gradient>=np.abs(profile[ks+2]-b)/2)
             for j in np.flatnonzero(steep):
@@ -261,7 +272,7 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         ranked=[]
         dark_level=threshold+8
         if local_contrast and valid[i].any():
-            local=profile[valid[i]]
+            local=profile[valid[i] & base_band]
             # A shaded SEM cavity may stay much brighter than the global void
             # cutoff near one wall. Use the darker local side of a resolved rim,
             # while retaining ridge barriers and material-background rejection.
@@ -309,7 +320,7 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
             if len(ranked)==6:break
         if ranked and boundary_mode=='rim_inset':
             levels=np.interp([c[0] for c in ranked],offsets,profile)
-            low=float(np.min(profile));span=max(1.,float(np.max(profile))-low)
+            low=float(np.min(profile[base_band]));span=max(1.,float(np.max(profile[base_band]))-low)
             ranked=[(offset,96*(levels[j]-low)/span+.1*strength)
                     for j,(offset,strength) in enumerate(ranked)]
         elif ranked and boundary_mode!='inner_rim':
@@ -386,11 +397,14 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
     peak_points={};inward_normals={}
     spread_by_index=dict(zip(sorted(measured),spreads))
     if boundary_mode=='rim_inset' and templates is None:
-        chosen,peak_points,inward_normals=inset_rim(chosen,centers,normals,profiles,offsets,guide,image.shape,rim_inset_px)
+        sampled={i:p for i,p in chosen.items() if active_templates[i] is not None}
+        automatic={i:p for i,p in chosen.items() if active_templates[i] is None}
+        chosen,peak_points,inward_normals=inset_rim(automatic,centers,normals,profiles,offsets,guide,image.shape,rim_inset_px)
+        chosen.update(sampled)
         measured=dict(chosen)
     joins=[]
     if continuous:
-        chosen,joins=_connect_region_gaps(chosen,distance,centers,guide,image.shape,corner_turns=boundary_mode=='tem_interface' or templates is not None)
+        chosen,joins=_connect_region_gaps(chosen,distance,centers,guide,image.shape,corner_turns=boundary_mode=='tem_interface' or has_samples)
     elif local_contrast:chosen,joins=_connect_short_gaps(chosen,distance,guide,image.shape)
     spreads=[spread_by_index.get(i) if i in measured else None for i in sorted(chosen)]
     for i,point in sorted(chosen.items()):
@@ -398,7 +412,7 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
         segments[-1].append((i,point))
     coverage=len(measured)/len(centers)
     return dict(side='contour',requested_points=len(centers),detected_points=len(measured),
-                method='sampled_profile_landmark' if templates is not None else
+                method='side_sampled_profile_landmarks' if side_templates else 'sampled_profile_landmark' if templates is not None else
                        'tem_gray_material_interface' if boundary_mode=='tem_interface' else
                        'bright_crest_inward_offset' if boundary_mode=='rim_inset' else
                        'tangent_consensus_contour' if local_contrast else 'ordered_normal_contour',
@@ -414,6 +428,8 @@ def trace_guide(image, guide, threshold, boundary_mode='inner_rim', local_contra
                 connected_coverage=len(chosen)/len(centers),interpolated_points=len(chosen)-len(measured),
                 continuity_requested=continuous,continuity_complete=bool(segments) and len(segments)==1,
                 joins=joins,point_sources=['measured' if i in measured else 'interpolated' for i in sorted(chosen)],
+                point_boundary_scopes=[sample_scopes[i] for i in sorted(chosen)],
+                sample_scope_counts={s:sum(sample_scopes[i]==s for i in measured) for s in ('left','right','common','automatic')} if has_samples else {},
                 reason=('검출 경계 사이의 누락을 인식 범위 안에서 보간해 연결했습니다.' if joins else '곡선 방향의 연결된 명암 경계')
                        if len(segments)<=1 else '연결할 근거가 부족한 구간이 남아 있습니다.',
                 segments=[[point for _,point in segment] for segment in segments],

@@ -5,10 +5,10 @@ import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QGraphicsScene,
-    QGraphicsView, QHBoxLayout, QLabel, QPushButton, QSpinBox, QSplitter, QVBoxLayout, QWidget)
+    QGraphicsView, QHBoxLayout, QLabel, QPushButton, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget)
 
 from .image_ops import bgr_to_rgb8_for_display
-from .trench_boundary_sample import make_boundary_sample, sample_point, sample_polygon, validate_boundary_sample
+from .trench_boundary_sample import make_boundary_sample, sample_point, sample_polygon, validate_boundary_sample, validate_boundary_samples
 from .trench_guides import sweep_samples
 
 
@@ -154,8 +154,13 @@ class BrightnessProfile(QWidget):
 
 
 class BoundarySampleDialog(QDialog):
-    def __init__(self, image, sample=None, guides=(), parent=None):
+    sample_changed = Signal()
+
+    def __init__(self, image, sample=None, guides=(), parent=None, *, embedded=False):
         super().__init__(parent); self.image = image; self.sample = None; self.line = None
+        self.embedded = embedded
+        self.sample_error = False
+        if embedded:self.setWindowFlags(Qt.WindowType.Widget)
         self.setWindowTitle('인식지점 지정 · 이미지와 밝기 변화'); self.resize(1120, 740)
         root = QVBoxLayout(self)
         note = QLabel('① 경계에 수직으로 짧게 드래그 → ② 밝기 그래프 또는 확대 이미지에서 기준점 클릭 → ③ 적용\n'
@@ -166,6 +171,8 @@ class BoundarySampleDialog(QDialog):
         self.band = QSpinBox(); self.band.setRange(1, 41); self.band.setSingleStep(2); self.band.setValue(7)
         self.band.setSuffix(' px'); self.band.setAccessibleName('샘플 띠 폭'); row.addWidget(QLabel('평균 띠 폭')); row.addWidget(self.band)
         fit = QPushButton('전체 보기'); row.addWidget(fit); zoom = QPushButton('샘플 확대'); row.addWidget(zoom)
+        self.clear_button = QPushButton('이 샘플 지우기'); row.addWidget(self.clear_button)
+        self.clear_button.clicked.connect(self.clear_sample)
         row.addStretch(); root.addLayout(row)
         split = QSplitter(); self.view = SampleImageView(image, guides); split.addWidget(self.view)
         right = QWidget(); right_layout = QVBoxLayout(right); right_layout.setContentsMargins(3, 0, 0, 0)
@@ -185,6 +192,7 @@ class BoundarySampleDialog(QDialog):
         self.apply_button = buttons.button(QDialogButtonBox.StandardButton.Apply); self.apply_button.setText('이 지점을 기준으로 적용')
         self.apply_button.setEnabled(False); self.apply_button.clicked.connect(self.accept); buttons.rejected.connect(self.reject); root.addWidget(buttons)
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('취소')
+        if embedded:buttons.hide()
         self.view.line_drawn.connect(self._new_line); self.view.point_picked.connect(self._pick_image)
         self.detail.point_picked.connect(self._pick_image); self.graph.position_picked.connect(self.position.setValue)
         self.position.valueChanged.connect(self._select); self.band.valueChanged.connect(self._resample)
@@ -193,13 +201,26 @@ class BoundarySampleDialog(QDialog):
         if sample is not None:
             try:
                 old = validate_boundary_sample(sample, image.shape)
-                self.band.setValue(round(2*old['half_width_px']+1)); self.line = (old['start'], old['end'])
-                self._resample(anchor=old['anchor_px'])
-            except ValueError as exc:self.status.setText(str(exc))
-        QTimer.singleShot(0, self.view.fit_image)
+                self.band.blockSignals(True); self.band.setValue(round(2*old['half_width_px']+1)); self.band.blockSignals(False)
+                self.line = (old['start'], old['end']); self._show_profile(old)
+            except ValueError as exc:self.sample_error = True; self.status.setText(str(exc))
+        QTimer.singleShot(0, self.view, self.view.fit_image)
         # Fit after the dialog/splitter has its visible size, including when a
         # saved sample is restored before the dialog is first shown.
-        QTimer.singleShot(0, self._fit_detail)
+        QTimer.singleShot(0, self, self._fit_detail)
+
+    def keyPressEvent(self, event):
+        # Embedded tab pages must not consume Escape/Enter as their own dialog.
+        if self.embedded:QWidget.keyPressEvent(self, event)
+        else:super().keyPressEvent(event)
+
+    def clear_sample(self):
+        self.sample = None; self.line = None; self.sample_error = False
+        self.position.blockSignals(True); self.position.setValue(0); self.position.blockSignals(False)
+        self.view.show_sample(None); self.detail.show_sample(None); self.graph.set_sample(None)
+        self.draw_button.setChecked(True); self.apply_button.setEnabled(False); self.info.clear()
+        self.status.setText('샘플 미지정 · 이미지에서 경계를 가로질러 드래그하세요.')
+        self.sample_changed.emit()
 
     def _fit_detail(self):
         if self.sample is None:self.detail.fit_image()
@@ -216,12 +237,18 @@ class BoundarySampleDialog(QDialog):
             self.sample = make_boundary_sample(self.image, *self.line, (self.band.value()-1)/2, anchor)
         except ValueError as exc:
             self.sample = None; self.graph.set_sample(None); self.detail.show_sample(None)
-            self.apply_button.setEnabled(False); self.info.clear(); self.status.setText(str(exc)); return
+            self.sample_error = True; self.apply_button.setEnabled(False); self.info.clear(); self.status.setText(str(exc))
+            self.sample_changed.emit(); return
+        self._show_profile(self.sample)
+
+    def _show_profile(self, sample):
+        self.sample = sample
+        self.sample_error = False
         self.position.blockSignals(True); self.position.setRange(0, self.sample['distances_px'][-1])
         self.position.setValue(self.sample['anchor_px']); self.position.blockSignals(False)
         self.draw_button.setChecked(False); self.apply_button.setEnabled(True)
         self.status.setText('그래프 또는 확대 이미지에서 주황색 기준점을 선택하세요. 샘플은 현재 이미지에 저장됩니다.')
-        self._select(self.position.value()); self.detail.zoom_sample(self.sample)
+        self._select(sample['anchor_px']); self.detail.zoom_sample(self.sample)
 
     def _select(self, distance):
         if self.sample is None:return
@@ -232,6 +259,7 @@ class BoundarySampleDialog(QDialog):
                           f"샘플 A ({self.sample['start'][0]:.1f}, {self.sample['start'][1]:.1f}) → "
                           f"B ({self.sample['end'][0]:.1f}, {self.sample['end'][1]:.1f})")
         self.view.show_sample(self.sample); self.detail.show_sample(self.sample); self.graph.set_sample(self.sample)
+        self.sample_changed.emit()
 
     def _pick_image(self, point):
         if self.sample is None:return
@@ -243,3 +271,47 @@ class BoundarySampleDialog(QDialog):
         if self.sample is not None:self.view.zoom_sample(self.sample)
 
     def selected_sample(self):return validate_boundary_sample(self.sample, self.image.shape)
+
+
+class BoundarySamplesDialog(QDialog):
+    """Independent editors prevent tab switches from overwriting the other wall."""
+    def __init__(self, image, common=None, samples=None, guides=(), parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('좌우 인식지점 지정 · 이미지와 밝기 변화'); self.resize(1180, 820)
+        root = QVBoxLayout(self)
+        note = QLabel('왼쪽·오른쪽 측벽에서 각각 샘플 구역을 그리고 밝기 그래프의 기준점을 선택하세요.\n'
+                      '미지정 측벽과 Field·바닥은 공통 샘플을 사용하며, 공통 샘플도 없으면 기존 인식 기준을 사용합니다.')
+        note.setWordWrap(True); root.addWidget(note)
+        samples = validate_boundary_samples(samples, image.shape)
+        self.tabs = QTabWidget(); self.tabs.setObjectName('boundary_sample_sides'); root.addWidget(self.tabs, 1)
+        self.editors = {}; self.labels = {'left':'왼쪽 측벽', 'right':'오른쪽 측벽', 'common':'공통 · 기존 설정'}
+        for side, label in self.labels.items():
+            editor = BoundarySampleDialog(image, common if side=='common' else samples.get(side), guides, self, embedded=True)
+            editor.setObjectName('boundary_sample_'+side)
+            editor.sample_changed.connect(self._refresh)
+            self.editors[side] = editor; self.tabs.addTab(editor, label)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Cancel)
+        self.apply_button = buttons.button(QDialogButtonBox.StandardButton.Apply)
+        self.apply_button.setText('좌우 설정 적용'); self.apply_button.clicked.connect(self.accept)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('취소'); buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+        self.tabs.currentChanged.connect(self._fit_tab)
+        self._refresh()
+        QTimer.singleShot(0, self, self._fit_tab)
+
+    def _refresh(self):
+        self.apply_button.setEnabled(not any(e.sample_error for e in self.editors.values()))
+        for i, (side, editor) in enumerate(self.editors.items()):
+            state = '확인 필요' if editor.sample_error else '지정됨' if editor.sample is not None else '미지정'
+            self.tabs.setTabText(i, self.labels[side]+' · '+state)
+
+    def _fit_tab(self, *_args):
+        editor = self.tabs.currentWidget()
+        QTimer.singleShot(0, editor.view, editor.view.fit_image); QTimer.singleShot(0, editor, editor._fit_detail)
+
+    def selected_samples(self):
+        return {s:e.selected_sample() for s,e in self.editors.items() if s!='common' and e.sample is not None}
+
+    def selected_common_sample(self):
+        editor = self.editors['common']
+        return editor.selected_sample() if editor.sample is not None else None

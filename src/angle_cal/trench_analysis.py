@@ -25,7 +25,7 @@ from .trench_guided_surface import measure_guided_surfaces
 from .trench_smoothing import smooth_traces, smoothing_parameters, METHODS, MAX_STRENGTH
 from .trench_field_metrics import measure_field_metrics, contour_floor
 from .trench_auto_field import recover_fields, extend_export_surface
-from .trench_boundary_sample import validate_boundary_sample
+from .trench_boundary_sample import validate_boundary_sample, validate_boundary_samples
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,7 @@ class TrenchOptions:
     imaging_mode: str = 'vsem'
     boundary_sample: dict | None = None
     nm_per_px: float | None = None  # physical 100 A upper-wall fit span
+    boundary_samples: dict | None = None  # left/right overrides, common sample stays compatible
 
 
 @dataclass
@@ -120,7 +121,7 @@ class TrenchResult:
         return {
             "format": "anglecal.trench.v1", "options": asdict(self.options),
             "imaging": self.imaging,
-            "wall_boundary": "tem_gray_material_interface" if self.options.boundary_mode=='tem_interface' else "bright_crest_plus_inward_normal_offset" if self.options.boundary_mode=='rim_inset' else "connected_inner_rim_peak_or_gradient",
+            "wall_boundary": "side_sampled_profile_landmarks" if self.options.boundary_samples else "sampled_profile_landmark" if self.options.boundary_sample else "tem_gray_material_interface" if self.options.boundary_mode=='tem_interface' else "bright_crest_plus_inward_normal_offset" if self.options.boundary_mode=='rim_inset' else "connected_inner_rim_peak_or_gradient",
             "nm_per_px": nm_per_px, "summary": self.summary(),
             "warnings": self.warnings, "corners": self.corners,
             "corner_length_units": {unit: [
@@ -452,6 +453,10 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
                    wall_reference: TrenchResult | None = None) -> TrenchResult:
     if image is None or image.size == 0:
         raise ValueError("먼저 이미지를 불러오세요.")
+    side_samples=validate_boundary_samples(options.boundary_samples,image.shape)
+    options=replace(options,boundary_samples=side_samples or None)
+    if side_samples and not options.wall_guides:
+        raise ValueError('좌우 인식지점 샘플은 곡선 가이드와 함께 사용하세요.')
     if options.boundary_sample is not None:
         options=replace(options,boundary_mode='sample_profile',
                         boundary_sample=validate_boundary_sample(options.boundary_sample,image.shape))
@@ -519,7 +524,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
         traces=[trace_guide(full_ridge,g,threshold,mode,local_contrast=options.strict_guides,
                             material_level=local_material if options.strict_guides else None,
                             rim_inset_px=options.rim_inset_px,continuous=options.continuous_guides,
-                            boundary_sample=options.boundary_sample,sample_inverted=options.bright_trench) for g in guides]
+                            boundary_sample=options.boundary_sample,sample_inverted=options.bright_trench,
+                            boundary_samples=side_samples,guides=guides) for g in guides]
         if options.continuous_guides and any(len(t['segments'])>1 for t in traces):
             raise ValueError('같은 구간의 경계를 인식 범위 안에서 연결할 수 없습니다. 끊긴 부분의 곡선 위치·폭을 보정하세요.')
         traces = smooth_traces(traces, guides, options.contour_smoothing,
@@ -766,6 +772,8 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
         writer.writerow(["metadata", "boundary_mode", result.options.boundary_mode, ""])
         if result.options.boundary_sample is not None:
             writer.writerow(['metadata','boundary_sample',json.dumps(result.options.boundary_sample,ensure_ascii=False,allow_nan=False),'px / image intensity'])
+        if result.options.boundary_samples:
+            writer.writerow(['metadata','boundary_samples',json.dumps(result.options.boundary_samples,ensure_ascii=False,allow_nan=False),'px / image intensity'])
         writer.writerow(["metadata", "imaging_mode_requested", result.options.imaging_mode, ""])
         for key,value in result.imaging.items():
             writer.writerow(['imaging',key,value,''])

@@ -5,13 +5,14 @@ import numpy as np
 from .trench_analysis import analyze_trench
 from .trench_guides import normalize_guides, sweep_samples
 from .trench_tem import image_contrast_mode, void_normal_sign
-from .trench_boundary_sample import validate_boundary_sample
+from .trench_boundary_sample import validate_boundary_sample, validate_boundary_samples
 
 
 def recognize_from_guides(image,options):
     options=replace(options,strict_guides=True,continuous_guides=True)
     guides=normalize_guides(options.wall_guides,image.shape)
     if not guides:raise ValueError('먼저 곡선을 그리거나 구조를 불러온 뒤 인식을 누르세요.')
+    options=replace(options,boundary_samples=validate_boundary_samples(options.boundary_samples,image.shape) or None)
     if options.boundary_sample is not None:
         options=replace(options,boundary_mode='sample_profile',
                         boundary_sample=validate_boundary_sample(options.boundary_sample,image.shape))
@@ -25,7 +26,8 @@ def recognize_from_guides(image,options):
         if any(void_normal_sign(sweep_samples(g)) is None for g in guides):
             raise ValueError('TEM은 양쪽 측벽과 바닥을 하나로 잇는 곡선으로 그려주세요. Field도 함께 포함할 수 있습니다.')
         options=replace(options,boundary_mode='tem_interface')
-    imaging['boundary_method']=('sampled_profile_landmark' if options.boundary_sample is not None else
+    imaging['boundary_method']=('side_sampled_profile_landmarks' if options.boundary_samples else
+                               'sampled_profile_landmark' if options.boundary_sample is not None else
                                'tem_gray_material_interface' if use_tem else options.boundary_mode)
     h,w=image.shape[:2];candidates=[]
     # SEM footers and dimension labels outside the requested contour must not
@@ -53,7 +55,7 @@ def recognize_from_guides(image,options):
             candidates.append((result.depth_px is not None,support,len(result.y),bright,result))
         except ValueError:continue
     if not candidates:
-        if options.boundary_sample is not None:
+        if options.boundary_sample is not None or options.boundary_samples:
             raise ValueError('지정한 밝기 변화 샘플과 일치하는 Trench 경계를 찾지 못했습니다. 대표적인 경계를 가로질러 짧게 다시 지정하거나 샘플 사용을 끄세요.')
         if options.boundary_mode=='rim_inset':
             raise ValueError('곡선 범위에서 양쪽의 밝은 테두리를 찾지 못했습니다. 범위·이동량을 확인하세요. 밝은 띠가 없는 영상은 「밝은 테두리 기준」을 끄고 기존 방식으로 인식할 수 있습니다.')
