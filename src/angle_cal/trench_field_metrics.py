@@ -34,6 +34,7 @@ def measure_field_metrics(fields, traces, guides, y, left, right, closed, corner
                   reference_y_px=None, tcd_px=None, depth_px=None,
                   anchors={}, anchor_sources={}, flat_supports={}, bottom_point=None, bottom_source=None,
                   left_depth_px=None, right_depth_px=None,
+                  automatic_fields=[f['side'] for f in fields if f.get('automatic_field') and f.get('status')=='valid'],
                   definition='horizontal_distance_between_field_transition_points; vertical_depth_from_mean_field_height')
     for item in fields:
         if item.get('source') != 'guide' or item.get('status') != 'valid':

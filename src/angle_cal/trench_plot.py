@@ -35,6 +35,9 @@ def shape_series(result, show_raw=False):
         if field.get('status') == 'valid' and len(field.get('points', [])) >= 2:
             points = np.asarray(field['points'], dtype=float)
             series.append((points[:, 0], points[:, 1], '#268b48', False))
+            extension=np.asarray(field.get('extension',{}).get('points_pixel',[]),float)
+            if len(extension)>=2:
+                series.append((extension[:,0],extension[:,1],'#268b48',True))
     series.extend(((result.left, result.y, '#007d92', False),
                    (result.right, result.y, '#bb4b1e', False)))
     if floor is not None and not measured_floor:

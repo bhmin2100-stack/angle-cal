@@ -1213,6 +1213,8 @@ class TrenchPanel(QWidget):
             lines.append('Field 자동 인식 · '+metrics['reason'])
         lines.extend(field_status_lines(r.field_angles))
         lines.append('그래프: 보라색 전체 윤곽 · 초록색 확인된 Field')
+        if any(f.get('extension',{}).get('points_pixel') for f in r.field_angles):
+            lines.append('초록 점선: Field 자동 연장 (추정 형상) · 깊이/TCD는 검출된 가로 구간 기준')
         if metrics.get('tcd_basis')=='segmented_transition_estimate':lines.append('TCD: 둥근 접점 미확정 · 평탄 구간 끝점으로 추정')
         elif r.options.strict_guides and not field_found:
             lines.append('위쪽 평평한 Field까지 곡선을 그리면 깊이·TCD를 자동 계측합니다.')
@@ -1325,9 +1327,14 @@ class TrenchPanel(QWidget):
             points=metrics.get('flat_supports',{}).get(item['side'],item['points']);path=QPainterPath(QPointF(*points[0]))
             for point in points[1:]:path.lineTo(QPointF(*point))
             self.overlays.append(scene.addPath(path,_pen('#60ed8d',2)))
-            label=scene.addSimpleText('Field');label.setBrush(QColor('#60ed8d'))
+            label=scene.addSimpleText('Field 자동' if item.get('automatic_field') else 'Field');label.setBrush(QColor('#60ed8d'))
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,True)
             label.setPos(points[len(points)//2][0],points[len(points)//2][1]-22);self.overlays.append(label)
+            extension=item.get('extension',{}).get('points_pixel',[])
+            if len(extension)>=2:
+                path=QPainterPath(QPointF(*extension[0]))
+                for point in extension[1:]:path.lineTo(QPointF(*point))
+                self.overlays.append(scene.addPath(path,_pen('#60ed8d',2,True)))
         if metrics.get('tcd_status')=='valid':
             a,b=metrics['anchors']['left'],metrics['anchors']['right'];ref=metrics['reference_y_px']
             self.overlays.append(scene.addLine(a[0],ref,b[0],ref,_pen('#60ed8d',1.5)))
@@ -1420,6 +1427,7 @@ class TrenchPanel(QWidget):
         QApplication.clipboard().setText(table)
         note = ' · 바닥 미확정, 전체 깊이 미확정' if self.result.depth_px is None else ''
         if payload['bottom_connection']:note+=' · 하단 끝점 자동 연결'
+        if payload['field_extensions']:note+=' · Field 자동 연장 포함'
         self.hint.setText(f"GFE 좌표 {len(table.splitlines()) - 1}개 복사 완료 (Å{note}). GFE 표에서 Ctrl+V로 붙여넣으세요.")
 
     def _render_profile_coordinates(self):
@@ -1444,6 +1452,7 @@ class TrenchPanel(QWidget):
         finally:self.profile_table.setUpdatesEnabled(True)
         note = ' · 바닥/전체 깊이 미확정' if self.result.depth_px is None else ''
         if payload['bottom_connection']:note+=' · 하단 끝점 자동 연결 (점선)'
+        if payload['field_extensions']:note+=' · Field 자동 연장 포함 (점선)'
         self.profile_status.setText(f'{len(rows):,}점 · Å · 입구 중앙 X=0 / Field 기준 Y=0 · 깊이 음수\n왼쪽 Field → 윤곽 순서 → 오른쪽 Field · 열린 윤곽{note}')
 
     def _copy_profile_rows(self):

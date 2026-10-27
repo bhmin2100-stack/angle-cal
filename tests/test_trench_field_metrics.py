@@ -108,7 +108,7 @@ def test_wide_search_corridor_uses_fields_at_actual_entrance(width):
 
 def test_smoothing_does_not_manufacture_missing_short_fields():
     guide=surface_guide(15,30);guide['points']=guide['points'][2:-2]
-    guide['points'][0][0]-=12;guide['points'][-1][0]+=12
+    guide['points'][0][0]-=4;guide['points'][-1][0]+=4
     result=analyze(guide=guide,contour_smoothing='mean',contour_strength=100)
     assert all(f['status']=='unconfirmed' for f in result.field_angles)
     assert result.field_measurements['tcd_px'] is None

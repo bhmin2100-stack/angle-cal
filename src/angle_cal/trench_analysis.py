@@ -24,6 +24,7 @@ from .trench_contour import trace_guide, guided_cavity_profile
 from .trench_guided_surface import measure_guided_surfaces
 from .trench_smoothing import smooth_traces, smoothing_parameters, METHODS
 from .trench_field_metrics import measure_field_metrics
+from .trench_auto_field import recover_fields, extend_export_surface
 
 
 @dataclass(frozen=True)
@@ -149,7 +150,7 @@ def field_status_lines(fields) -> list[str]:
     for side,label in (('left','좌측'),('right','우측')):
         item=by_side.get(side,{})
         if item.get('status')=='valid':
-            lines.append(f'{label} Field 확인')
+            lines.append(f'{label} Field 자동 구성' if item.get('automatic_field') else f'{label} Field 확인')
         else:
             lines.append(f"{label} Field 미확정: {item.get('reason') or '상단 표면의 인식 구간이 없습니다.'}")
     return lines
@@ -265,7 +266,7 @@ def trench_profile_exchange(result: TrenchResult, nm_per_px: float) -> dict:
     center=(anchors['left'][0]+anchors['right'][0])/2 if len(anchors)==2 else (float(result.left[0])+float(result.right[0]))/2
     reference=metrics.get('reference_y_px')
     if reference is None:reference=float((np.polyval(lf['line'],result.left[0])+np.polyval(rf['line'],result.right[0]))/2)
-    bottom_join=None
+    bottom_join=None;field_extensions=[]
     if result.options.strict_guides:
         candidates=[]
         for trace in result.guide_traces:
@@ -287,12 +288,17 @@ def trench_profile_exchange(result: TrenchResult, nm_per_px: float) -> dict:
             p,bottom_join=joined
         else:
             raise ValueError('GFE 윤곽을 연결할 수 없습니다. 양쪽 Field와 벽을 확인하세요. 자동 연결은 맨 아래 두 끝점에만 적용됩니다.')
+        p,field_extensions=extend_export_surface(p,result.field_angles)
+        for item in field_extensions:
+            extension=np.asarray(item['points_pixel'])
+            item['points']=np.column_stack(((extension[:,0]-center)*nm_per_px*10,
+                                           (reference-extension[:,1])*nm_per_px*10)).tolist()
         converted=np.column_stack(((p[:,0]-center)*nm_per_px*10,(reference-p[:,1])*nm_per_px*10))
         kept=[converted[0].tolist()]
         for point in converted[1:]:
             if np.max(np.abs(point-kept[-1]))>1e-10:kept.append(point.tolist())
         points=kept
-        source='ordered_guide_contour'
+        source='ordered_guide_contour_with_field_extensions' if field_extensions else 'ordered_guide_contour'
     else:
         points=np.loadtxt(_legacy_gfe_tsv(result,nm_per_px).splitlines()[1:]).tolist()
         source='legacy_wall_field_reconstruction'
@@ -312,7 +318,7 @@ def trench_profile_exchange(result: TrenchResult, nm_per_px: float) -> dict:
                 origin_pixel=[float(center),float(reference)],nm_per_px=float(nm_per_px),source=source,
                 interpolation_included=any(t.get('interpolated_points',0)>0 for t in result.guide_traces),
                 initial_voids_source='not_analyzed',bottom_detected=result.depth_px is not None,
-                bottom_connection=connection)
+                bottom_connection=connection,field_extensions=field_extensions)
 
 
 def trench_gfe_tsv(result: TrenchResult, nm_per_px: float) -> str:
@@ -666,6 +672,8 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
                               reason='곡선 인식 범위에 입구 전이 윤곽이 포함되지 않았습니다.')
         field_angles,corners=measure_guided_surfaces(guides,traces,options,y,left,right,field_angles,corners,image.shape)
         if options.strict_guides:
+            field_angles=recover_fields(field_angles,traces,options,y,left,right,image.shape)
+        if options.strict_guides:
             for item in field_angles:
                 if item['points'] and not points_in_guides(item['points'],guides).all():
                     item.update(status='unconfirmed',angle_status='unconfirmed',angle_deg=None,points=[],
@@ -747,6 +755,7 @@ def export_trench_csv(path: str | Path, result: TrenchResult, nm_per_px: float |
             try:
                 exchange=trench_profile_exchange(result,nm_per_px)
                 writer.writerow(['profile_exchange','bottom_connection',json.dumps(exchange['bottom_connection'],allow_nan=False),'A / px'])
+                writer.writerow(['profile_exchange','field_extensions',json.dumps(exchange['field_extensions'],allow_nan=False),'A / px'])
             except ValueError as exc:
                 writer.writerow(['profile_exchange','error',str(exc),''])
         for index,trace in enumerate(result.guide_traces):
