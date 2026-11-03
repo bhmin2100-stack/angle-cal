@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from .image_ops import to_gray
+from .number_format import format_number
 from .trench_corner import measure_entrance_corner
 from .trench_surface import measure_field_angles, connect_entrance
 from .trench_guides import normalize_guides, prepare_guide_bands, in_bands, sweep_samples, points_in_guides
@@ -612,7 +613,7 @@ def analyze_trench(image: np.ndarray, options: TrenchOptions, *, field_reference
         raise ValueError('좌우 가이드 또는 경계가 교차합니다. 가이드의 좌우와 인식 폭을 확인하세요.')
     warnings: list[str] = []
     if options.contour_strength:
-        warnings.append(f'윤곽 보정: {METHODS[options.contour_smoothing]} {options.contour_strength:g}/{MAX_STRENGTH}. '
+        warnings.append(f'윤곽 보정: {METHODS[options.contour_smoothing]} {format_number(options.contour_strength, 6)}/{MAX_STRENGTH}. '
                         '보정 전 윤곽을 함께 저장합니다. Depth의 바닥 폐쇄 판단은 기존 밝기 기준입니다.')
     joined=sum(len(t.get('joins',[])) for t in traces)
     if joined:

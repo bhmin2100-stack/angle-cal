@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from .image_ops import bgr_to_rgb8_for_display
+from .number_format import format_number
 from .trench_analysis import TrenchOptions, TrenchResult, analyze_trench, export_trench_csv, trench_gfe_tsv, trench_profile_exchange, trench_profile_tsv, field_status_lines
 from .trench_guides import normalize_guides
 from .trench_guide_view import TrenchGuideEditor
@@ -192,7 +193,7 @@ def draw_corner(scene, corner, factor=1.0, unit="px"):
         items.append(scene.addLine(cx, cy, px, py, _pen("#df91ff", 1)))
         items.append(scene.addLine(cx - 2, cy, cx + 2, cy, _pen("#df91ff", 1)))
         items.append(scene.addLine(cx, cy - 2, cx, cy + 2, _pen("#df91ff", 1)))
-        label = scene.addSimpleText(f"{'L' if corner['side'] == 'left' else 'R'} R {corner['radius_px'] * factor:.4g} {unit}")
+        label = scene.addSimpleText(f"{'L' if corner['side'] == 'left' else 'R'} R {format_number(corner['radius_px'] * factor, 4)} {unit}")
         label.setBrush(QColor("#df91ff"))
         label.setPos(cx + 4, cy + 4)
         label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
@@ -343,9 +344,9 @@ class CornerEditor(QGroupBox):
         else:
             self.focus_rect = roi
         radius, error = corner.get("radius_px"), corner.get("rms_px")
-        text = "R 미확정" if radius is None else f"대표 R  {radius * factor:.4g} {unit}"
+        text = "R 미확정" if radius is None else f"대표 R  {format_number(radius * factor, 4)} {unit}"
         if error is not None:
-            text += f"  ·  맞춤 RMS {error * factor:.3g} {unit}"
+            text += f"  ·  맞춤 RMS {format_number(error * factor, 3)} {unit}"
         self.label.setText(text + "\n" + corner["reason"])
         self.label.setToolTip("RMS는 윤곽과 원호의 맞춤 오차이며 실제 치수의 정확도 또는 신뢰 확률이 아닙니다.")
         self._preview_endpoints()
@@ -379,7 +380,7 @@ def draw_field_angle(scene, item, factor=1., unit="px"):
         drawn.append(scene.addLine(support[0,0], m*support[0,0]+c, support[-1,0], m*support[-1,0]+c, _pen(color, 1, True)))
         prefix="Field" if item["status"]=="valid" else "Field 후보"
         basis=' · 입구 접선' if item.get('curved') else ''
-        text = scene.addSimpleText(f"{prefix}{basis} RMS {item['rms_px'] * factor:.3g} {unit}")
+        text = scene.addSimpleText(f"{prefix}{basis} RMS {format_number(item['rms_px'] * factor, 3)} {unit}")
         text.setBrush(QColor(color))
         text.setPos(points[0,0], points[:,1].min()-24)
         text.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
@@ -408,7 +409,7 @@ def draw_field_angle(scene, item, factor=1., unit="px"):
             drawn.append(scene.addLine(*center,*mid,_pen('#df91ff',1,True)))
             drawn.append(scene.addEllipse(center[0]-1.5,center[1]-1.5,3,3,_pen('#df91ff')))
             basis='접선 ' if item.get('curved') else ''
-            label=scene.addSimpleText(f"R {connection['radius_px']*factor:.3g} {unit} · {basis}{item['angle_deg']:.2f}°")
+            label=scene.addSimpleText(f"R {format_number(connection['radius_px'] * factor, 3)} {unit} · {basis}{item['angle_deg']:.2f}°")
             label.setBrush(QColor('#df91ff'));label.setPos(mid[0]+8,mid[1]-22)
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,True)
             drawn.append(label)
@@ -463,15 +464,15 @@ class SurfaceEditor(QWidget):
         if item is None:
             self.focus_rect=None
             self.label.setText("분석 후 검출 Field와 각도 구간을 확인하세요.");return
-        field = "Field 미확정" if item['status']!='valid' else f"Field 지지 길이 {item['length_px']*factor:.4g} {unit} · 기울기 {item['tilt_deg']:.2f}° · RMS {item['rms_px']*factor:.3g} {unit}"
-        angle = "각도 미확정" if item['angle_deg'] is None else f"입구 내각 {item['angle_deg']:.2f}° · 측벽 RMS {item['wall_rms_px']*factor:.3g} {unit}"
+        field = "Field 미확정" if item['status']!='valid' else f"Field 지지 길이 {format_number(item['length_px'] * factor, 4)} {unit} · 기울기 {item['tilt_deg']:.2f}° · RMS {format_number(item['rms_px'] * factor, 3)} {unit}"
+        angle = "각도 미확정" if item['angle_deg'] is None else f"입구 내각 {item['angle_deg']:.2f}° · 측벽 RMS {format_number(item['wall_rms_px'] * factor, 3)} {unit}"
         if item.get('curved'):
             reference=item.get('straight_angle_deg')
             angle=(f"입구 접선 내각 {item['angle_deg']:.2f}°" if item['angle_deg'] is not None else '입구 접선 각도 미확정')
             angle+=' · 전체 직선 맞춤 참고 '+(f'{reference:.2f}°' if reference is not None else '미확정')
             field=field.replace('기울기','입구 접선 기울기')
         connection=item.get('connection',{})
-        rounding=(f"접선 R {connection['radius_px']*factor:.4g} {unit} · 원호 RMS {connection['rms_px']*factor:.3g} {unit}"
+        rounding=(f"접선 R {format_number(connection['radius_px'] * factor, 4)} {unit} · 원호 RMS {format_number(connection['rms_px'] * factor, 3)} {unit}"
                   if connection.get('status')=='valid' else '입구 연결 원호 미확정')
         self.label.setText(field+"\n"+item['reason']+"\n"+angle+"\n"+item['angle_reason']+"\n"+rounding+" · "+connection.get('reason',''))
         self.items=draw_field_angle(self.view.scene(),item,factor,unit)
@@ -545,7 +546,7 @@ class TrenchGraph(QWidget):
             painter.drawLine(QPointF(rect.left(), py), QPointF(rect.right(), py))
             painter.setPen(QColor("#425368"))
             painter.drawText(QRectF(0, py - 10, 55, 20), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                             f"{(y - getattr(r,'depth_origin_px',r.options.roi[1])) * self.factor:.3g}")
+                             format_number((y - getattr(r,'depth_origin_px',r.options.roi[1])) * self.factor, 3))
         for item in (r.local_bowing if getattr(self,"show_entrance",True) else []):
             a, b = point(xmin, item["start_y"]).y(), point(xmax, item["negative_end_y"]).y()
             painter.fillRect(QRectF(rect.left(), a, rect.width(), max(1, b - a)), QColor(255, 171, 64, 22))
@@ -579,7 +580,7 @@ class TrenchGraph(QWidget):
                 painter.drawLine(a, b)
                 for p in (a,b):painter.drawLine(p+QPointF(0,-4),p+QPointF(0,4))
                 painter.drawText(QRectF(rect.left(), max(rect.top()+20,a.y()-22),rect.width(),20),
-                                 Qt.AlignmentFlag.AlignCenter,'TCD '+getattr(self,'tcd_text',f"{metrics['tcd_px']*self.factor:.4g} {self.unit}"))
+                                 Qt.AlignmentFlag.AlignCenter,'TCD '+getattr(self,'tcd_text',f"{format_number(metrics['tcd_px'] * self.factor, 4)} {self.unit}"))
             for fit in metrics.get('wall_fits',{}).values():
                 if fit.get('status') != 'valid':continue
                 vx,vy=fit['intersection'];end_y=fit['points'][-1][1];m,c=fit['line']
@@ -623,7 +624,7 @@ class TrenchGraph(QWidget):
             for p in (a, b):
                 painter.drawLine(p + QPointF(0, -4), p + QPointF(0, 4))
             painter.drawText(QRectF(rect.left(), max(rect.top(), a.y() - 23), rect.width(), 20),
-                             Qt.AlignmentFlag.AlignCenter, f"CD {(right - left) * self.factor:.4g} {self.unit}")
+                             Qt.AlignmentFlag.AlignCenter, f"CD {format_number((right - left) * self.factor, 4)} {self.unit}")
             painter.setPen(QColor("#007d92"))
             painter.drawText(QRectF(rect.left(), rect.top(), rect.width() / 2, 20),
                              Qt.AlignmentFlag.AlignLeft, "왼쪽 벽")
@@ -636,9 +637,9 @@ class TrenchGraph(QWidget):
         painter.setPen(QColor("#24364c"))
         painter.drawText(QRectF(5, 2, self.width() - 10, 23), Qt.AlignmentFlag.AlignCenter, f"{title} ({self.unit}) · 세로: 깊이 ({self.unit})")
         painter.drawText(QRectF(rect.left(), rect.bottom() + 5, rect.width(), 22), Qt.AlignmentFlag.AlignLeft,
-                         f"{xmin * self.factor:.3g}")
+                         format_number(xmin * self.factor, 3))
         painter.drawText(QRectF(rect.left(), rect.bottom() + 5, rect.width(), 22), Qt.AlignmentFlag.AlignRight,
-                         f"{xmax * self.factor:.3g}")
+                         format_number(xmax * self.factor, 3))
 
 
 class TrenchWorker(QThread):
@@ -1295,7 +1296,7 @@ class TrenchPanel(QWidget):
     def _render_result(self):
         r = self.result
         factor, unit = self._factor()
-        fmt = lambda value: "미확정" if value is None else f"{value * factor:.4g} {unit}"
+        fmt = lambda value: "미확정" if value is None else f"{format_number(value * factor, 4)} {unit}"
         angle = lambda value: "미확정" if value is None else f"{value:.2f}°"
         summary = r.summary()
         metrics = r.field_measurements
@@ -1317,7 +1318,7 @@ class TrenchPanel(QWidget):
             lines.append('TCD: 입구 직전 약 100 Å 측벽 직선 → Field 교점')
             fits=metrics.get('wall_fits',{})
             if any(f.get('resolution_limited') for f in fits.values()):
-                spans=' / '.join(f"{'좌' if s=='left' else '우'} {f['actual_span_angstrom']:.4g} Å" for s,f in fits.items() if f.get('status')=='valid')
+                spans=' / '.join(f"{'좌' if s=='left' else '우'} {format_number(f['actual_span_angstrom'], 4)} Å" for s,f in fits.items() if f.get('status')=='valid')
                 lines.append('100 Å가 너무 짧아 최소 6 px 사용 · '+spans)
             elif any(f.get('scale_missing') for f in fits.values()):lines.append('스케일 미보정: 측벽 10 px로 임시 맞춤')
         if r.options.strict_guides and not field_found:
@@ -1326,7 +1327,7 @@ class TrenchPanel(QWidget):
         if metrics.get('bottom_source') == 'interpolated':lines.append('최하단에 보간 구간이 포함됩니다.')
         if r.options.contour_strength:
             shifts = [t['smoothing']['max_displacement_px'] for t in r.guide_traces if 'smoothing' in t]
-            lines.append(f'윤곽 보정 {METHODS[r.options.contour_smoothing]} {r.options.contour_strength:g}/{MAX_STRENGTH}')
+            lines.append(f'윤곽 보정 {METHODS[r.options.contour_smoothing]} {format_number(r.options.contour_strength, 6)}/{MAX_STRENGTH}')
             lines.append(f'최대 이동 {max(shifts, default=0):.2f} px · 회색 점선: 보정 전')
             lines.append('깊이: 연결된 최하단 윤곽 기준 · TCD: 보정 전 측벽의 강건 직선 맞춤')
         if self.scale_spin.value()<=0:lines.append('미보정: px 표시 · 스케일바로 보정하세요.')
@@ -1341,7 +1342,7 @@ class TrenchPanel(QWidget):
             p=sample_point(r.options.boundary_sample)
             lines.append(f'지정 인식지점 · 샘플 X {p[0]:.2f}, Y {p[1]:.2f} px\n밝기 변화 모양 기준 · 선택점 적용')
         elif r.options.boundary_mode=='tem_interface':lines.append('TEM: 회색 재료 끝 · 검은 띠 제외\nVSEM 빈 공간 이동값은 적용하지 않습니다.')
-        elif r.options.boundary_mode=='rim_inset':lines.append(f'밝기 최고점 → 빈 공간 {r.options.rim_inset_px:g} px')
+        elif r.options.boundary_mode=='rim_inset':lines.append(f'밝기 최고점 → 빈 공간 {format_number(r.options.rim_inset_px, 6)} px')
         if self.step_spin.value()/max(self.scale_spin.value(),1e-9)<1:lines.append('1px 미만 간격은 윤곽 보간값입니다.')
         if field_found and metrics.get('depth_px') is None:
             lines.append(metrics.get('depth_reason','Field 기준 깊이를 확인하지 못했습니다.'))
@@ -1360,15 +1361,15 @@ class TrenchPanel(QWidget):
         self.cd_table.setRowCount(len(r.sample_y))
         for row, (y, l, right) in enumerate(zip(r.sample_y, r.sample_left, r.sample_right)):
             for col, value in enumerate(((y - r.depth_origin_px) * factor, (right - l) * factor, l, right)):
-                self.cd_table.setItem(row, col, QTableWidgetItem(f"{value:.5g}"))
+                self.cd_table.setItem(row, col, QTableWidgetItem(format_number(value, 5)))
         self._render_profile_coordinates()
         self.local_table.setHorizontalHeaderLabels(["측벽", f"시작 ({unit})", f"Nega 끝 ({unit})", f"국부 Bow ({unit})", f"현 대비 ({unit})", "역경사°"])
         self.local_table.setRowCount(len(r.local_bowing))
         for row, item in enumerate(r.local_bowing):
             values = ["좌" if item["side"] == "left" else "우",
-                      f"{(item['start_y'] - r.options.roi[1]) * factor:.4g}",
-                      f"{(item['negative_end_y'] - r.options.roi[1]) * factor:.4g}",
-                      f"{item['bowing_px'] * factor:.4g}", f"{item['chord_bowing_px'] * factor:.4g}",
+                      format_number((item['start_y'] - r.options.roi[1]) * factor, 4),
+                      format_number((item['negative_end_y'] - r.options.roi[1]) * factor, 4),
+                      format_number(item['bowing_px'] * factor, 4), format_number(item['chord_bowing_px'] * factor, 4),
                       f"{item['max_negative_angle_deg']:.2f}"]
             for col, value in enumerate(values):
                 cell = QTableWidgetItem(value)
@@ -1411,7 +1412,7 @@ class TrenchPanel(QWidget):
         if self.scale_bar:
             a,b=self.scale_bar['start'],self.scale_bar['end']
             self.overlays.append(scene.addLine(*a,*b,_pen('#ffffff',2)))
-            label=scene.addSimpleText(f"{self.scale_bar['length_nm']:g} nm")
+            label=scene.addSimpleText(f"{format_number(self.scale_bar['length_nm'], 6)} nm")
             label.setBrush(QColor('#ffffff'));label.setPos(a[0],a[1]-22);label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,True);self.overlays.append(label)
         if self.roi is None:
             self.roi_label.setText("미지정")

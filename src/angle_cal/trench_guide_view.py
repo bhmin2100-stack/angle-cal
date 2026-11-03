@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, QEvent, QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPainterPath, QPainterPathStroker, QPen, QTransform
 from shiboken6 import isValid
 from .trench_guides import normalize_guides, curve_samples, sweep_samples
+from .number_format import format_number
 
 
 def guide_sweep_path(guide):
@@ -212,7 +213,7 @@ class TrenchGuideEditor(QObject):
                 handle=self.view.scene().addEllipse(-4,-4,8,8,pen,color)
                 handle.setFlag(handle.GraphicsItemFlag.ItemIgnoresTransformations,True)
                 handle.setPos(QPointF(*p));self.items.append(handle)
-            label=self.view.scene().addSimpleText(f"곡선 {i+1} · ±{guide['half_width_px']:g}px")
+            label=self.view.scene().addSimpleText(f"곡선 {i+1} · ±{format_number(guide['half_width_px'], 6)}px")
             label.setBrush(color);label.setFlag(label.GraphicsItemFlag.ItemIgnoresTransformations,True)
             label.setPos(QPointF(*guide['points'][0])+QPointF(5,-20));self.items.append(label)
             for item in self.items[start:]:item.setOpacity(.18 if faded else 1.)

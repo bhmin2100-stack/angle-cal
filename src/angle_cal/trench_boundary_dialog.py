@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QGraph
     QGraphicsView, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget)
 
 from .image_ops import bgr_to_rgb8_for_display
+from .number_format import format_number
 from .trench_boundary_sample import make_boundary_sample, sample_point, sample_polygon, validate_boundary_sample, validate_boundary_samples
 from .trench_guides import sweep_samples
 
@@ -138,8 +139,8 @@ class BrightnessProfile(QWidget):
             path = QPainterPath(QPointF(xs[0], ys[0]))
             for x, y in zip(xs[1:], ys[1:]):path.lineTo(x, y)
             p.setPen(_pen(color, 1.8)); p.drawPath(path)
-            p.setPen(QColor('#b5c3d3')); p.drawText(2, round(box.top()+9), f'{top:.3g}')
-            p.drawText(2, round(box.bottom()), f'{bottom:.3g}')
+            p.setPen(QColor('#b5c3d3')); p.drawText(2, round(box.top()+9), format_number(top, 3))
+            p.drawText(2, round(box.bottom()), format_number(bottom, 3))
         x = rect.left()+s['anchor_px']/d[-1]*rect.width()
         level = float(np.interp(s['anchor_px'], d, values))
         y = rect.bottom()-(level-lo)/span*rect.height()

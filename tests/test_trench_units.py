@@ -13,6 +13,11 @@ def test_metric_display_unit_conversions(pixels,scale,unit,expected):
     assert format_metric_length(pixels,scale,unit)==expected
 
 
+def test_metric_display_uses_scientific_notation_only_above_threshold():
+    assert format_metric_length(100_000, 1, 'nm') == '100000 nm'
+    assert format_metric_length(100_000.01, 1, 'nm') == '1.0000e+05 nm'
+
+
 def test_independent_units_redraw_without_reanalysis_and_keep_gfe_angstroms(tmp_path):
     from PySide6.QtWidgets import QApplication
     from angle_cal.trench_panel import TrenchPanel

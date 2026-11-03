@@ -3,6 +3,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QGroupBox, QVBoxLayout, QComboBox,
                               QStackedWidget, QWidget, QSlider, QLabel, QPushButton, QCheckBox)
 from .trench_smoothing import METHODS, MAX_STRENGTH, smoothing_parameters
+from .number_format import format_number
 
 
 class SmoothingControls(QGroupBox):
@@ -52,7 +53,7 @@ class SmoothingControls(QGroupBox):
         for key, slider in self.sliders.items():
             value = slider.value(); window, limit = smoothing_parameters(value)
             self.labels[key].setText(f'0 / {MAX_STRENGTH} · 추가 보정 없음' if not value else
-                                    f'{value} / {MAX_STRENGTH} · 범위 약 {window} px\n점 이동 제한 {limit:.2g} px')
+                                    f'{value} / {MAX_STRENGTH} · 범위 약 {window} px\n점 이동 제한 {format_number(limit, 2)} px')
         if not self.restoring:
             self.changed.emit()
 

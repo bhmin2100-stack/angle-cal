@@ -98,6 +98,7 @@ from .image_ops import (
     snap_polyline_to_gradient,
     to_gray,
 )
+from .number_format import format_number
 
 
 @dataclass(frozen=True)
@@ -1049,7 +1050,7 @@ class AngleCanvas(QGraphicsView):
                 continue
             length_px = record_length(record)
             if nm_per_px:
-                text = f"L {length_px * nm_per_px:.3g} nm"
+                text = f"L {format_number(length_px * nm_per_px, 3)} nm"
             else:
                 text = f"L {length_px:.2f} px"
             midpoint = ((points[0][0] + points[-1][0]) / 2.0, (points[0][1] + points[-1][1]) / 2.0)
@@ -1337,7 +1338,7 @@ class AngleCanvas(QGraphicsView):
                 record_items.append(apex)
 
             if record.value_nm is not None:
-                radius_text = f"R {float(record.value_nm):.3g} nm"
+                radius_text = f"R {format_number(float(record.value_nm), 3)} nm"
             else:
                 radius_text = f"R {radius:.2f} px"
             quality_text = f"q {float(record.curvature_quality or 0.0):.2f}"
@@ -4003,7 +4004,7 @@ class MainWindow(QMainWindow):
 
     def _trench_scale_bar_changed(self,bar):
         for rid in [rid for rid,r in self.records.items() if r.kind=='scale']:del self.records[rid]
-        record=LineRecord(id=self._next_id('S'),kind='scale',start=tuple(bar['start']),end=tuple(bar['end']),value_nm=bar['length_nm'],label=f"{bar['length_nm']:g} nm")
+        record=LineRecord(id=self._next_id('S'),kind='scale',start=tuple(bar['start']),end=tuple(bar['end']),value_nm=bar['length_nm'],label=f"{format_number(bar['length_nm'], 6)} nm")
         self.records[record.id]=record
         self.canvas.redraw_lines(list(self.records.values()));self._refresh_table()
 
@@ -4715,7 +4716,7 @@ class MainWindow(QMainWindow):
         self._apply_visibility()
         self._select_thumbnail(path)
         display_h, display_w = self.image_bgr.shape[:2]
-        calibration_text = f", calibration 유지: {self.nm_per_px:.6g} nm/px" if self.nm_per_px else ""
+        calibration_text = f", calibration 유지: {format_number(self.nm_per_px, 6)} nm/px" if self.nm_per_px else ""
         rotation_text = f", 회전 {self.image_rotation_degrees:.3f}°" if self._is_effective_rotation(self.image_rotation_degrees) else ""
         self._set_rotation_status(self.image_rotation_degrees, "누적 회전")
         self._set_status(f"이미지 로드: {Path(path).name} ({display_w} x {display_h} px){calibration_text}{rotation_text}")
@@ -6533,12 +6534,12 @@ class MainWindow(QMainWindow):
             kind="scale",
             start=start,
             end=end,
-            label=f"{value:g} nm",
+            label=f"{format_number(value, 6)} nm",
             value_nm=float(value),
         )
         self.records[record.id] = record
         self.nm_per_px = float(value) / length_px
-        self._set_status(f"Calibration: {self.nm_per_px:.6g} nm/px")
+        self._set_status(f"Calibration: {format_number(self.nm_per_px, 6)} nm/px")
 
     def add_current_scale_preset(self) -> None:
         if not self.nm_per_px:
@@ -6568,7 +6569,7 @@ class MainWindow(QMainWindow):
             ScalePreset(name=name, nm_per_px=float(self.nm_per_px), bar_px=bar_px, bar_nm=bar_nm, start=start, end=end)
         )
         self._refresh_scale_preset_table()
-        self._set_status(f"{len(self.scale_presets)}번 스케일 프리셋 등록: {name}, {self.nm_per_px:.6g} nm/px, 바 {bar_px:.2f}px")
+        self._set_status(f"{len(self.scale_presets)}번 스케일 프리셋 등록: {name}, {format_number(self.nm_per_px, 6)} nm/px, 바 {bar_px:.2f}px")
 
     def edit_selected_scale_preset(self) -> None:
         row = self._selected_scale_preset_row()
@@ -6628,7 +6629,7 @@ class MainWindow(QMainWindow):
         if self._trench_active():
             self._sync_trench_image()
             self.trench_panel.set_scale_record(next((r for r in self.records.values() if r.kind=='scale'),None))
-        self._set_status(f"{index + 1}번 스케일 적용: {preset.name}, {preset.nm_per_px:.6g} nm/px")
+        self._set_status(f"{index + 1}번 스케일 적용: {preset.name}, {format_number(preset.nm_per_px, 6)} nm/px")
 
     def _create_scale_record_from_preset(self, preset: ScalePreset) -> None:
         if self.image_bgr is None:
@@ -6650,7 +6651,7 @@ class MainWindow(QMainWindow):
             kind="scale",
             start=start,
             end=end,
-            label=f"{bar_nm:g} nm",
+            label=f"{format_number(bar_nm, 6)} nm",
             value_nm=bar_nm,
         )
 
@@ -6689,7 +6690,7 @@ class MainWindow(QMainWindow):
     def _refresh_scale_preset_table(self, select_row: Optional[int] = None) -> None:
         self.scale_preset_table.setRowCount(len(self.scale_presets))
         for row, preset in enumerate(self.scale_presets):
-            values = [str(row + 1), preset.name, f"{preset.nm_per_px:.8g}"]
+            values = [str(row + 1), preset.name, format_number(preset.nm_per_px, 8)]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -7467,7 +7468,7 @@ class MainWindow(QMainWindow):
                 midpoint = ((point_a[0] + point_b[0]) / 2.0, (point_a[1] + point_b[1]) / 2.0)
                 label_pos = cd_label_center(point_a, point_b, self.cd_label_side, cd_label_gap)
                 if self.nm_per_px:
-                    text = f"{length_px * self.nm_per_px:.3g} nm"
+                    text = f"{format_number(length_px * self.nm_per_px, 3)} nm"
                     cd_length_nm = length_px * self.nm_per_px
                 else:
                     text = f"{length_px:.2f} px"
@@ -8416,7 +8417,7 @@ class MainWindow(QMainWindow):
         self._refresh_curvature_overlay()
         self._refresh_table()
         if radius_nm is not None:
-            result_text = f"{record.id}: R {radius_nm:.4g} nm ({result.radius_px:.2f} px), 품질 {result.quality:.2f}"
+            result_text = f"{record.id}: R {format_number(radius_nm, 4)} nm ({result.radius_px:.2f} px), 품질 {result.quality:.2f}"
         else:
             result_text = f"{record.id}: R {result.radius_px:.2f} px, 품질 {result.quality:.2f}"
         self.curvature_result_label.setText(f"결과: {result_text}")
@@ -8894,12 +8895,12 @@ class MainWindow(QMainWindow):
             right = self.search_radius_right_spin.value()
             width = left + right
             if self.nm_per_px:
-                return f"좌 {left}px / 우 {right}px / 합 {width}px ({width * self.nm_per_px:.3g} nm)"
+                return f"좌 {left}px / 우 {right}px / 합 {width}px ({format_number(width * self.nm_per_px, 3)} nm)"
             return f"좌 {left}px / 우 {right}px / 합 {width}px"
         radius = self.search_radius_spin.value()
         width = radius * 2
         if self.nm_per_px:
-            return f"±{radius}px / {width}px ({width * self.nm_per_px:.3g} nm)"
+            return f"±{radius}px / {width}px ({format_number(width * self.nm_per_px, 3)} nm)"
         return f"±{radius}px / {width}px"
 
     def _show_detection_preview(self) -> None:
@@ -9034,7 +9035,7 @@ class MainWindow(QMainWindow):
                 self.measurement_table.setItem(row_idx, col_idx, QTableWidgetItem(value))
         self.measurement_table.resizeColumnsToContents()
         self.calibration_label.setText(
-            f"Calibration: {self.nm_per_px:.6g} nm/px" if self.nm_per_px else "Calibration: -"
+            f"Calibration: {format_number(self.nm_per_px, 6)} nm/px" if self.nm_per_px else "Calibration: -"
         )
 
     def _next_id(self, prefix: str) -> str:
