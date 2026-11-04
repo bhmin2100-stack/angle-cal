@@ -15,6 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+regions = ["scikit-image>=0.24,<0.27"]
 dev = [
     "pytest>=7.4",
     "pyinstaller>=6.5",
@@ -22,6 +23,7 @@ dev = [
 
 [project.scripts]
 angle-cal = "angle_cal.__main__:main"
+angle-cal-regions = "angle_cal.region_lab:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

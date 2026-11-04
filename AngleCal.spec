@@ -2,6 +2,7 @@
 
 from PyInstaller.utils.hooks import collect_submodules
 from pathlib import Path
+from importlib.util import find_spec
 import json
 import sys
 
@@ -19,6 +20,10 @@ metadata_path.write_text(json.dumps(metadata,ensure_ascii=False),encoding='utf-8
 
 
 hiddenimports = collect_submodules("cv2")
+if find_spec("skimage") is not None:
+    # SciPy 1.18's lazy NumPy compatibility submodules are not yet discovered
+    # by the installed PyInstaller hooks. Required by the optional Region Lab.
+    hiddenimports += collect_submodules("scipy._external.array_api_compat.numpy")
 
 a = Analysis(
     ["run_angle_cal.py"],

@@ -79,6 +79,7 @@ ADDON_DEFINITIONS = (
     AddonDefinition("photo_merge", "사진 합치기"),
     AddonDefinition("trench_analyzer", "트랜치 분석기"),
     AddonDefinition("cliff_angle_analyzer", "Cliff angle 분석기"),
+    AddonDefinition("region_lab", "영역 분할 실험실"),
 )
 
 
@@ -3927,6 +3928,11 @@ class MainWindow(QMainWindow):
                 self.photo_merge_board = PhotoMergeBoard(self)
                 self.photo_merge_board.result_ready.connect(self._show_photo_merge_result)
                 self.workspace_stack.addWidget(self.photo_merge_board)
+        elif addon_id == "region_lab":
+            layout.addWidget(QLabel("재료명 없이 전체 영역을 분리하고 원본과 비교합니다."))
+            launch = QPushButton("영역 분할 실험실 열기")
+            launch.clicked.connect(self.open_region_lab)
+            layout.addWidget(launch)
         elif addon_id == "trench_analyzer":
             box=QGroupBox('Trench 분석');box_layout=QHBoxLayout(box)
             box_layout.addWidget(QLabel('① 썸네일 선택 → ② 곡선 그리기 / 구조 불러오기 → ③ 인식'))
@@ -3945,6 +3951,15 @@ class MainWindow(QMainWindow):
             layout.addWidget(QLabel(f"{title} 기능은 준비 중입니다."))
         layout.addStretch(1)
         return page
+
+    def open_region_lab(self) -> None:
+        from .region_lab import RegionLab
+        dialog = RegionLab(self, self.image_bgr, self.image_path or "")
+        dialog.setModal(True)
+        dialog.show()
+        dialog.fit_views()
+        dialog.exec()
+        dialog.deleteLater()
 
     def open_photo_merge_dialog(self) -> None:
         page = self.addon_pages.get("photo_merge")

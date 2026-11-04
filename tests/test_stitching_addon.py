@@ -283,11 +283,12 @@ def test_permanent_addon_tabs_preserve_photo_merge_board():
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     try:
-        assert window.ribbon_tabs.count() == 8
-        assert [window.ribbon_tabs.tabText(index) for index in range(5, 8)] == [
+        assert window.ribbon_tabs.count() == 9
+        assert [window.ribbon_tabs.tabText(index) for index in range(5, 9)] == [
             "사진 합치기",
             "트랜치 분석기",
             "Cliff angle 분석기",
+            "영역 분할 실험실",
         ]
         window.ribbon_tabs.setCurrentWidget(window.photo_merge_page)
         app.processEvents()
@@ -304,7 +305,7 @@ def test_permanent_addon_tabs_preserve_photo_merge_board():
         assert window.workspace_stack.currentWidget() is board
 
         window.addon_actions["photo_merge"].trigger()
-        assert window.ribbon_tabs.count() == 8
+        assert window.ribbon_tabs.count() == 9
         assert window.photo_merge_board is board
         assert window.workspace_stack.currentWidget() is board
         assert all(window.ribbon_tabs.indexOf(page) >= 0 for page in window.addon_pages.values())

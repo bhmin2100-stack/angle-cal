@@ -3329,7 +3329,7 @@ def test_style_toolbar_applies_to_selected_line_objects_and_new_defaults():
 def test_top_controls_are_grouped_in_ribbon_tabs():
     window = _window_with_edge_image()
     try:
-        assert window.ribbon_tabs.count() == 8
+        assert window.ribbon_tabs.count() == 9
         assert [window.ribbon_tabs.tabText(idx) for idx in range(window.ribbon_tabs.count())] == [
             "파일",
             "경계",
@@ -3339,6 +3339,7 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
             "사진 합치기",
             "트랜치 분석기",
             "Cliff angle 분석기",
+            "영역 분할 실험실",
         ]
         ribbon_layout = window.menuWidget().layout()
         assert ribbon_layout.itemAt(0).widget() is window.ribbon_tabs
@@ -3372,6 +3373,7 @@ def test_top_controls_are_grouped_in_ribbon_tabs():
             "사진 합치기",
             "트랜치 분석기",
             "Cliff angle 분석기",
+            "영역 분할 실험실",
         ]
         assert not any(action.isCheckable() for action in window.addon_button.menu().actions())
         export_group = next(group for group in file_groups if group.title() == "내보내기")
@@ -3402,6 +3404,7 @@ def test_permanent_addon_tabs_click_route_tools_and_preserve_scale():
             "photo_merge",
             "trench_analyzer",
             "cliff_angle_analyzer",
+            "region_lab",
         }
         QTest.mouseClick(tabs, Qt.MouseButton.LeftButton, pos=tabs.tabRect(index).center())
         app.processEvents()
