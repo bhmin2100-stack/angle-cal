@@ -20,7 +20,7 @@ def main():
     run.mkdir(parents=True, exist_ok=False)
     assert run.resolve().is_relative_to((root / 'build').resolve())
     sources = subprocess.check_output(['git', 'ls-files', 'src'], cwd=root, text=True).splitlines()
-    sources += ['AngleCal.bat', 'RegionLab.bat', 'setup_angle_cal.bat',
+    sources += ['AngleCal-source.bat', 'RegionLab-source.bat', 'setup_angle_cal.bat',
                 'run_angle_cal.py', 'run_region_lab.py', 'pyproject.toml', 'README.md']
     for name in sources:
         target = run / name
@@ -42,18 +42,18 @@ def main():
                 {'PIP_NO_INDEX': '1'} if offline else None)
 
     # No .venv and no ready marker: first launch installs all dependencies.
-    bat('RegionLab.bat', '--self-test', 'first-run.json')
+    bat('RegionLab-source.bat', '--self-test', 'first-run.json')
     assert json.loads((run / 'first-run.json').read_text())['ok']
     # No index access on a healthy second launch.
-    bat('AngleCal.bat', '--setup-only', offline=True)
-    bat('RegionLab.bat', '--self-test', 'offline-run.json', offline=True)
+    bat('AngleCal-source.bat', '--setup-only', offline=True)
+    bat('RegionLab-source.bat', '--self-test', 'offline-run.json', offline=True)
     assert json.loads((run / 'offline-run.json').read_text())['ok']
     # Simulate a legacy installation whose old readiness marker hides missing skimage.
     python = run / '.venv' / 'Scripts' / 'python.exe'
     command([str(python), '-m', 'pip', 'uninstall', '-y', 'scikit-image'])
     (run / '.venv' / '.anglecal-ready').write_text('ok')
-    bat('AngleCal.bat', '--setup-only')
-    bat('RegionLab.bat', '--self-test', 'repaired-run.json', offline=True)
+    bat('AngleCal-source.bat', '--setup-only')
+    bat('RegionLab-source.bat', '--self-test', 'repaired-run.json', offline=True)
     assert json.loads((run / 'repaired-run.json').read_text())['ok']
     summary = dict(ok=True, clean_install=True, offline_restart=True,
                    legacy_missing_package_repaired=True, seconds=time.monotonic()-started,

@@ -29,8 +29,8 @@ Vertical SEM 이미지에서 선분 기반 각도를 측정하는 Windows용 데
 ## 영역 분할 실험 애드온
 
 재료명 없이 이미지 전체를 색상 영역으로 나누고, 원본·경계와 비교하는 독립 실험 창입니다.
-로컬 빌드의 `RegionLab.bat` 또는 `dist/RegionLab/RegionLab.exe`로 실행합니다.
-소스 BAT는 `.venv`와 분할 패키지를 자동 설치·검사합니다. Python 3.9 이상 및 최초 설치 시 인터넷이 필요합니다.
+GitHub Desktop에서 **Pull origin** 후 저장소의 `RegionLab.bat`를 실행합니다.
+기본 BAT는 검증된 Windows 실행 파일을 최초 1회 내려받습니다. Python과 pip는 사용하지 않습니다.
 `AngleCal.bat` 실행 후 **영역 분할 실험실** 탭에서도 열 수 있습니다. BAT를 포함한 폴더 전체를 유지하세요.
 기존 배포 EXE와 별개이며, 자세한 설정과 검증 한계는 [사용 안내](docs/region-lab.md)를 참고하세요.
 
@@ -48,12 +48,22 @@ Vertical SEM 이미지에서 선분 기반 각도를 측정하는 Windows용 데
 
 ### bat로 실행
 
-1. GitHub repo의 **Releases**를 엽니다.
-2. **최신 Windows 릴리스**를 엽니다.
-3. `AngleCal-bat.zip`을 다운로드합니다.
-4. 압축을 푼 뒤 `AngleCal.bat`를 더블클릭합니다.
+1. GitHub Desktop에서 저장소를 받고 **Pull origin**으로 업데이트합니다.
+2. **Repository → Show in Explorer**로 실제 저장소 폴더를 엽니다.
+3. `AngleCal.bat` 또는 `RegionLab.bat`를 더블클릭합니다.
 
-`AngleCal.bat`는 첫 실행 때 `.venv`를 만들고 필요한 패키지를 설치한 뒤 앱을 실행합니다. Windows에 Python 3.9 이상이 설치되어 있어야 합니다.
+최초 실행에는 인터넷이 필요합니다. Windows 10/11 64비트의 curl, tar, PowerShell을 사용해
+`desktop_runtime.bat`에 고정된 실행 파일을 내려받고 SHA-256을 검증합니다.
+검증한 실행 파일은 `%LOCALAPPDATA%\AngleCal\runtimes`에 보관해 다음 실행에 재사용합니다.
+Python, pip, 기존 `.venv`는 기본 실행에 영향을 주지 않습니다. 실패 내용은 해당 캐시 폴더의
+`launcher.log`에 남고 창에도 표시됩니다. BAT와 보조 파일을 같은 폴더에 유지하세요.
+
+기본 BAT는 로컬에서 수정한 Python 소스를 실행하지 않습니다. 소스 개발 실행은
+`AngleCal-source.bat` / `RegionLab-source.bat`를 사용하세요. 이 경우에만 Python 3.9 이상,
+최초 패키지 설치 시 인터넷이 필요합니다.
+
+영역 분할을 포함한 기본 BAT의 실행 파일은 [desktop runtime r3](https://github.com/bhmin2100-stack/angle-cal/releases/tag/desktop-runtime-20261104-r3)입니다.
+기본 BAT는 이 검증 배포본을 사용하므로 현재 소스 HEAD와 빌드 커밋이 다를 수 있습니다.
 
 **[최신 EXE 직접 다운로드](https://github.com/bhmin2100-stack/angle-cal/releases/download/windows-latest/AngleCal.exe)** · **[최신 배치 실행 패키지](https://github.com/bhmin2100-stack/angle-cal/releases/download/windows-latest/AngleCal-bat.zip)**
 
@@ -70,7 +80,7 @@ build_windows.bat
 개발 모드로 바로 실행하려면:
 
 ```bat
-AngleCal.bat
+AngleCal-source.bat
 ```
 
 또는:
