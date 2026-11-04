@@ -80,7 +80,7 @@ class RegionWorker(QThread):
         try:
             self.ready.emit(segment_regions(self.image, self.options, self.cancelled.is_set))
         except ImportError as exc:
-            self.failed.emit(f'영역 분할 패키지 로딩 실패: {exc}. 개발 환경은 pip install -e ".[regions]"로 설치하세요.')
+            self.failed.emit(f'영역 분할 패키지 로딩 실패: {exc}. 저장소의 RegionLab.bat를 실행해 추가 패키지를 설치하세요. 설치 오류는 regions-setup.log에서 확인할 수 있습니다.')
         except Exception as exc:
             self.failed.emit(str(exc))
 

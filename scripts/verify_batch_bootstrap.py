@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import time
 
 
@@ -20,8 +19,10 @@ def main():
     run.mkdir(parents=True, exist_ok=False)
     assert run.resolve().is_relative_to((root / 'build').resolve())
     sources = subprocess.check_output(['git', 'ls-files', 'src'], cwd=root, text=True).splitlines()
-    sources += ['AngleCal-source.bat', 'RegionLab-source.bat', 'setup_angle_cal.bat',
-                'run_angle_cal.py', 'run_region_lab.py', 'pyproject.toml', 'README.md']
+    sources += ['AngleCal.bat', 'RegionLab.bat', 'AngleCal-source.bat', 'RegionLab-source.bat',
+                'setup_angle_cal.bat', 'launch_source.bat', 'requirements.txt',
+                'requirements-regions.txt', 'run_angle_cal.py', 'run_region_lab.py',
+                'pyproject.toml', 'README.md']
     for name in sources:
         target = run / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -33,30 +34,62 @@ def main():
     env.pop('PYTHONPATH', None)
     started = time.monotonic()
 
-    def command(args, extra_env=None):
+    offline = dict(PIP_NO_INDEX='1', HTTP_PROXY='http://127.0.0.1:9',
+                   HTTPS_PROXY='http://127.0.0.1:9', ALL_PROXY='http://127.0.0.1:9', NO_PROXY='')
+
+    def command(args, extra_env=None, expected=0):
         print('RUN', args, flush=True)
-        subprocess.run(args, cwd=run, env=dict(env, **(extra_env or {})), check=True, timeout=600)
+        result = subprocess.run(args, cwd=run, env=dict(env, **(extra_env or {})),
+                                capture_output=True, timeout=600)
+        with (run / 'verification.log').open('ab') as log:
+            log.write(result.stdout + result.stderr)
+        assert result.returncode == expected, (result.returncode, result.stdout, result.stderr)
+        return result
 
-    def bat(name, *args, offline=False):
-        command([os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', name, *args],
-                {'PIP_NO_INDEX': '1'} if offline else None)
+    def bat(name, *args, network=True, expected=0):
+        return command([os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', name, *args],
+                       None if network else offline, expected)
 
-    # No .venv and no ready marker: first launch installs all dependencies.
-    bat('RegionLab-source.bat', '--self-test', 'first-run.json')
-    assert json.loads((run / 'first-run.json').read_text())['ok']
-    # No index access on a healthy second launch.
-    bat('AngleCal-source.bat', '--setup-only', offline=True)
-    bat('RegionLab-source.bat', '--self-test', 'offline-run.json', offline=True)
-    assert json.loads((run / 'offline-run.json').read_text())['ok']
-    # Simulate a legacy installation whose old readiness marker hides missing skimage.
+    # Normal AngleCal installs only the dependencies that predate RegionLab.
+    bat('AngleCal.bat', '--verify', 'base-first.json')
     python = run / '.venv' / 'Scripts' / 'python.exe'
-    command([str(python), '-m', 'pip', 'uninstall', '-y', 'scikit-image'])
+    command([str(python), '-c', "import importlib.util; assert importlib.util.find_spec('skimage') is None"])
+    pip_before = command([str(python), '-m', 'pip', '--version']).stdout
     (run / '.venv' / '.anglecal-ready').write_text('ok')
-    bat('AngleCal-source.bat', '--setup-only')
-    bat('RegionLab-source.bat', '--self-test', 'repaired-run.json', offline=True)
-    assert json.loads((run / 'repaired-run.json').read_text())['ok']
-    summary = dict(ok=True, clean_install=True, offline_restart=True,
-                   legacy_missing_package_repaired=True, seconds=time.monotonic()-started,
+
+    # Source edits must take effect immediately, without editable installation.
+    init = run / 'src/angle_cal/__init__.py'
+    original_init = init.read_bytes()
+    init.write_bytes(original_init + b"\n__version__ = '0.0.0-checkout-test'\n")
+    bat('AngleCal.bat', '--verify', 'base-offline.json', network=False)
+    assert json.loads((run / 'base-offline.json').read_text())['package_version'] == '0.0.0-checkout-test'
+    init.write_bytes(original_init)
+    assert b'Installing' not in (run / 'base-setup.log').read_bytes()
+
+    # Failure to obtain optional packages cannot prevent the base app launching.
+    failed = bat('RegionLab.bat', '--setup-only', network=False, expected=1)
+    assert b'[AngleCal:REGION_DEPENDENCIES]' in failed.stdout
+    bat('AngleCal-source.bat', '--verify', 'base-after-region-failure.json', network=False)
+    bat('RegionLab.bat', '--self-test', 'region-first.json')
+    assert json.loads((run / 'region-first.json').read_text())['ok']
+    bat('RegionLab-source.bat', '--self-test', 'region-offline.json', network=False)
+    assert json.loads((run / 'region-offline.json').read_text())['ok']
+    assert command([str(python), '-m', 'pip', '--version']).stdout == pip_before
+
+    # A startup exception must propagate through both BAT layers and leave a log.
+    entry = run / 'run_angle_cal.py'
+    original_entry = entry.read_bytes()
+    entry.write_text("raise RuntimeError('startup-error-probe')\n", encoding='utf-8')
+    try:
+        failed = bat('AngleCal.bat', network=False, expected=1)
+        assert b'[AngleCal:START]' in failed.stdout
+        assert b'startup-error-probe' in (run / 'AngleCal-run.log').read_bytes()
+    finally:
+        entry.write_bytes(original_entry)
+    summary = dict(ok=True, clean_base_install=True, base_without_regions_offline=True,
+                   current_checkout_executed=True, optional_install_failure_isolated=True,
+                   segmentation=True, offline_restart=True, pip_not_upgraded=True,
+                   startup_error_logged=True, seconds=time.monotonic()-started,
                    runner=str(run))
     (run / 'bootstrap-summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
     print(json.dumps(summary, indent=2))

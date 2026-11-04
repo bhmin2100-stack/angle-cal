@@ -7,24 +7,25 @@
 
 - 배포 파일: `dist/RegionLab/RegionLab.exe` 또는 저장소의 `RegionLab.bat`.
 - GitHub Desktop으로 받은 저장소는 **Pull origin** 후 `RegionLab.bat`를 실행합니다.
-  기본 BAT는 검증된 실행 파일을 한 번 내려받고 SHA-256을 확인해 실행합니다.
-  Python, pip, 기존 `.venv`를 사용하지 않습니다. 최초 1회 인터넷이 필요합니다.
-  `AngleCal.bat`도 같은 방식을 사용합니다. BAT와 보조 파일을 함께 유지하세요.
-  런타임과 `launcher.log`는 `%LOCALAPPDATA%\AngleCal\runtimes` 아래에 저장됩니다.
+  BAT는 `.venv`로 현재 폴더의 소스를 실행합니다. Python 3.9 이상이 필요합니다.
+  기본 패키지가 이미 있으면 재설치하지 않고 영역 분할 패키지가 없을 때만 추가 설치합니다.
+  이 최초 설치에는 패키지 서버 접근이 필요하며 EXE 다운로드나 pip 업데이트는 하지 않습니다.
+  `AngleCal.bat`는 영역 분할 패키지가 없어도 기본 기능을 실행할 수 있습니다.
+  설치 로그는 저장소의 `regions-setup.log`, 실행 로그는 `RegionLab-run.log`입니다.
+  오류가 발생하면 창이 유지되고 실패 단계 코드가 표시됩니다.
 - Python이 없는 PC는 독립 EXE ZIP 전체를 풀고 `RegionLab.exe` 또는 동봉한 `RegionLab.bat`를 실행하세요.
 - 소스 AngleCal: `영역 분할 실험실` 탭 → `영역 분할 실험실 열기`.
   현재 이미지의 복사본을 전달하며 창에서 다른 이미지도 열 수 있습니다.
 - 개발 설치: `python -m pip install -e ".[regions]"`, `python run_region_lab.py`.
-  또는 `RegionLab-source.bat` / `AngleCal-source.bat`로 현재 체크아웃의 소스를 실행합니다.
-  이 경우 Python 3.9 이상이 필요하고, 최초 실행 시 패키지를 자동 설치합니다.
+  `RegionLab-source.bat` / `AngleCal-source.bat`도 일반 BAT와 같은 소스를 실행합니다.
 - 독립 배포 빌드: `python -m PyInstaller --noconfirm RegionLab.spec`.
   폴더 전체가 필요하며 기존 AngleCal 실행 파일과 별개입니다.
 - 배포 계산 검사: `RegionLab.exe --self-test report.json`.
   합성 16비트 띠 영상으로 실제 분할을 실행하고 성공 여부 또는 오류를 JSON에 기록합니다.
 - 기본 BAT 검사: `RegionLab.bat --verify report.json`, `AngleCal.bat --verify build-info.json`.
-- 배포 BAT 통합 검사: `python scripts/verify_desktop_launcher.py`.
-  별도 폴더와 캐시에서 Python 없는 PATH, 최초 다운로드, 오프라인 재실행,
-  변조된 EXE 차단과 재다운로드를 검사합니다. 공개 GitHub 배포 파일에 접근해야 합니다.
+- 소스 BAT 통합 검사: `python scripts/verify_batch_bootstrap.py`.
+  별도 폴더에서 기본 설치, 분할 패키지 없는 오프라인 본체 실행, 현재 소스 실행,
+  분할 패키지 추가 설치와 실제 분할, 실행 오류 로그를 검사합니다.
 - 소스 BAT 검사: `RegionLab-source.bat --self-test report.json` 또는 `AngleCal-source.bat --setup-only`.
 
 ## 비교 방법
