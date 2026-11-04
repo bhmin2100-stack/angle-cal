@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
 
 from .region_segmentation import (RegionOptions, normalized_rgb, render_regions,
                                   save_regions, segment_regions)
+from . import __version__
+from .release_metadata import embedded_metadata
 
 
 class RegionView(QGraphicsView):
@@ -88,7 +90,10 @@ class RegionWorker(QThread):
 class RegionLab(QDialog):
     def __init__(self, parent=None, image=None, source=""):
         super().__init__(parent)
-        self.setWindowTitle("AngleCal · 영역 분할 실험실")
+        metadata = embedded_metadata()
+        build = metadata.get('build_id', 'local')
+        suffix = f"빌드 {build}" if build != 'local' else '개발용'
+        self.setWindowTitle(f"AngleCal · 영역 분할 실험실 v{__version__} · {suffix}")
         self.resize(1280, 840)
         self.setMinimumSize(900, 620)
         self.image = self.rgb = self.result = self.worker = None
@@ -385,7 +390,8 @@ def main():
             result = segment_regions(sample, RegionOptions(min_size=1, smoothing=0))
             assert result.count == 4
             assert result.labels.shape == sample.shape
-            report = {"ok": True, "regions": result.count, "shape": list(result.labels.shape)}
+            report = {"ok": True, "regions": result.count, "shape": list(result.labels.shape),
+                      "build": embedded_metadata()}
         except Exception:
             report = {"ok": False, "error": traceback.format_exc()}
         Path(sys.argv[2]).write_text(json.dumps(report, indent=2), encoding="utf-8")

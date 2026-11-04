@@ -17,7 +17,10 @@ def embedded_metadata(path=None):
             return {}
         if data['update_channel'] not in ('personal','company'):
             return {}
-        return {k:data[k] for k in keys}
+        result = {k:data[k] for k in keys}
+        if data.get('distribution') in ('onefile', 'onedir'):
+            result['distribution'] = data['distribution']
+        return result
     except (OSError,ValueError,TypeError):
         return {}
 

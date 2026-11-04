@@ -128,6 +128,10 @@ def is_packaged_app() -> bool:
     return bool(getattr(sys, "frozen", False)) and Path(sys.executable).suffix.lower() == ".exe"
 
 
+def is_portable_app() -> bool:
+    return is_packaged_app() and _embedded.get('distribution') == 'onedir'
+
+
 def current_version() -> str:
     return __version__
 
@@ -154,6 +158,7 @@ def build_info_dict() -> dict[str, str]:
         "build_id": str(BUILD_ID),
         "build_date": str(BUILD_DATE),
         "update_channel": str(UPDATE_CHANNEL),
+        "distribution": str(_embedded.get('distribution', 'onefile' if is_packaged_app() else 'source')),
     }
 
 

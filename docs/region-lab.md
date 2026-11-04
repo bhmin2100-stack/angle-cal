@@ -5,6 +5,10 @@
 
 ## 실행
 
+- 패키지 설치가 어려운 PC는 [Windows 폴더형 배포](https://github.com/bhmin2100-stack/angle-cal/releases/tag/windows-portable-20261104-r4)의
+  `RegionLab-Windows-x64-20261104-r4.zip` 전체를 풀고 `RegionLab.exe`를 실행하세요.
+  Python과 scikit-image가 포함되어 있으며 `_internal` 폴더도 함께 보관해야 합니다.
+  본체 ZIP의 `AngleCal.exe`에서도 동일한 분할 기능을 사용할 수 있습니다.
 - 배포 파일: `dist/RegionLab/RegionLab.exe` 또는 저장소의 `RegionLab.bat`.
 - GitHub Desktop으로 받은 저장소는 **Pull origin** 후 `RegionLab.bat`를 실행합니다.
   BAT는 `.venv`로 현재 폴더의 소스를 실행합니다. Python 3.9 이상이 필요합니다.

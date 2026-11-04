@@ -1,9 +1,23 @@
 # Standalone experiment build: does not replace the installed AngleCal EXE.
 from pathlib import Path
+import json
+import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
+root = Path(SPECPATH)
+sys.path.insert(0, str(root / 'src'))
+from angle_cal import build_info
+from angle_cal.release_metadata import make_build_metadata
+metadata = make_build_metadata(root, dict(app_version=build_info.APP_VERSION,
+    build_id=build_info.BUILD_ID, build_commit=build_info.BUILD_COMMIT,
+    build_date=build_info.BUILD_DATE, update_channel=build_info.UPDATE_CHANNEL))
+metadata['distribution'] = 'onedir'
+metadata_path = root / 'build' / 'region-lab' / '_build_info.json'
+metadata_path.parent.mkdir(parents=True, exist_ok=True)
+metadata_path.write_text(json.dumps(metadata), encoding='utf-8')
+
 a = Analysis(['run_region_lab.py'], pathex=['src'],
-             datas=collect_data_files('skimage'),
+             datas=collect_data_files('skimage') + [(str(metadata_path), 'angle_cal')],
              hiddenimports=['skimage.segmentation._felzenszwalb_cy']
              + collect_submodules('scipy._external.array_api_compat.numpy'),
              excludes=['matplotlib', 'tkinter', 'IPython'])

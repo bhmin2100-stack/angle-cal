@@ -3283,6 +3283,15 @@ class MainWindow(QMainWindow):
         self.start_update_check(manual=True)
 
     def start_update_check(self, *, manual: bool) -> None:
+        # A folder bundle must be updated as a whole, not by replacing its EXE
+        # with the unrelated single-file release while retaining old libraries.
+        if updater.is_portable_app():
+            if manual:
+                QMessageBox.information(self, "폴더형 배포 업데이트",
+                    "이 배포본은 실행 파일과 라이브러리가 한 폴더에 들어 있습니다.\n"
+                    "업데이트하려면 새 ZIP을 받아 다른 폴더에 전체 압축 해제하세요.\n"
+                    "현재 폴더의 EXE만 교체하지 마세요.")
+            return
         if self._update_check_thread is not None:
             if manual:
                 self._set_status("업데이트 확인이 이미 진행 중입니다.")

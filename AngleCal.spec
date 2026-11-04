@@ -4,6 +4,7 @@ from PyInstaller.utils.hooks import collect_submodules
 from pathlib import Path
 from importlib.util import find_spec
 import json
+import os
 import sys
 
 root=Path(SPECPATH)
@@ -11,9 +12,13 @@ sys.path.insert(0,str(root/'src'))
 from angle_cal import build_info
 from angle_cal.release_metadata import make_build_metadata
 
+onedir = os.environ.get('ANGLECAL_ONEDIR') == '1'
+if onedir and find_spec('skimage') is None:
+    raise RuntimeError('Portable release requires the regions dependencies')
 metadata=make_build_metadata(root,dict(app_version=build_info.APP_VERSION,build_id=build_info.BUILD_ID,
                                      build_commit=build_info.BUILD_COMMIT,build_date=build_info.BUILD_DATE,
                                      update_channel=build_info.UPDATE_CHANNEL))
+metadata['distribution'] = 'onedir' if onedir else 'onefile'
 metadata_path=root/'build'/'_build_info.json'
 metadata_path.parent.mkdir(parents=True,exist_ok=True)
 metadata_path.write_text(json.dumps(metadata,ensure_ascii=False),encoding='utf-8')
@@ -61,10 +66,10 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
+    [] if onedir else a.binaries,
+    [] if onedir else a.datas,
     [],
-    exclude_binaries=False,
+    exclude_binaries=onedir,
     name="AngleCal",
     debug=False,
     bootloader_ignore_signals=False,
@@ -78,3 +83,5 @@ exe = EXE(
     entitlements_file=None,
     icon="src/angle_cal/assets/anglecal_icon.ico",
 )
+if onedir:
+    coll = COLLECT(exe, a.binaries, a.datas, name='AngleCal')

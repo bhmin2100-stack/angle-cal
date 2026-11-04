@@ -41,11 +41,13 @@ BAT는 현재 저장소의 Python 소스를 실행합니다. Python 3.9 이상�
 
 ### exe로 실행
 
-1. GitHub repo의 **Releases**를 엽니다.
-2. **최신 Windows 릴리스**를 엽니다.
-3. `AngleCal.exe`를 다운로드해서 더블클릭합니다.
+1. [Windows 폴더형 배포](https://github.com/bhmin2100-stack/angle-cal/releases/tag/windows-portable-20261104-r4)를 엽니다.
+2. 본체는 `AngleCal-Windows-x64-20261104-r4.zip`, 영역 분할만 쓰려면 `RegionLab-Windows-x64-20261104-r4.zip`을 받습니다.
+3. ZIP을 **전체 압축 해제**하고 폴더 안의 `AngleCal.exe` 또는 `RegionLab.exe`를 실행합니다.
 
-`AngleCal.exe`는 Python 설치 없이 바로 실행하는 방식입니다.
+Python, pip, scikit-image를 따로 설치할 필요가 없습니다. `_internal` 폴더도 함께 있어야 합니다.
+창 제목의 빌드 번호로 배포본을 구분할 수 있습니다. 업데이트는 새 ZIP을 다른 폴더에 전체 압축 해제하세요.
+BAT는 아래와 같이 계속 현재 소스를 실행합니다.
 
 ### bat로 실행
 
@@ -68,7 +70,7 @@ EXE 다운로드, PowerShell 실행, pip 업데이트는 하지 않습니다.
 `AngleCal-run.log` / `RegionLab-run.log`입니다. 화면 마지막 오류 코드는 `PYTHON`,
 `BASE_DEPENDENCIES`, `REGION_DEPENDENCIES`, `START`로 실패 단계를 구분합니다.
 
-**[최신 EXE 직접 다운로드](https://github.com/bhmin2100-stack/angle-cal/releases/download/windows-latest/AngleCal.exe)** · **[최신 배치 실행 패키지](https://github.com/bhmin2100-stack/angle-cal/releases/download/windows-latest/AngleCal-bat.zip)**
+**[영역 분할 포함 Windows 실행 파일](https://github.com/bhmin2100-stack/angle-cal/releases/tag/windows-portable-20261104-r4)**
 
 릴리스 이름과 창 제목의 버전·빌드 번호를 비교하세요. v0.1.6의 Trench 화면에는 **곡선 그리기 · 구조 불러오기 · 인식** 전용 도구가 표시됩니다. `Source code`는 실행 파일이 아니라 소스이며, 릴리스 태그도 해당 EXE를 만든 커밋으로 함께 갱신합니다.
 
@@ -79,6 +81,17 @@ build_windows.bat
 ```
 
 빌드가 끝나면 `dist\AngleCal.exe` 하나가 생성됩니다. 이 파일만 다른 폴더나 PC로 옮겨 실행하면 됩니다.
+
+분할 패키지를 포함한 폴더형 본체를 빌드하려면 PowerShell에서:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -e ".[regions]"
+$env:ANGLECAL_ONEDIR = '1'
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --distpath dist/portable --workpath build/portable AngleCal.spec
+Remove-Item Env:ANGLECAL_ONEDIR
+```
+
+결과 `dist/portable/AngleCal` 폴더 전체가 배포 단위입니다. 독립 실험실은 `RegionLab.spec`으로 빌드합니다.
 
 개발 모드로 바로 실행하려면:
 

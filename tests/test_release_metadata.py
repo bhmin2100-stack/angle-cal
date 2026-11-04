@@ -64,3 +64,24 @@ def test_real_window_title_uses_current_embedded_identity():
         window.close()
     with patch.object(updater,'BUILD_ID','local'):
         assert '개발용' in updater.display_version()
+
+
+def test_portable_identity_prevents_partial_exe_updates(tmp_path):
+    path = tmp_path / '_build_info.json'
+    data = make_build_metadata(tmp_path, defaults(), {}) | {'distribution': 'onedir'}
+    path.write_text(json.dumps(data), encoding='utf-8')
+    metadata = embedded_metadata(path)
+    assert metadata['distribution'] == 'onedir'
+    app = QApplication.instance() or QApplication([])
+    with patch.object(updater, '_embedded', metadata), patch.object(updater, 'is_packaged_app', return_value=True):
+        window = MainWindow()
+        assert updater.is_portable_app()
+        window.start_update_check(manual=False)
+        assert window._update_check_thread is None
+        with patch('angle_cal.app.QMessageBox.information') as notice:
+            window.start_update_check(manual=True)
+            assert notice.called
+        assert window._update_check_thread is None
+        window.close()
+    with patch.object(updater, '_embedded', metadata), patch.object(updater, 'is_packaged_app', return_value=False):
+        assert not updater.is_portable_app()
