@@ -6,6 +6,11 @@
 ## 실행
 
 - 배포 파일: `dist/RegionLab/RegionLab.exe` 또는 저장소의 `RegionLab.bat`.
+- 소스 BAT 패키지는 **폴더 전체**를 풀고 `RegionLab.bat`를 실행합니다.
+  Python 3.9 이상과 최초 설치 시 인터넷이 필요합니다. `.venv` 생성 및 분할 패키지 설치는
+  자동으로 처리합니다. 기존 `.venv`에 분할 패키지가 빠져 있어도 다시 설치합니다.
+  `AngleCal.bat`도 같은 설치 검사를 사용합니다. BAT 파일 하나만 복사해서는 실행할 수 없습니다.
+- Python이 없는 PC는 독립 EXE ZIP 전체를 풀고 `RegionLab.exe` 또는 동봉한 `RegionLab.bat`를 실행하세요.
 - 소스 AngleCal: `영역 분할 실험실` 탭 → `영역 분할 실험실 열기`.
   현재 이미지의 복사본을 전달하며 창에서 다른 이미지도 열 수 있습니다.
 - 개발 설치: `python -m pip install -e ".[regions]"`, `python run_region_lab.py`.
@@ -13,6 +18,7 @@
   폴더 전체가 필요하며 기존 AngleCal 실행 파일과 별개입니다.
 - 배포 계산 검사: `RegionLab.exe --self-test report.json`.
   합성 16비트 띠 영상으로 실제 분할을 실행하고 성공 여부 또는 오류를 JSON에 기록합니다.
+- 소스 BAT 검사: `RegionLab.bat --self-test report.json` 또는 `AngleCal.bat --setup-only`.
 
 ## 비교 방법
 

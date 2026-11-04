@@ -30,7 +30,8 @@ Vertical SEM 이미지에서 선분 기반 각도를 측정하는 Windows용 데
 
 재료명 없이 이미지 전체를 색상 영역으로 나누고, 원본·경계와 비교하는 독립 실험 창입니다.
 로컬 빌드의 `RegionLab.bat` 또는 `dist/RegionLab/RegionLab.exe`로 실행합니다.
-소스 실행 시에는 `pip install -e ".[regions]"` 후 **영역 분할 실험실** 탭에서 열 수 있습니다.
+소스 BAT는 `.venv`와 분할 패키지를 자동 설치·검사합니다. Python 3.9 이상 및 최초 설치 시 인터넷이 필요합니다.
+`AngleCal.bat` 실행 후 **영역 분할 실험실** 탭에서도 열 수 있습니다. BAT를 포함한 폴더 전체를 유지하세요.
 기존 배포 EXE와 별개이며, 자세한 설정과 검증 한계는 [사용 안내](docs/region-lab.md)를 참고하세요.
 
 ## Windows에서 실행

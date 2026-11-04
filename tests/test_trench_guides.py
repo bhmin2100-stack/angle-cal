@@ -95,9 +95,9 @@ def test_sweep_keeps_a_real_hole_when_a_curve_loops_around_it():
 
 def test_sweep_round_caps_and_merged_overlaps_have_no_clipped_or_cancelled_band():
     guide=curve('left',[[50,20],[50,100]],10)
-    assert row_bands((guide,),14,'left')==pytest.approx([(42,58)])
-    assert row_bands((guide,),106,'left')==pytest.approx([(42,58)])
-    assert row_bands((guide,),60,'left')==pytest.approx([(40,60)])
+    np.testing.assert_allclose(row_bands((guide,),14,'left'), [(42,58)])
+    np.testing.assert_allclose(row_bands((guide,),106,'left'), [(42,58)])
+    np.testing.assert_allclose(row_bands((guide,),60,'left'), [(40,60)])
     assert not row_bands((guide,),111,'left')
     neighbor=curve('left',[[55,20],[55,100]],10)
     bands,per_guide=prepare_guide_bands((guide,neighbor),0,120)
