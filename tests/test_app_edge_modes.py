@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import cv2
 import numpy as np
 import pytest
-from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRectF, QSettings, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent, QKeySequence, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication, QDialog, QGraphicsItem, QGraphicsPathItem, QGraphicsTextItem, QGroupBox, QLabel, QMessageBox, QPushButton
 
@@ -2459,10 +2459,13 @@ def test_selection_filter_keeps_only_requested_object_type():
 
         window.canvas._selection_filter = "angle_label"
         window.canvas.scene.clearSelection()
-        for item in window.canvas.angle_items:
+        window.set_visibility("edge_length", True)
+        edge_length_label = window.canvas.edge_length_items[0]
+        for item in [*window.canvas.angle_items, edge_length_label]:
             item.setSelected(True)
         window.canvas._apply_selection_filter()
         assert all(isinstance(item, QGraphicsTextItem) for item in window.canvas.scene.selectedItems())
+        assert edge_length_label in window.canvas.scene.selectedItems()
     finally:
         window.close()
 
@@ -2479,9 +2482,13 @@ def test_edge_length_overlay_uses_calibration_and_visibility():
 
         assert len(window.canvas.edge_length_items) == 1
         assert "200" in window.canvas.edge_length_items[0].toHtml()
-        center = window.canvas.edge_length_items[0].sceneBoundingRect().center()
-        assert abs(center.x() - 70.0) < 1.0
-        assert abs(center.y() - 60.0) < 1.0
+        label = window.canvas.edge_length_items[0]
+        transform = window.canvas.viewportTransform()
+        origin_view = transform.map(label.pos())
+        visual_rect = QRectF(label.boundingRect())
+        visual_rect.translate(origin_view)
+        line_midpoint_view = transform.map(QPointF(70.0, 60.0))
+        assert visual_rect.bottom() <= line_midpoint_view.y() - 7.0
 
         window.set_visibility("edge_length", False)
         assert len(window.canvas.edge_length_items) == 0
@@ -2507,8 +2514,41 @@ def test_edge_length_label_is_deletable_child_object():
         assert len(window.canvas.edge_length_items) == 0
         assert window.records[edge.id].show_edge_length is False
 
+        window.set_visibility("edge_length", False)
+        window.set_visibility("edge_length", True)
         window._update_edge_length_overlay()
         assert len(window.canvas.edge_length_items) == 0
+
+        window.canvas.line_items[edge.id].setSelected(True)
+        window.set_selected_object_visibility("show_edge_length", Qt.CheckState.Checked.value)
+        assert window.records[edge.id].show_edge_length is True
+        assert len(window.canvas.edge_length_items) == 1
+    finally:
+        window.close()
+
+
+def test_number_only_selection_can_delete_edge_length_without_deleting_edge():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.set_visibility("edge_length", True)
+        line = window.canvas.line_items[edge.id]
+        label = window.canvas.edge_length_items[0]
+        line.setSelected(True)
+        label.setSelected(True)
+        window.canvas._selection_filter = "angle_label"
+        window.canvas._apply_selection_filter()
+
+        assert line.isSelected() is False
+        assert label.isSelected() is True
+
+        window.delete_selected()
+
+        assert edge.id in window.records
+        assert window.records[edge.id].show_edge_length is False
+        assert window.canvas.edge_length_items == []
     finally:
         window.close()
 
@@ -2523,6 +2563,8 @@ def test_edge_length_label_position_can_be_moved_and_persists():
         window._update_edge_length_overlay()
 
         label = window.canvas.edge_length_items[0]
+        window._sync_records_from_canvas()
+        assert window.records[edge.id].edge_length_label_pos is None
         label.setPos(42.0, 37.0)
         window._sync_records_from_canvas()
 
@@ -2531,6 +2573,37 @@ def test_edge_length_label_position_can_be_moved_and_persists():
         window._update_edge_length_overlay()
 
         assert len(window.canvas.edge_length_items) == 1
+        assert window.canvas.edge_length_items[0].pos() == QPointF(42.0, 37.0)
+    finally:
+        window.close()
+
+
+def test_automatic_edge_length_label_follows_edge_until_manually_moved():
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.set_visibility("edge_length", True)
+        window._update_edge_length_overlay()
+        first_auto_pos = window.canvas.edge_length_items[0].pos()
+
+        line = window.canvas.line_items[edge.id]
+        line.setSelected(True)
+        line.moveBy(0.0, 20.0)
+        window._handle_scene_changed()
+
+        second_auto_pos = window.canvas.edge_length_items[0].pos()
+        assert second_auto_pos != first_auto_pos
+        assert window.records[edge.id].edge_length_label_pos is None
+
+        window.canvas.edge_length_items[0].setPos(42.0, 37.0)
+        window._sync_records_from_canvas()
+        line = window.canvas.line_items[edge.id]
+        line.setSelected(True)
+        line.moveBy(0.0, 10.0)
+        window._handle_scene_changed()
+
         assert window.canvas.edge_length_items[0].pos() == QPointF(42.0, 37.0)
     finally:
         window.close()

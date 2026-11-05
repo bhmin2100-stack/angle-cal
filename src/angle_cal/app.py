@@ -233,6 +233,7 @@ SEARCH_RANGE_RECORD_KEY = 8
 SEARCH_RANGE_SEGMENT_KEY = 9
 CURVATURE_RECORD_KEY = 10
 CURVATURE_LABEL_KEY = 11
+LENGTH_AUTO_POSITION_KEY = 12
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 IMAGE_FORMAT_SUFFIX = ".anglecal.format.json"
 BROWSER_SESSION_SETTINGS_KEY = "browser/session-v1"
@@ -932,7 +933,7 @@ class AngleCanvas(QGraphicsView):
             "Enter: 경계 인식 / 이어진 선 완료<br>"
             "Q + 드래그: 경계선만 선택<br>"
             "W + 드래그: 각도 호만 선택<br>"
-            "E + 드래그: 각도 숫자만 선택<br>"
+            "E + 드래그: 각도/경계 길이 숫자만 선택<br>"
             "R 누르고 클릭/드래그: 세그먼트 하나 선택<br>"
             "Ctrl + 클릭(세그먼트): 세그먼트 분리 선택<br>"
             "선택 개체 Ctrl + 드래그: 복사 이동<br>"
@@ -1030,6 +1031,47 @@ class AngleCanvas(QGraphicsView):
         self.edge_length_groups.clear()
         self.edge_length_group_parents.clear()
 
+    def _default_edge_length_label_position(self, points: list[Point], label_rect: QRectF) -> Point:
+        transform = self.viewportTransform()
+        start_view = transform.map(QPointF(*points[0]))
+        end_view = transform.map(QPointF(*points[-1]))
+        dx = float(end_view.x() - start_view.x())
+        dy = float(end_view.y() - start_view.y())
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            dx, dy, length = 1.0, 0.0, 1.0
+        if dx < -1e-9 or (abs(dx) <= 1e-9 and dy < 0.0):
+            dx, dy = -dx, -dy
+        normal_x, normal_y = dy / length, -dx / length
+        midpoint_view = QPointF(
+            (start_view.x() + end_view.x()) / 2.0,
+            (start_view.y() + end_view.y()) / 2.0,
+        )
+        label_center = label_rect.center()
+        half_extent = abs(normal_x) * label_rect.width() / 2.0 + abs(normal_y) * label_rect.height() / 2.0
+        offset = half_extent + 8.0
+        image_rect = transform.mapRect(self.scene.sceneRect())
+
+        def candidate(side: float) -> tuple[float, QPointF]:
+            center = QPointF(
+                midpoint_view.x() + normal_x * offset * side,
+                midpoint_view.y() + normal_y * offset * side,
+            )
+            origin = QPointF(center.x() - label_center.x(), center.y() - label_center.y())
+            rect = QRectF(origin.x(), origin.y(), label_rect.width(), label_rect.height())
+            overflow = (
+                max(0.0, image_rect.left() - rect.left())
+                + max(0.0, rect.right() - image_rect.right())
+                + max(0.0, image_rect.top() - rect.top())
+                + max(0.0, rect.bottom() - image_rect.bottom())
+            )
+            return overflow, origin
+
+        _, origin_view = min((candidate(1.0), candidate(-1.0)), key=lambda value: value[0])
+        inverse, invertible = transform.inverted()
+        origin_scene = inverse.map(origin_view) if invertible else origin_view
+        return float(origin_scene.x()), float(origin_scene.y())
+
     def update_edge_length_overlay(
         self,
         records: list[LineRecord],
@@ -1054,7 +1096,6 @@ class AngleCanvas(QGraphicsView):
                 text = f"L {format_number(length_px * nm_per_px, 3)} nm"
             else:
                 text = f"L {length_px:.2f} px"
-            midpoint = ((points[0][0] + points[-1][0]) / 2.0, (points[0][1] + points[-1][1]) / 2.0)
             label = QGraphicsTextItem()
             label.setHtml(
                 "<div style='background-color:rgba(35,20,45,185);"
@@ -1065,7 +1106,9 @@ class AngleCanvas(QGraphicsView):
             if record.edge_length_label_pos is not None:
                 label.setPos(record.edge_length_label_pos[0], record.edge_length_label_pos[1])
             else:
-                label.setPos(midpoint[0] - label_rect.width() / 2.0, midpoint[1] - label_rect.height() / 2.0)
+                auto_pos = self._default_edge_length_label_position(points, label_rect)
+                label.setPos(*auto_pos)
+                label.setData(LENGTH_AUTO_POSITION_KEY, auto_pos)
             label.setZValue(28)
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -1417,7 +1460,9 @@ class AngleCanvas(QGraphicsView):
         if self._selection_filter == "angle_arc":
             return isinstance(item, QGraphicsPathItem) and item in self.angle_items
         if self._selection_filter == "angle_label":
-            return isinstance(item, QGraphicsTextItem) and item in self.angle_items
+            return isinstance(item, QGraphicsTextItem) and (
+                item in self.angle_items or item in self.edge_length_items
+            )
         return True
 
     def _selected_draggable_line_at(self, view_pos: QPoint) -> Optional[AnnotationLineItem | AnnotationCurveItem]:
@@ -8957,6 +9002,7 @@ class MainWindow(QMainWindow):
         )
         if moved_measurement_parent:
             self._refresh_guide_measurements()
+            self._update_edge_length_overlay(sync=False)
         self._update_search_range_overlay()
         self.canvas.update_group_boxes(list(self.records.values()))
         self._update_object_visibility_controls()
@@ -8967,6 +9013,14 @@ class MainWindow(QMainWindow):
             parent_id = item.data(LENGTH_PARENT_KEY)
             if parent_id and str(parent_id) in self.records:
                 pos = item.pos()
+                auto_pos = item.data(LENGTH_AUTO_POSITION_KEY)
+                if (
+                    isinstance(auto_pos, (tuple, list))
+                    and len(auto_pos) == 2
+                    and math.isclose(float(pos.x()), float(auto_pos[0]), abs_tol=1e-6)
+                    and math.isclose(float(pos.y()), float(auto_pos[1]), abs_tol=1e-6)
+                ):
+                    continue
                 self.records[str(parent_id)].edge_length_label_pos = (float(pos.x()), float(pos.y()))
         for item in self.canvas.curvature_items:
             if not item.data(CURVATURE_LABEL_KEY):
