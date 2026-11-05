@@ -194,6 +194,7 @@ class LineRecord:
     stroke_color: Optional[str] = None
     stroke_width: Optional[float] = None
     is_main_guide: bool = False
+    edge_length_label_font_size: float = 10.0
 
 
 @dataclass
@@ -1099,7 +1100,8 @@ class AngleCanvas(QGraphicsView):
             label = QGraphicsTextItem()
             label.setHtml(
                 "<div style='background-color:rgba(35,20,45,185);"
-                "color:#f5ddff;padding:2px 5px;border-radius:3px;'>"
+                f"color:#f5ddff;font-size:{float(record.edge_length_label_font_size):.1f}pt;"
+                "padding:2px 5px;border-radius:3px;'>"
                 f"{text}</div>"
             )
             label_rect = label.boundingRect()
@@ -2498,6 +2500,7 @@ def clone_record(record: LineRecord) -> LineRecord:
         show_range_label=record.show_range_label,
         show_edge_length=record.show_edge_length,
         edge_length_label_pos=tuple(record.edge_length_label_pos) if record.edge_length_label_pos else None,
+        edge_length_label_font_size=record.edge_length_label_font_size,
         curvature_center=tuple(record.curvature_center) if record.curvature_center else None,
         curvature_apex=tuple(record.curvature_apex) if record.curvature_apex else None,
         curvature_radius_px=record.curvature_radius_px,
@@ -2549,6 +2552,7 @@ def line_record_from_dict(item: dict) -> LineRecord:
         show_range_label=bool(item.get("show_range_label", True)),
         show_edge_length=bool(item.get("show_edge_length", True)),
         edge_length_label_pos=tuple(item["edge_length_label_pos"]) if item.get("edge_length_label_pos") is not None else None,
+        edge_length_label_font_size=float(item.get("edge_length_label_font_size", 10.0)),
         curvature_center=tuple(item["curvature_center"]) if item.get("curvature_center") is not None else None,
         curvature_apex=tuple(item["curvature_apex"]) if item.get("curvature_apex") is not None else None,
         curvature_radius_px=float(item["curvature_radius_px"]) if item.get("curvature_radius_px") is not None else None,
@@ -3044,6 +3048,39 @@ class CdDisplaySettingsDialog(QDialog):
             self._on_changed()
 
 
+class EdgeLengthDisplaySettingsDialog(QDialog):
+    def __init__(
+        self,
+        label_font_size: float,
+        parent: Optional[QWidget] = None,
+        on_changed: Optional[Callable[[], None]] = None,
+    ):
+        super().__init__(parent)
+        self._on_changed = on_changed
+        self.setWindowTitle("경계 길이 표시 편집")
+        self.setModal(True)
+
+        self.label_font_size_spin = QDoubleSpinBox()
+        self.label_font_size_spin.setRange(6.0, 72.0)
+        self.label_font_size_spin.setSingleStep(1.0)
+        self.label_font_size_spin.setValue(float(label_font_size))
+        self.label_font_size_spin.setSuffix(" pt")
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.addRow("글씨 크기", self.label_font_size_spin)
+        layout.addLayout(form)
+        self.label_font_size_spin.valueChanged.connect(self._notify_changed)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _notify_changed(self, *args) -> None:
+        if self._on_changed is not None:
+            self._on_changed()
+
+
 class DataExportDialog(QDialog):
     def __init__(self, has_multiple_images: bool, parent: Optional[QWidget] = None, fixed_scope: Optional[str] = None):
         super().__init__(parent)
@@ -3195,6 +3232,7 @@ class MainWindow(QMainWindow):
         self.cd_label_side = "90"
         self.cd_label_gap = 14.0
         self.cd_label_font_size = 10.0
+        self.default_edge_length_label_font_size = 10.0
         self.default_stroke_color = "#ff6b6b"
         self.default_stroke_width = 2.2
         self.image_brightness = 0
@@ -3889,8 +3927,11 @@ class MainWindow(QMainWindow):
         angle_settings_button.clicked.connect(self.edit_angle_display_for_selected_edges)
         cd_settings_button = QPushButton("CD 표시 편집")
         cd_settings_button.clicked.connect(self.edit_cd_display)
+        edge_length_settings_button = QPushButton("경계 길이 표시 편집")
+        edge_length_settings_button.clicked.connect(self.edit_edge_length_display_for_selected_edges)
         display_edit_group.addWidget(angle_settings_button)
         display_edit_group.addWidget(cd_settings_button)
+        display_edit_group.addWidget(edge_length_settings_button)
 
         image_adjust_group = group(display_page, "이미지 보정")
         self.image_brightness_spin = QSpinBox()
@@ -5996,6 +6037,10 @@ class MainWindow(QMainWindow):
         self.cd_label_side = normalize_cd_label_side(cd_display.get("label_side", self.cd_label_side))
         self.cd_label_gap = float(cd_display.get("label_gap", self.cd_label_gap))
         self.cd_label_font_size = float(cd_display.get("label_font_size", self.cd_label_font_size))
+        edge_length_display = payload.get("edge_length_display", {})
+        self.default_edge_length_label_font_size = float(
+            edge_length_display.get("label_font_size", self.default_edge_length_label_font_size)
+        )
         guide_generation = payload.get("guide_generation", {})
         guide_direction = guide_generation.get("direction")
         direction_index = self.guide_direction_combo.findData(guide_direction)
@@ -6134,6 +6179,9 @@ class MainWindow(QMainWindow):
                 "label_side": self.cd_label_side,
                 "label_gap": self.cd_label_gap,
                 "label_font_size": self.cd_label_font_size,
+            },
+            "edge_length_display": {
+                "label_font_size": self.default_edge_length_label_font_size,
             },
             "guide_generation": {
                 "direction": self.guide_direction_combo.currentData(),
@@ -6844,6 +6892,7 @@ class MainWindow(QMainWindow):
             angle_label_side=self.default_angle_label_side,
             angle_label_gap=self.default_angle_label_gap,
             angle_label_font_size=self.default_angle_label_font_size,
+            edge_length_label_font_size=self.default_edge_length_label_font_size,
             stroke_color=self.default_stroke_color,
             stroke_width=self.default_stroke_width,
         )
@@ -7591,6 +7640,53 @@ class MainWindow(QMainWindow):
         apply_dialog_values()
         self._set_status("CD 표시 설정을 바꿨습니다.")
 
+    def edit_edge_length_display_for_selected_edges(self) -> None:
+        self._sync_records_from_canvas()
+        selected_ids = set(self.canvas.selected_line_ids()) | self.canvas.selected_edge_length_parent_ids()
+        edges = [
+            record
+            for record_id, record in self.records.items()
+            if record_id in selected_ids and record.kind == "edge"
+        ]
+        editing_all = not edges
+        if editing_all:
+            edges = [record for record in self.records.values() if record.kind == "edge"]
+        base = edges[0] if edges else None
+        original_default = self.default_edge_length_label_font_size
+        original_edges = {edge.id: edge.edge_length_label_font_size for edge in edges}
+        undo_stack_before = list(self.undo_stack)
+        if edges:
+            self.save_undo_snapshot()
+
+        def apply_dialog_values() -> None:
+            font_size = float(dialog.label_font_size_spin.value())
+            if editing_all:
+                self.default_edge_length_label_font_size = font_size
+            for edge in edges:
+                edge.edge_length_label_font_size = font_size
+            self._update_edge_length_overlay(sync=False)
+            self._apply_visibility()
+
+        def restore_original_values() -> None:
+            self.default_edge_length_label_font_size = original_default
+            for edge in edges:
+                edge.edge_length_label_font_size = original_edges[edge.id]
+            self._update_edge_length_overlay(sync=False)
+            self._apply_visibility()
+
+        dialog = EdgeLengthDisplaySettingsDialog(
+            base.edge_length_label_font_size if base is not None else self.default_edge_length_label_font_size,
+            self,
+            on_changed=apply_dialog_values,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            restore_original_values()
+            self.undo_stack = undo_stack_before
+            return
+        apply_dialog_values()
+        target_text = "전체 경계선" if editing_all else "선택한 경계선"
+        self._set_status(f"{target_text} {len(edges)}개의 경계 길이 글씨 크기를 바꿨습니다.")
+
     def save_current_structure_template(self) -> None:
         if self._trench_active():
             self.trench_panel.save_structure_dialog();return
@@ -8101,7 +8197,9 @@ class MainWindow(QMainWindow):
 
     def copy_selected_format(self) -> None:
         self._sync_records_from_canvas()
-        for record_id in self.canvas.selected_line_ids():
+        selected_ids = list(self.canvas.selected_line_ids())
+        selected_ids.extend(sorted(self.canvas.selected_edge_length_parent_ids() - set(selected_ids)))
+        for record_id in selected_ids:
             record = self.records.get(record_id)
             if record is None or record.kind not in {"scale", "reference", "edge", "guide"}:
                 continue
@@ -8123,6 +8221,7 @@ class MainWindow(QMainWindow):
                 "show_intersection_angle": record.show_intersection_angle,
                 "show_angle_arc": record.show_angle_arc,
                 "show_edge_length": record.show_edge_length,
+                "edge_length_label_font_size": record.edge_length_label_font_size,
                 "show_range": record.show_range,
                 "show_range_label": record.show_range_label,
             }
@@ -8175,6 +8274,9 @@ class MainWindow(QMainWindow):
                 record.show_intersection_angle = bool(self.format_clipboard.get("show_intersection_angle", record.show_intersection_angle))
                 record.show_angle_arc = bool(self.format_clipboard.get("show_angle_arc", record.show_angle_arc))
                 record.show_edge_length = bool(self.format_clipboard.get("show_edge_length", record.show_edge_length))
+                record.edge_length_label_font_size = float(
+                    self.format_clipboard.get("edge_length_label_font_size", record.edge_length_label_font_size)
+                )
                 record.show_range = bool(self.format_clipboard.get("show_range", record.show_range))
                 record.show_range_label = bool(self.format_clipboard.get("show_range_label", record.show_range_label))
             item = self.canvas.line_items.get(record_id)

@@ -2418,7 +2418,16 @@ def test_structure_template_round_trip_dict():
     template = StructureTemplate(
         name="CD pair",
         cd_segment_mode="even",
-        records=[LineRecord("E1", "edge", (1.0, 2.0), (3.0, 4.0), angle_sector=2)],
+        records=[
+            LineRecord(
+                "E1",
+                "edge",
+                (1.0, 2.0),
+                (3.0, 4.0),
+                angle_sector=2,
+                edge_length_label_font_size=18.0,
+            )
+        ],
     )
 
     loaded = structure_template_from_dict(structure_template_to_dict(template))
@@ -2426,6 +2435,7 @@ def test_structure_template_round_trip_dict():
     assert loaded.name == "CD pair"
     assert loaded.cd_segment_mode == "even"
     assert loaded.records[0].angle_sector == 2
+    assert loaded.records[0].edge_length_label_font_size == 18.0
 
 
 def test_selection_filter_keeps_only_requested_object_type():
@@ -2474,6 +2484,8 @@ def test_edge_length_overlay_uses_calibration_and_visibility():
     window = _window_with_edge_image()
     try:
         window._create_edge_line((20.0, 60.0), (120.0, 60.0))
+        edge = next(record for record in window.records.values() if record.kind == "edge")
+        edge.edge_length_label_font_size = 18.0
         window.nm_per_px = 2.0
         window.canvas.redraw_lines(list(window.records.values()))
         window.set_visibility("edge_length", True)
@@ -2482,6 +2494,7 @@ def test_edge_length_overlay_uses_calibration_and_visibility():
 
         assert len(window.canvas.edge_length_items) == 1
         assert "200" in window.canvas.edge_length_items[0].toHtml()
+        assert "font-size:18" in window.canvas.edge_length_items[0].toHtml()
         label = window.canvas.edge_length_items[0]
         transform = window.canvas.viewportTransform()
         origin_view = transform.map(label.pos())
@@ -2492,6 +2505,86 @@ def test_edge_length_overlay_uses_calibration_and_visibility():
 
         window.set_visibility("edge_length", False)
         assert len(window.canvas.edge_length_items) == 0
+    finally:
+        window.close()
+
+
+def test_edge_length_display_edit_without_selection_updates_all_edges_and_default(monkeypatch):
+    observed_live_sizes: list[list[float]] = []
+
+    class _Value:
+        def value(self):
+            return 19.0
+
+    class _Dialog:
+        def __init__(self, *args, **kwargs):
+            self.label_font_size_spin = _Value()
+            self._on_changed = kwargs.get("on_changed")
+
+        def exec(self):
+            if self._on_changed is not None:
+                self._on_changed()
+                observed_live_sizes.append(
+                    [record.edge_length_label_font_size for record in window.records.values() if record.kind == "edge"]
+                )
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(app_module, "EdgeLengthDisplaySettingsDialog", _Dialog)
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 20.0), (20.0, 100.0))
+        window._create_edge_line((60.0, 20.0), (60.0, 100.0))
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.set_visibility("edge_length", True)
+
+        window.edit_edge_length_display_for_selected_edges()
+
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        assert observed_live_sizes == [[19.0, 19.0]]
+        assert all(edge.edge_length_label_font_size == 19.0 for edge in edges)
+        assert window.default_edge_length_label_font_size == 19.0
+        assert all("font-size:19" in item.toHtml() for item in window.canvas.edge_length_items)
+
+        window._create_edge_line((100.0, 20.0), (100.0, 100.0))
+        newest = list(window.records.values())[-1]
+        assert newest.edge_length_label_font_size == 19.0
+    finally:
+        window.close()
+
+
+def test_edge_length_display_edit_accepts_selected_length_label(monkeypatch):
+    class _Value:
+        def value(self):
+            return 16.0
+
+    class _Dialog:
+        def __init__(self, *args, **kwargs):
+            self.label_font_size_spin = _Value()
+            self._on_changed = kwargs.get("on_changed")
+
+        def exec(self):
+            if self._on_changed is not None:
+                self._on_changed()
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(app_module, "EdgeLengthDisplaySettingsDialog", _Dialog)
+    window = _window_with_edge_image()
+    try:
+        window._create_edge_line((20.0, 20.0), (20.0, 100.0))
+        window._create_edge_line((60.0, 20.0), (60.0, 100.0))
+        edges = [record for record in window.records.values() if record.kind == "edge"]
+        window.canvas.redraw_lines(list(window.records.values()))
+        window.set_visibility("edge_length", True)
+        selected_label = next(
+            item for item in window.canvas.edge_length_items if item.data(app_module.LENGTH_PARENT_KEY) == edges[0].id
+        )
+        selected_label.setSelected(True)
+
+        window.edit_edge_length_display_for_selected_edges()
+
+        assert edges[0].edge_length_label_font_size == 16.0
+        assert edges[1].edge_length_label_font_size == 10.0
+        assert window.default_edge_length_label_font_size == 10.0
     finally:
         window.close()
 
@@ -2897,6 +2990,7 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         window.favorite_image_groups = {str(path_a): "Review"}
         window.favorite_group_order = [app_module.FAVORITE_DEFAULT_GROUP, "Review"]
         window.current_favorite_group = "Review"
+        window.default_edge_length_label_font_size = 19.0
         window.scale_presets = [
             ScalePreset("50 nm", nm_per_px=1.25, bar_px=40.0, bar_nm=50.0, start=(12.0, 18.0), end=(52.0, 18.0))
         ]
@@ -2926,6 +3020,7 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         assert payload["favorite_image_groups"] == {str(path_a): "Review"}
         assert payload["favorite_group_order"] == ["Review"]
         assert payload["current_favorite_group"] == "Review"
+        assert payload["edge_length_display"] == {"label_font_size": 19.0}
         assert payload["scale_presets"] == [
             {"name": "50 nm", "nm_per_px": 1.25, "bar_px": 40.0, "bar_nm": 50.0, "start": [12.0, 18.0], "end": [52.0, 18.0]}
         ]
@@ -3107,6 +3202,7 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         "favorite_image_groups": {str(path_a): "Review"},
         "favorite_group_order": [app_module.FAVORITE_DEFAULT_GROUP, "Review"],
         "current_favorite_group": "Review",
+        "edge_length_display": {"label_font_size": 18.0},
         "scale_presets": [
             {"name": "50 nm", "nm_per_px": 1.25, "bar_px": 40.0, "bar_nm": 50.0, "start": [12.0, 18.0], "end": [52.0, 18.0]}
         ],
@@ -3142,6 +3238,7 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         assert window.favorite_image_groups == {str(path_a): "Review"}
         assert window.favorite_group_order == [app_module.FAVORITE_DEFAULT_GROUP, "Review"]
         assert window.current_favorite_group == "Review"
+        assert window.default_edge_length_label_font_size == 18.0
         assert window.favorite_group_bar.count() == 1
         assert window.favorite_group_bar.tabText(0) == "Review"
         assert window.favorite_tab_bar.count() == 1
@@ -3586,6 +3683,7 @@ def test_copy_format_then_ctrl_v_pastes_style_to_selected_objects():
         source.stroke_width = 4.0
         source.angle_sector = 2
         source.angle_label_font_size = 18.0
+        source.edge_length_label_font_size = 20.0
         target.stroke_color = "#4cc9f0"
         target.stroke_width = 2.0
         window.canvas.redraw_lines(list(window.records.values()))
@@ -3600,6 +3698,7 @@ def test_copy_format_then_ctrl_v_pastes_style_to_selected_objects():
         assert window.records[target.id].stroke_width == 4.0
         assert window.records[target.id].angle_sector == 2
         assert window.records[target.id].angle_label_font_size == 18.0
+        assert window.records[target.id].edge_length_label_font_size == 20.0
         assert window.canvas.line_items[target.id].pen().widthF() == 4.0
     finally:
         window.close()
