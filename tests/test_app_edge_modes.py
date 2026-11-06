@@ -300,6 +300,78 @@ def test_browser_folder_history_and_collapsed_state_roundtrip(tmp_path):
         settings.clear()
 
 
+def test_collapsing_thumbnail_folder_keeps_header_at_clicked_viewport_position(tmp_path):
+    app = _app()
+    window = MainWindow()
+    try:
+        folders = [tmp_path / f"folder-{index}" for index in range(3)]
+        image_paths: list[str] = []
+        for folder_index, folder in enumerate(folders):
+            folder.mkdir()
+            for image_index in range(8):
+                path = folder / f"image-{image_index}.png"
+                cv2.imwrite(
+                    str(path),
+                    np.full((30, 40, 3), 40 + folder_index * 70, dtype=np.uint8),
+                )
+                image_paths.append(str(path.resolve()))
+
+        window.browser_roots = [folder.resolve() for folder in folders]
+        window.browser_image_paths = image_paths
+        window.show()
+        window._populate_thumbnails()
+        app.processEvents()
+
+        last_folder_key = window._resolved_path_key(folders[-1])
+        scroll_bar = window.thumbnail_scroll.verticalScrollBar()
+        scroll_bar.setValue(scroll_bar.maximum())
+        app.processEvents()
+        header = window.thumbnail_folder_headers[last_folder_key]
+        clicked_y = header.mapTo(window.thumbnail_scroll.viewport(), QPoint(0, 0)).y()
+
+        header.click()
+        for _ in range(8):
+            app.processEvents()
+
+        collapsed_header = window.thumbnail_folder_headers[last_folder_key]
+        collapsed_y = collapsed_header.mapTo(window.thumbnail_scroll.viewport(), QPoint(0, 0)).y()
+        assert last_folder_key in window.collapsed_thumbnail_folders
+        assert abs(collapsed_y - clicked_y) <= 1
+    finally:
+        window.close()
+
+
+def test_thumbnail_folder_button_collapses_and_expands_all_folders(tmp_path):
+    _app()
+    window = MainWindow()
+    try:
+        paths = []
+        for index in range(2):
+            folder = tmp_path / f"folder-{index}"
+            folder.mkdir()
+            path = folder / "image.png"
+            cv2.imwrite(str(path), np.full((30, 40, 3), 70 + index * 80, dtype=np.uint8))
+            paths.append(str(path.resolve()))
+        window.browser_image_paths = paths
+        window._populate_thumbnails()
+
+        assert window.thumbnail_folders_toggle_button.text() == "전체 접기"
+        window.thumbnail_folders_toggle_button.click()
+
+        folder_keys = window._thumbnail_folder_keys()
+        assert folder_keys.issubset(window.collapsed_thumbnail_folders)
+        assert window.thumbnail_buttons == {}
+        assert window.thumbnail_folders_toggle_button.text() == "전체 펼치기"
+
+        window.thumbnail_folders_toggle_button.click()
+
+        assert not (folder_keys & window.collapsed_thumbnail_folders)
+        assert set(window.thumbnail_buttons) == set(paths)
+        assert window.thumbnail_folders_toggle_button.text() == "전체 접기"
+    finally:
+        window.close()
+
+
 def test_recognize_segments_line_mode_by_segment_size():
     window = _window_with_edge_image()
     try:
@@ -2871,7 +2943,9 @@ def test_thumbnail_context_menu_adds_removes_favorite_and_opens_saved_folder_wit
         folder_action.trigger()
         assert Path(opened_urls[0].toLocalFile()).resolve() == tmp_path.resolve()
         assert window.image_path == str(path_a)
-        menu.actions()[0].trigger()
+        menu = window._favorite_menu_for_path(str(path_b))
+        save_menu = menu._favorite_group_menu
+        save_menu.actions()[0].trigger()
 
         assert window.image_path == str(path_a)
         assert window.favorite_image_paths == [str(path_b)]
@@ -2884,6 +2958,39 @@ def test_thumbnail_context_menu_adds_removes_favorite_and_opens_saved_folder_wit
 
         assert window.favorite_image_paths == []
         assert window.favorite_tab_bar.count() == 0
+    finally:
+        window.close()
+
+
+def test_multi_selected_thumbnails_can_be_saved_to_a_chosen_favorite_group(tmp_path):
+    paths = [tmp_path / f"image-{index}.png" for index in range(3)]
+    for index, path in enumerate(paths):
+        cv2.imwrite(str(path), np.full((40, 60, 3), 50 + index * 60, dtype=np.uint8))
+
+    _app()
+    window = MainWindow()
+    try:
+        resolved_paths = [str(path.resolve()) for path in paths]
+        window.browser_root = tmp_path
+        window.browser_image_paths = resolved_paths
+        window._populate_thumbnails()
+        window.create_favorite_group("Review")
+        window.selected_thumbnail_paths = set(resolved_paths[:2])
+
+        menu = window._favorite_menu_for_path(resolved_paths[0], resolved_paths[:2])
+        save_action = next(action for action in menu.actions() if "즐겨찾기에 저장" in action.text())
+        assert save_action.menu() is not None
+        save_menu = menu._favorite_group_menu
+        review_action = next(action for action in save_menu.actions() if action.text() == "Review")
+        review_action.trigger()
+
+        assert window.favorite_image_paths == resolved_paths[:2]
+        assert window.favorite_image_groups == {
+            resolved_paths[0]: "Review",
+            resolved_paths[1]: "Review",
+        }
+        assert window.current_favorite_group == "Review"
+        assert window.favorite_tab_bar.count() == 2
     finally:
         window.close()
 
@@ -2929,6 +3036,63 @@ def test_favorite_tabs_can_be_renamed_and_grouped(tmp_path, monkeypatch):
         assert window.favorite_tab_bar.count() == 1
         assert window.favorite_tab_bar.tabData(0) == str(path_a)
         assert window.favorite_tab_bar.tabText(0) == "Top SEM"
+    finally:
+        window.close()
+
+
+def test_empty_favorite_group_is_visible_and_favorite_tabs_support_multi_selection(tmp_path):
+    from PySide6.QtTest import QTest
+
+    paths = [tmp_path / f"image-{index}.png" for index in range(3)]
+    for index, path in enumerate(paths):
+        cv2.imwrite(str(path), np.full((50, 70, 3), 40 + index * 80, dtype=np.uint8))
+
+    app = _app()
+    window = MainWindow()
+    try:
+        resolved_paths = [str(path.resolve()) for path in paths]
+        window.browser_root = tmp_path
+        window.browser_image_paths = resolved_paths
+        window.create_favorite_group("Empty")
+
+        assert window.current_favorite_group == "Empty"
+        assert window._favorite_group_names() == ["Empty"]
+        assert not window.favorite_group_bar.isHidden()
+        assert window.favorite_tab_bar.count() == 0
+
+        window.add_favorite_images(resolved_paths, "Review")
+        window.selected_favorite_paths.clear()
+        window._favorite_tab_anchor_path = None
+        window._refresh_favorite_tab_selection_styles()
+        window.show()
+        app.processEvents()
+        QTest.mouseClick(
+            window.favorite_tab_bar,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ControlModifier,
+            window.favorite_tab_bar.tabRect(0).center(),
+        )
+        QTest.mouseClick(
+            window.favorite_tab_bar,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ControlModifier,
+            window.favorite_tab_bar.tabRect(1).center(),
+        )
+        assert window.selected_favorite_paths == set(resolved_paths[:2])
+
+        QTest.mouseClick(
+            window.favorite_tab_bar,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ShiftModifier,
+            window.favorite_tab_bar.tabRect(2).center(),
+        )
+        assert window.selected_favorite_paths == set(resolved_paths[1:])
+        selected_colors = {
+            window.favorite_tab_bar.tabData(index): window.favorite_tab_bar.tabTextColor(index)
+            for index in range(window.favorite_tab_bar.count())
+        }
+        assert selected_colors[resolved_paths[0]] != selected_colors[resolved_paths[1]]
+        assert "Empty" in window._favorite_group_names()
     finally:
         window.close()
 
@@ -2988,7 +3152,7 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         window.favorite_image_paths = [str(path_a)]
         window.favorite_image_labels = {str(path_a): "Top SEM"}
         window.favorite_image_groups = {str(path_a): "Review"}
-        window.favorite_group_order = [app_module.FAVORITE_DEFAULT_GROUP, "Review"]
+        window.favorite_group_order = [app_module.FAVORITE_DEFAULT_GROUP, "Review", "Empty"]
         window.current_favorite_group = "Review"
         window.default_edge_length_label_font_size = 19.0
         window.scale_presets = [
@@ -3018,7 +3182,7 @@ def test_save_project_includes_all_loaded_image_states(tmp_path, monkeypatch):
         assert payload["favorite_image_paths"] == [str(path_a)]
         assert payload["favorite_image_labels"] == {str(path_a): "Top SEM"}
         assert payload["favorite_image_groups"] == {str(path_a): "Review"}
-        assert payload["favorite_group_order"] == ["Review"]
+        assert payload["favorite_group_order"] == ["Review", "Empty"]
         assert payload["current_favorite_group"] == "Review"
         assert payload["edge_length_display"] == {"label_font_size": 19.0}
         assert payload["scale_presets"] == [
@@ -3200,7 +3364,7 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         "favorite_image_paths": [str(path_a)],
         "favorite_image_labels": {str(path_a): "Top SEM"},
         "favorite_image_groups": {str(path_a): "Review"},
-        "favorite_group_order": [app_module.FAVORITE_DEFAULT_GROUP, "Review"],
+        "favorite_group_order": [app_module.FAVORITE_DEFAULT_GROUP, "Review", "Empty"],
         "current_favorite_group": "Review",
         "edge_length_display": {"label_font_size": 18.0},
         "scale_presets": [
@@ -3236,11 +3400,12 @@ def test_open_project_restores_all_loaded_image_states(tmp_path, monkeypatch):
         assert window.favorite_image_paths == [str(path_a)]
         assert window.favorite_image_labels == {str(path_a): "Top SEM"}
         assert window.favorite_image_groups == {str(path_a): "Review"}
-        assert window.favorite_group_order == [app_module.FAVORITE_DEFAULT_GROUP, "Review"]
+        assert window.favorite_group_order == [app_module.FAVORITE_DEFAULT_GROUP, "Review", "Empty"]
         assert window.current_favorite_group == "Review"
         assert window.default_edge_length_label_font_size == 18.0
-        assert window.favorite_group_bar.count() == 1
+        assert window.favorite_group_bar.count() == 2
         assert window.favorite_group_bar.tabText(0) == "Review"
+        assert window.favorite_group_bar.tabText(1) == "Empty"
         assert window.favorite_tab_bar.count() == 1
         assert window.favorite_tab_bar.tabData(0) == str(path_a)
         assert window.favorite_tab_bar.tabText(0) == "Top SEM"
